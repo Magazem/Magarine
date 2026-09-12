@@ -1,0 +1,14 @@
+{
+  "mode": "disallow-write",
+  "workspace": "C:\\Users\\yazan\\AppData\\Local\\Temp\\magarine-spike-bCEJNK",
+  "pid": 6696,
+  "exitCode": null,
+  "killedByTimeout": true,
+  "durationMs": 100190,
+  "workspaceListing": [
+    ".orchestrator",
+    ".playwright-mcp",
+    "hello.txt"
+  ],
+  "resultJsonPresent": true
+}

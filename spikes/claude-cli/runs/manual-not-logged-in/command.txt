@@ -1,0 +1,1 @@
+USERPROFILE="<empty temp dir>" HOME="<empty temp dir>" claude -p "say hi" --output-format json

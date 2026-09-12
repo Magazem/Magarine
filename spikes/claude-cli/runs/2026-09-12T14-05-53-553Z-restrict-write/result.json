@@ -1,0 +1,13 @@
+{
+  "status": "ready_for_review",
+  "summary": "Created hello.txt containing 'hello from magarine worker' and wrote .orchestrator/result.json describing the work.",
+  "artifacts": [
+    { "kind": "file", "path": "hello.txt" },
+    { "kind": "file", "path": ".orchestrator/result.json" }
+  ],
+  "checks": [
+    { "name": "hello.txt content matches", "status": "passed" }
+  ],
+  "blockers": [],
+  "questions": []
+}

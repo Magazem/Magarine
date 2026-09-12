@@ -1,0 +1,1 @@
+claude -p "say hi" --output-format json --json-schema '{not valid json'

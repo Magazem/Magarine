@@ -1,0 +1,106 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { FakeAdapter } from './fakeAdapter.ts';
+import type { TicketEnvelope, WorkerEvent } from '../types.ts';
+
+function envelope(ticketId: string): TicketEnvelope {
+  return {
+    ticketId,
+    projectBrief: 'brief',
+    relevantDecisions: [],
+    title: 't',
+    description: 'd',
+    acceptanceCriteria: [],
+    completedDependencies: [],
+    allowedTools: [],
+    expectedOutputFormat: 'json',
+  };
+}
+
+async function collectEvents(adapter: FakeAdapter, ticketId: string, count: number): Promise<WorkerEvent[]> {
+  const handle = await adapter.startWorker({ ticket: envelope(ticketId), systemPolicy: 'p' });
+  const events: WorkerEvent[] = [];
+  await new Promise<void>((resolve) => {
+    adapter.observe(handle, (event) => {
+      events.push(event);
+      if (events.length >= count) resolve();
+    });
+  });
+  return events;
+}
+
+test('succeed script emits a done result', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'succeed' });
+  const [event] = await collectEvents(adapter, 't1', 1);
+  assert.equal(event.type, 'result_raw');
+  assert.equal((event as { raw: { status: string } }).raw.status, 'done');
+});
+
+test('retryable_failure script emits a retryable failure event', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'retryable_failure' });
+  const [event] = await collectEvents(adapter, 't1', 1);
+  assert.equal(event.type, 'failure');
+  assert.equal((event as { retryable: boolean }).retryable, true);
+});
+
+test('question script emits a question event then a done result', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'question' });
+  const events = await collectEvents(adapter, 't1', 2);
+  assert.equal(events[0].type, 'question');
+  assert.equal(events[1].type, 'result_raw');
+});
+
+test('needs_user_decision script emits a result with that status', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'needs_user_decision' });
+  const [event] = await collectEvents(adapter, 't1', 1);
+  assert.equal(event.type, 'result_raw');
+  assert.equal((event as { raw: { status: string } }).raw.status, 'needs_user_decision');
+});
+
+test('malformed_result script emits a result_raw payload that fails validation', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'malformed_result' });
+  const [event] = await collectEvents(adapter, 't1', 1);
+  assert.equal(event.type, 'result_raw');
+  assert.equal((event as { raw: { status?: string } }).raw.status, undefined);
+});
+
+test('hang script never emits any event', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'hang' });
+  const handle = await adapter.startWorker({ ticket: envelope('t1'), systemPolicy: 'p' });
+  let called = false;
+  await adapter.observe(handle, () => {
+    called = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(called, false);
+});
+
+test('stop() cancels a pending scripted event before it fires', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'succeed', delayMs: 50 });
+  const handle = await adapter.startWorker({ ticket: envelope('t1'), systemPolicy: 'p' });
+  let called = false;
+  await adapter.observe(handle, () => {
+    called = true;
+  });
+
+  await adapter.stop(handle);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  assert.equal(called, false, 'stop() before the delay elapses must suppress the scheduled event');
+});
+
+test('destroy() is safe to call on an already-stopped handle', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'hang' });
+  const handle = await adapter.startWorker({ ticket: envelope('t1'), systemPolicy: 'p' });
+  await adapter.observe(handle, () => {});
+  await adapter.stop(handle);
+  await assert.doesNotReject(() => adapter.destroy(handle));
+});

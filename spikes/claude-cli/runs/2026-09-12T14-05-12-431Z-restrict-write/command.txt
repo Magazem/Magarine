@@ -1,0 +1,37 @@
+cwd=C:\Users\yazan\AppData\Local\Temp\magarine-spike-kMCUUm
+claude '-p' 'Create a file named hello.txt in the current directory containing the text "hello from magarine worker". Then create a directory named .orchestrator and write a file .orchestrator/result.json describing what you did, matching the schema you were given.' '--output-format' 'json' '--json-schema' '{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ready_for_review", "blocked", "failed"]
+    },
+    "summary": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
+          "path": { "type": "string" }
+        },
+        "required": ["kind", "path"]
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string" }
+        },
+        "required": ["name", "status"]
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "questions": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["status", "summary", "artifacts", "checks", "blockers", "questions"]
+}
+' '--permission-mode' 'bypassPermissions' '--allowedTools' 'Read'

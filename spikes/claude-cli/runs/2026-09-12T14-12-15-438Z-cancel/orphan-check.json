@@ -1,0 +1,8 @@
+{
+  "note": "Raw PowerShell process dump omitted: this machine runs an entire team of other Claude Code sessions (this spike included), so a name-based filter (node|bash|claude|cmd|conhost|sleep) matched dozens of unrelated processes and their full command lines, including other sessions' system prompts. Not useful evidence and not committed raw.",
+  "checked": {
+    "spawned_bash_pid_30608_present_after_kill": false,
+    "any_process_referencing_workspace_path_magarine-spike-875Ept": false
+  },
+  "conclusion": "The specific spawned PID (30608, the Git Bash relay) was gone from the post-kill snapshot, and no process command-line referenced this run's workspace path. This does not confirm the descendant claude.exe was cleanly reaped (a proper check would need to walk the process tree from the original PID before it exits, not grep a snapshot afterward) - see docs/spikes/claude-cli-adapter.md section 2.3 for why this is reported as UNKNOWN rather than a clean pass/fail."
+}

@@ -1,0 +1,13 @@
+{
+  "mode": "restrict-write",
+  "workspace": "C:\\Users\\yazan\\AppData\\Local\\Temp\\magarine-spike-RLrf1Z",
+  "pid": 20380,
+  "exitCode": 0,
+  "killedByTimeout": false,
+  "durationMs": 20467,
+  "workspaceListing": [
+    ".orchestrator",
+    "hello.txt"
+  ],
+  "resultJsonPresent": true
+}

@@ -1,0 +1,26 @@
+{
+  "status": "ready_for_review",
+  "summary": "Created hello.txt containing 'hello from magarine worker' in the working directory, then created the .orchestrator directory and wrote this result.json describing the work.",
+  "artifacts": [
+    {
+      "kind": "file",
+      "path": "hello.txt"
+    },
+    {
+      "kind": "file",
+      "path": ".orchestrator/result.json"
+    }
+  ],
+  "checks": [
+    {
+      "name": "hello.txt exists with expected content",
+      "status": "passed"
+    },
+    {
+      "name": ".orchestrator/result.json written",
+      "status": "passed"
+    }
+  ],
+  "blockers": [],
+  "questions": []
+}

@@ -1,0 +1,13 @@
+{
+  "mode": "happy",
+  "workspace": "C:\\Users\\yazan\\AppData\\Local\\Temp\\magarine-spike-TkAxy4",
+  "pid": 4604,
+  "exitCode": 0,
+  "killedByTimeout": false,
+  "durationMs": 18242,
+  "workspaceListing": [
+    ".orchestrator",
+    "hello.txt"
+  ],
+  "resultJsonPresent": true
+}

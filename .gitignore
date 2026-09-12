@@ -1,0 +1,7 @@
+# Local orchestrator databases created by the magarine CLI
+.magarine/
+*.db
+*.db-journal
+*.db-wal
+
+node_modules/

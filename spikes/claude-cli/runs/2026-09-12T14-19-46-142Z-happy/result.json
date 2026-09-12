@@ -1,0 +1,10 @@
+{
+  "status": "ready_for_review",
+  "summary": "Created hello.txt in the working directory containing the text \"hello from magarine worker\".",
+  "artifacts": [
+    { "kind": "file", "path": "hello.txt" }
+  ],
+  "checks": [],
+  "blockers": [],
+  "questions": []
+}

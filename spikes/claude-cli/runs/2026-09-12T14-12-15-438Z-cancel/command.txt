@@ -1,0 +1,37 @@
+cwd=C:\Users\yazan\AppData\Local\Temp\magarine-spike-875Ept
+claude '-p' 'Run a shell command that sleeps for 120 seconds, then create a file named done.txt.' '--output-format' 'json' '--json-schema' '{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ready_for_review", "blocked", "failed"]
+    },
+    "summary": { "type": "string" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string" },
+          "path": { "type": "string" }
+        },
+        "required": ["kind", "path"]
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string" }
+        },
+        "required": ["name", "status"]
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "questions": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["status", "summary", "artifacts", "checks", "blockers", "questions"]
+}
+' '--permission-mode' 'bypassPermissions' '--allowedTools' 'Write,Bash'

@@ -1,0 +1,183 @@
+// Core domain types shared across the state machine, scheduler and adapters.
+
+export type TicketStatus =
+  | 'OPEN'
+  | 'READY'
+  | 'IN_PROGRESS'
+  | 'REVIEW'
+  | 'DONE'
+  | 'BLOCKED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type EventVisibility = 'internal' | 'activity' | 'inbox' | 'urgent';
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string | null;
+  defaultAdapter: string | null;
+  maxParallelWorkers: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Ticket {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string | null;
+  acceptanceCriteria: string[];
+  status: TicketStatus;
+  priority: number;
+  assignee: string | null;
+  attemptCount: number;
+  maxAttempts: number;
+  workspaceType: WorkspaceType;
+  workspaceRef: string | null;
+  resultJson: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DependencyType = 'blocks' | 'related' | 'parent';
+
+export interface TicketDependency {
+  ticketId: string;
+  dependsOnTicketId: string;
+  dependencyType: DependencyType;
+}
+
+export type RunStatus = 'running' | 'succeeded' | 'review' | 'blocked' | 'failed' | 'cancelled';
+
+export interface Run {
+  id: string;
+  ticketId: string;
+  attempt: number;
+  adapter: string;
+  workerSessionRef: string | null;
+  workspaceRef: string | null;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  failureClass: string | null;
+  // Raw JSON reported by the adapter for this run: token counts, cache
+  // hit/miss, cost, etc. Shape is adapter-defined; the daemon does not
+  // validate it, only stores and displays it.
+  usageJson: string | null;
+}
+
+export interface EventRow {
+  sequence: number;
+  projectId: string;
+  eventType: string;
+  entityType: string;
+  entityId: string;
+  payload: unknown;
+  visibility: EventVisibility;
+  requiresUser: boolean;
+  idempotencyKey: string;
+  createdAt: string;
+}
+
+export interface Artifact {
+  id: string;
+  ticketId: string;
+  kind: string;
+  pathOrUri: string;
+  description: string | null;
+  checksum: string | null;
+  createdAt: string;
+}
+
+// --- Worker envelope and adapter abstraction, per technical-architecture-weekend-mvp.md ---
+
+export type WorkspaceType = 'NONE' | 'DIRECTORY' | 'GIT_WORKTREE';
+
+export interface Workspace {
+  type: WorkspaceType;
+  path?: string;
+}
+
+export interface TicketEnvelope {
+  ticketId: string;
+  projectBrief: string;
+  relevantDecisions: string[];
+  title: string;
+  description: string;
+  acceptanceCriteria: string[];
+  completedDependencies: Array<{ ticketId: string; title: string; summary?: string }>;
+  allowedTools: string[];
+  expectedOutputFormat: string;
+}
+
+export interface WorkerHandle {
+  id: string;
+  ticketId: string;
+  runId: string;
+}
+
+// WorkerResult is the parsed shape of `.orchestrator/result.json`, per the
+// doc's "Worker result contract" section. The doc's example only shows the
+// "ready_for_review" case; the additional status values below are this
+// implementation's extension to cover the full ticket lifecycle diagram
+// (worker succeeds / passes auto-checks / retryable failure / question /
+// user decision required). See packages/core/README.md "Design decisions".
+export type WorkerResultStatus = 'done' | 'review' | 'needs_user_decision' | 'failed';
+
+export interface WorkerResultCheck {
+  name: string;
+  status: 'passed' | 'failed';
+}
+
+export interface WorkerResultArtifact {
+  kind: string;
+  path: string;
+}
+
+export interface WorkerResult {
+  status: WorkerResultStatus;
+  summary: string;
+  artifacts: WorkerResultArtifact[];
+  checks: WorkerResultCheck[];
+  blockers: string[];
+  questions: string[];
+}
+
+// Events an adapter reports back to the scheduler while a worker runs.
+// A terminal event (`result_raw` or `failure`) ends the run; `progress` and
+// `question` do not.
+export type WorkerEvent =
+  | { type: 'progress'; message: string }
+  | { type: 'question'; message: string }
+  | { type: 'result_raw'; raw: unknown; usage?: unknown }
+  | { type: 'failure'; message: string; retryable: boolean; usage?: unknown };
+
+export interface AgentAdapterCapabilities {
+  supportsFiles: boolean;
+  supportsShell: boolean;
+  supportsStreaming: boolean;
+  supportsResume: boolean;
+}
+
+// Reproduced exactly from technical-architecture-weekend-mvp.md ("Agent
+// adapter abstraction"), with the supporting types above filled in.
+export interface AgentAdapter {
+  id: string;
+
+  capabilities(): Promise<AgentAdapterCapabilities>;
+
+  startWorker(input: {
+    ticket: TicketEnvelope;
+    workspace?: Workspace;
+    systemPolicy: string;
+  }): Promise<WorkerHandle>;
+
+  send(handle: WorkerHandle, message: string): Promise<void>;
+
+  observe(handle: WorkerHandle, onEvent: (event: WorkerEvent) => void): Promise<() => void>;
+
+  stop(handle: WorkerHandle): Promise<void>;
+
+  destroy(handle: WorkerHandle): Promise<void>;
+}
