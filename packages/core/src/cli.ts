@@ -1,13 +1,19 @@
 #!/usr/bin/env node
 import { join } from 'node:path';
 import { openDb, type Db } from './db/index.ts';
-import { FakeAdapter } from './adapters/fakeAdapter.ts';
+import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
 import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
 import { resolveExecutable } from './process.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { runUntilIdle, tick } from './scheduler.ts';
-import { addDependency, createProject, createTicket, listTickets } from './store.ts';
+import { addDependency, createProject, createTicket, getTicket, listTickets } from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
+import { buildActivity, formatActivity } from './commands/activity.ts';
+import { buildBoard, formatBoard } from './commands/board.ts';
+import { buildInbox, formatInbox } from './commands/inbox.ts';
+import { decide, DecideError } from './commands/decide.ts';
+import { retry, RetryError } from './commands/retry.ts';
+import { resume, ResumeError } from './commands/resume.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
@@ -16,9 +22,13 @@ import type { AgentAdapter, WorkspaceType } from './types.ts';
 // one thing, and prints either a human line or JSON with `--json`.
 
 interface Flags {
-  [key: string]: string | boolean;
+  [key: string]: string | boolean | string[];
 }
 
+// A flag repeated on the command line (`--acceptance a --acceptance b`)
+// collects into an array instead of the last one silently winning. A flag
+// given once stays a plain string/boolean, so every existing single-value
+// flag is unaffected.
 function parseFlags(args: string[]): { positionals: string[]; flags: Flags } {
   const positionals: string[] = [];
   const flags: Flags = {};
@@ -27,17 +37,34 @@ function parseFlags(args: string[]): { positionals: string[]; flags: Flags } {
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
       const next = args[i + 1];
+      let value: string | boolean;
       if (next !== undefined && !next.startsWith('--')) {
-        flags[key] = next;
+        value = next;
         i++;
       } else {
-        flags[key] = true;
+        value = true;
+      }
+      const existing = flags[key];
+      if (existing === undefined) {
+        flags[key] = value;
+      } else if (Array.isArray(existing)) {
+        existing.push(String(value));
+      } else {
+        flags[key] = [String(existing), String(value)];
       }
     } else {
       positionals.push(arg);
     }
   }
   return { positionals, flags };
+}
+
+// Normalizes a possibly-repeated flag to a string array: absent -> [],
+// given once -> one-element array, repeated -> every value in order.
+function flagList(flags: Flags, key: string): string[] {
+  const value = flags[key];
+  if (value === undefined || typeof value === 'boolean') return [];
+  return Array.isArray(value) ? value : [value];
 }
 
 function dbPath(flags: Flags): string {
@@ -54,11 +81,35 @@ const COMMON_FLAGS = ['db', 'json'];
 // reported as a typo.
 const FLAG_SPECS: Record<string, string[]> = {
   'project create': ['name', 'description', 'max-parallel'],
-  'ticket add': ['project', 'title', 'description', 'max-attempts', 'priority', 'workspace'],
+  'ticket add': [
+    'project',
+    'title',
+    'description',
+    'max-attempts',
+    'priority',
+    'workspace',
+    'budget',
+    'acceptance',
+    'depends-on',
+  ],
   'dep add': ['project', 'ticket', 'depends-on', 'type'],
-  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root'],
-  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root'],
+  // `--fake-script` is only honoured when `--adapter fake` (the default); it
+  // scripts the permanent FakeAdapter test double per ticket id so a
+  // scenario like "this ticket needs a user decision" or "this ticket fails
+  // until it exhausts its attempts" can be driven through the real CLI
+  // instead of only from a test file calling FakeAdapter directly. Format:
+  // `--fake-script <ticketId>=<kind>`, repeatable; `<kind>` is one of
+  // FakeAdapter's FakeScript kinds (succeed, retryable_failure, question,
+  // needs_user_decision, malformed_result, hang).
+  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root', 'fake-script'],
+  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root', 'fake-script'],
   status: ['project'],
+  board: ['project'],
+  inbox: ['project'],
+  activity: ['project', 'ticket', 'all'],
+  decide: ['ticket', 'answer'],
+  retry: ['ticket'],
+  resume: ['adapter'],
 };
 
 // Builds the AgentAdapter for `tick`/`run --until-idle` from `--adapter`
@@ -72,11 +123,37 @@ const FLAG_SPECS: Record<string, string[]> = {
 // `max_budget_usd` (migration 0003) is read directly with a scoped query
 // rather than through store.ts's `Project` type, so this file is the only
 // one touched for budget wiring.
+const FAKE_SCRIPT_KINDS = new Set<FakeScript['kind']>([
+  'succeed',
+  'retryable_failure',
+  'question',
+  'needs_user_decision',
+  'malformed_result',
+  'hang',
+]);
+
 function buildAdapter(db: Db, flags: Flags): AgentAdapter {
   const kind = typeof flags.adapter === 'string' ? flags.adapter : 'fake';
 
   if (kind === 'fake') {
-    return new FakeAdapter();
+    const adapter = new FakeAdapter();
+    for (const spec of flagList(flags, 'fake-script')) {
+      const eq = spec.indexOf('=');
+      if (eq < 0) {
+        throw new Error(`--fake-script must be "<ticketId>=<kind>", got: ${spec}`);
+      }
+      const ticketId = spec.slice(0, eq);
+      const scriptKind = spec.slice(eq + 1);
+      if (!FAKE_SCRIPT_KINDS.has(scriptKind as FakeScript['kind'])) {
+        throw new Error(
+          `--fake-script has an unknown kind "${scriptKind}" for ticket ${ticketId}. Valid kinds: ${[
+            ...FAKE_SCRIPT_KINDS,
+          ].join(', ')}.`
+        );
+      }
+      adapter.setScript(ticketId, { kind: scriptKind as FakeScript['kind'] });
+    }
+    return adapter;
   }
 
   if (kind === 'claude') {
@@ -151,6 +228,7 @@ async function main(): Promise<void> {
 
   if (command === 'ticket' && subcommand === 'add') {
     const db = openDb(dbPath(flags));
+    const dependsOn = flagList(flags, 'depends-on');
     const ticket = createTicket(db, {
       projectId: String(flags.project ?? ''),
       title: String(flags.title ?? positionals[1] ?? ''),
@@ -158,14 +236,34 @@ async function main(): Promise<void> {
       maxAttempts: flags['max-attempts'] ? Number(flags['max-attempts']) : 3,
       priority: flags.priority ? Number(flags.priority) : 0,
       workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
+      acceptanceCriteria: flagList(flags, 'acceptance'),
     });
-    // Deliberately not resolving readiness here: a freshly created ticket
-    // has no dependencies "so far", but the user may still be about to
-    // attach one with `dep add`. Promoting it now would be premature — see
-    // dependencies.ts's `resolveReadiness` doc comment and
-    // cli.test.ts's dependency-ordering regression test. Readiness is
-    // reconciled by `dep add` and by every `tick`/`run --until-idle`.
-    output(flags, ticket, `Created ticket ${ticket.id} (${ticket.title})`);
+
+    // `max_budget_usd_override` (migration 0003_budget_fields) has no
+    // store.ts writer of its own yet, the same way `tick`'s budget lookup
+    // above reads `max_budget_usd` straight off `projects` rather than
+    // through store.ts — this file is the one place budget wiring touches.
+    if (typeof flags.budget === 'string') {
+      db.prepare('UPDATE tickets SET max_budget_usd_override = ? WHERE id = ?').run(Number(flags.budget), ticket.id);
+    }
+
+    // Dependencies are attached, and only then is readiness resolved --
+    // never before all of them are attached, and never left unresolved
+    // after. Resolving mid-loop (or not at all) is exactly the batch 1
+    // regression this flag exists to make impossible: a ticket must not be
+    // promoted to READY, even briefly, while a `--depends-on` from this
+    // same command has not been wired in yet. See dependencies.ts's
+    // `resolveReadiness` doc comment and cli.test.ts's ordering regression
+    // test for the original bug this guards against.
+    for (const dependsOnTicketId of dependsOn) {
+      addDependency(db, { ticketId: ticket.id, dependsOnTicketId });
+    }
+    if (dependsOn.length > 0) {
+      resolveReadiness(db, ticket.projectId);
+    }
+
+    const finalTicket = getTicket(db, ticket.id)!;
+    output(flags, finalTicket, `Created ticket ${finalTicket.id} (${finalTicket.title})`);
     return;
   }
 
@@ -218,8 +316,81 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'board') {
+    const db = openDb(dbPath(flags));
+    const result = buildBoard(db, String(flags.project ?? ''));
+    output(flags, result, formatBoard(result));
+    return;
+  }
+
+  if (command === 'inbox') {
+    const db = openDb(dbPath(flags));
+    const items = buildInbox(db, String(flags.project ?? ''));
+    output(flags, items, formatInbox(items));
+    return;
+  }
+
+  if (command === 'activity') {
+    const db = openDb(dbPath(flags));
+    const events = buildActivity(db, {
+      projectId: typeof flags.project === 'string' ? flags.project : undefined,
+      ticketId: typeof flags.ticket === 'string' ? flags.ticket : undefined,
+      all: Boolean(flags.all),
+    });
+    output(flags, events, formatActivity(events));
+    return;
+  }
+
+  if (command === 'decide') {
+    const db = openDb(dbPath(flags));
+    try {
+      const ticket = decide(db, { ticketId: String(flags.ticket ?? ''), answer: String(flags.answer ?? '') });
+      output(flags, ticket, `${ticket.id} decided, now ${ticket.status}`);
+    } catch (err) {
+      if (err instanceof DecideError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
+  if (command === 'retry') {
+    const db = openDb(dbPath(flags));
+    try {
+      const ticket = retry(db, { ticketId: String(flags.ticket ?? '') });
+      output(flags, ticket, `${ticket.id} retried, now ${ticket.status}`);
+    } catch (err) {
+      if (err instanceof RetryError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
+  if (command === 'resume') {
+    const db = openDb(dbPath(flags));
+    try {
+      const project = resume(db, { projectId: String(flags.adapter ?? '') });
+      output(flags, project, `${project.id}'s adapter resumed`);
+    } catch (err) {
+      if (err instanceof ResumeError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
   process.stderr.write(
-    'Usage: magarine <project create|ticket add|dep add|tick|run --until-idle|status> [--flags] [--json]\n'
+    'Usage: magarine <project create|ticket add|dep add|tick|run --until-idle|status|board|inbox|activity|decide|retry|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }

@@ -1,0 +1,98 @@
+import type { Db } from '../db/index.ts';
+import { getDependencies, getTicket, listTickets } from '../store.ts';
+import type { Ticket, TicketStatus } from '../types.ts';
+
+// `board`: every ticket in a project, its attempts, its cost, and what is
+// still blocking it. Read-only; touches no other role's files.
+
+export interface BoardTicket {
+  id: string;
+  title: string;
+  status: TicketStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  costUsd: number;
+  blockedBy: string[];
+}
+
+export interface BoardResult {
+  tickets: BoardTicket[];
+}
+
+// Read order for the human view: what a person is most likely to want to
+// look at first (things that need attention or are moving) before the
+// quiet/terminal statuses.
+const STATUS_ORDER: TicketStatus[] = [
+  'BLOCKED',
+  'FAILED',
+  'IN_PROGRESS',
+  'REVIEW',
+  'READY',
+  'OPEN',
+  'DONE',
+  'CANCELLED',
+];
+
+// Ticket cost is the sum of `total_cost_usd` across the ticket's runs'
+// `usage_json` (contract fixed by batch-3-spec.md so Role F and this role
+// don't need to coordinate on it). `usage_json` is an opaque, adapter-defined
+// blob that this codebase never validates (see store.ts's `setRunUsage`);
+// a run with no usage recorded, or a shape without `total_cost_usd`,
+// contributes nothing rather than throwing.
+function ticketCostUsd(db: Db, ticketId: string): number {
+  const rows = db.prepare('SELECT usage_json FROM runs WHERE ticket_id = ?').all(ticketId) as Array<{
+    usage_json: string | null;
+  }>;
+  let total = 0;
+  for (const row of rows) {
+    if (!row.usage_json) continue;
+    try {
+      const usage = JSON.parse(row.usage_json) as { total_cost_usd?: unknown };
+      if (typeof usage.total_cost_usd === 'number') total += usage.total_cost_usd;
+    } catch {
+      // Malformed adapter-defined JSON contributes nothing rather than
+      // crashing the board.
+    }
+  }
+  return total;
+}
+
+function blockingDependencies(db: Db, ticket: Ticket): string[] {
+  return getDependencies(db, ticket.id)
+    .filter((d) => d.dependencyType === 'blocks')
+    .map((d) => d.dependsOnTicketId)
+    .filter((depId) => getTicket(db, depId)?.status !== 'DONE');
+}
+
+export function buildBoard(db: Db, projectId: string): BoardResult {
+  const tickets = listTickets(db, projectId)
+    .slice()
+    .sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status));
+
+  return {
+    tickets: tickets.map((t) => ({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      attemptCount: t.attemptCount,
+      maxAttempts: t.maxAttempts,
+      costUsd: ticketCostUsd(db, t.id),
+      blockedBy: blockingDependencies(db, t),
+    })),
+  };
+}
+
+// Ticket id first on every line, per this role's brief: it's the next thing
+// a person copies.
+export function formatBoard(result: BoardResult): string {
+  if (result.tickets.length === 0) return '(no tickets)';
+  return result.tickets
+    .map((t) => {
+      const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
+      const cost = `cost $${t.costUsd.toFixed(2)}`;
+      const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
+      const parts = [t.id, t.status, t.title, attempts, cost, blocked].filter((p) => p.length > 0);
+      return parts.join('\t');
+    })
+    .join('\n');
+}

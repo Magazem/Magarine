@@ -37,7 +37,80 @@ node src/cli.ts dep add --project <projectId> --ticket <t3Id> --depends-on <t1Id
 node src/cli.ts dep add --project <projectId> --ticket <t3Id> --depends-on <t2Id>
 node src/cli.ts run --until-idle --project <projectId> --max-parallel 2 --json
 node src/cli.ts status --project <projectId> --json
+node src/cli.ts board --project <projectId> --json
+node src/cli.ts inbox --project <projectId> --json
+node src/cli.ts activity --project <projectId> --json
+node src/cli.ts decide --ticket <ticketId> --answer "use option A" --json
+node src/cli.ts retry --ticket <ticketId> --json
+node src/cli.ts resume --adapter <projectId> --json
 ```
+
+`ticket add` also takes `--workspace NONE|DIRECTORY` (default `NONE`), a
+per-ticket `--budget <usd>` override, a repeatable `--acceptance
+"<criterion>"`, and a repeatable `--depends-on <id>` so a ticket can be
+created with its dependencies wired in the same command:
+
+```sh
+node src/cli.ts ticket add --project <projectId> --title "T3" \
+  --acceptance "criterion one" --acceptance "criterion two" \
+  --depends-on <t1Id> --depends-on <t2Id> --budget 0.50 --json
+```
+
+Readiness is resolved only after every `--depends-on` from that same command
+has been attached, never before — a ticket created with dependencies is
+never briefly `READY` while some of them are still missing.
+
+### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `resume`
+
+- **`board --project <id>`**: every ticket in the project, one line each,
+  ticket id first: id, status, title, attempts (`n/max`), cost (sum of
+  `total_cost_usd` across the ticket's runs), and, if any, which of its
+  blocking dependencies are not yet `DONE`.
+- **`inbox --project <id>`**: events that need the user's attention and are
+  still unresolved — a `worker_needs_user_decision` while its ticket is
+  still `BLOCKED`, an exhausted retry while its ticket is still `FAILED`.
+  There is no separate "acknowledged" flag; an item stops appearing on its
+  own once `decide`/`retry` moves the ticket past that status.
+- **`activity [--project <id> | --ticket <id>] [--all]`**: the event log,
+  collapsed by default (internal bookkeeping events hidden); `--all` shows
+  everything, including those.
+- **`decide --ticket <id> --answer "<text>"`**: answers a `BLOCKED`
+  ticket's pending question and moves it to `READY`. Refuses (clean
+  message, no stack trace) if the ticket isn't `BLOCKED`.
+- **`retry --ticket <id>`**: manually retries a `FAILED` ticket, moving it
+  back to `READY`. Refuses if the ticket isn't `FAILED`.
+- **`resume --adapter <projectId>`**: clears a project's adapter pause (set
+  when an `adapter_unavailable` failure trips it). Refuses if the project
+  isn't paused, or doesn't exist.
+
+All six accept `--json`.
+
+### Notification policy (`policy.ts`)
+
+`policy.ts` implements `technical-architecture-weekend-mvp.md`'s
+"Notification policy" table as data: `classify(eventType)` returns
+`{ visibility, requiresUser }` for every event type the state machine's
+`TransitionEvent` union can emit. A completeness test
+(`policy.test.ts`) parses that union directly out of `stateMachine.ts`'s
+source (rather than a hand-copied list, and without editing that file — see
+below) and fails the build if a transition event has no row.
+
+Wiring `classify` into `stateMachine.ts`'s write site (so the stored
+`visibility`/`requires_user` columns come from the policy table instead of
+each caller passing its own) is **not done yet**. Another engineer is
+adding three transitions to `stateMachine.ts` in parallel this batch; that
+file is deliberately untouched here to avoid colliding with that work. Wiring
+is a follow-up, one line at the transition's write site.
+
+Six event types new to this batch (`manual_retry`, `user_decided`,
+`run_cancelled`, `worker_progress`, `artifact_collision`, `user_decision`)
+have rows even though most are not named in the architecture document; where
+the document is silent, `policy.ts` applies its own stated default
+("silent by default") rather than inventing a tier, and says so in a comment
+on each row. See that file for the one row (`run_cancelled`) flagged as
+genuinely ambiguous: it backs two different scenarios (an adapter pause that
+should reach the inbox, and a plain shutdown cancellation that shouldn't)
+that `classify(eventType)` cannot tell apart from the event type alone.
 
 Every command accepts `--json` for machine-readable output and `--db <path>`
 to point at a specific SQLite file (default: `.magarine/magarine.db` under
@@ -56,6 +129,17 @@ the executable; if omitted, it defaults to `resolveExecutable('claude')`
 `--workspace-root <dir>`; without it, each run gets a fresh `NONE` temp
 directory that is deleted afterwards.
 
+With `--adapter fake` (the default), `--fake-script <ticketId>=<kind>`
+(repeatable) scripts the permanent `FakeAdapter` test double per ticket id —
+`succeed` (default if unscripted), `retryable_failure`, `question`,
+`needs_user_decision`, `malformed_result`, or `hang` — so a scenario like "this
+ticket needs a user decision" can be driven through the real CLI, e.g. for
+trying `decide`/`inbox` by hand:
+
+```sh
+node src/cli.ts tick --project <projectId> --fake-script <ticketId>=needs_user_decision --json
+```
+
 ## Layout
 
 ```
@@ -72,6 +156,8 @@ src/
   adapters/claudeCli.ts    real Claude Code CLI adapter
   scheduler.ts  tick() / runUntilIdle()
   recovery.ts   restart recovery for orphaned "running" runs
+  policy.ts     notification policy table: classify(eventType) -> visibility/requiresUser
+  commands/     board, inbox, activity, decide, retry, resume (cli.ts stays thin)
   cli.ts        the `magarine` CLI
   *.test.ts     tests, colocated with the module they cover
 ```
