@@ -1,9 +1,9 @@
 # @magarine/core
 
 The Magarine orchestrator daemon core: SQLite-backed ticket state machine,
-dependency resolver, scheduler, worker result contract, restart recovery,
-a fake agent adapter, and a thin `magarine` CLI. No real worker adapter
-ships in this batch — see "Scope" below.
+dependency resolver, scheduler, worker result contract, restart recovery, a
+fake agent adapter, a real Claude Code CLI adapter, and a thin `magarine`
+CLI.
 
 ## Requirements
 
@@ -44,11 +44,17 @@ to point at a specific SQLite file (default: `.magarine/magarine.db` under
 the current directory). `tick` runs one scheduling pass; `run --until-idle`
 loops `tick` until nothing new starts.
 
-The CLI's `tick`/`run` commands use a fresh, unscripted `FakeAdapter`
-instance per invocation, so every ticket they touch trivially succeeds (see
-"Design decisions" below). This is enough to exercise the full
-project/ticket/dependency/scheduler loop end to end, but it is not a real
-worker — that is Batch 2's job.
+`tick`/`run --until-idle` accept `--adapter fake|claude` (default `fake`).
+`fake` uses a fresh, unscripted `FakeAdapter` per invocation, so every ticket
+trivially succeeds — enough to exercise the full
+project/ticket/dependency/scheduler loop without a real worker. `claude`
+spawns the real Claude Code CLI (`adapters/claudeCli.ts`) directly (never
+through the `claude` npm shim, which is what corrupted arguments and made
+workers unkillable in the Batch 1 spike). `--claude-exe <path>` overrides
+the executable; if omitted, it defaults to `resolveExecutable('claude')`
+(`process.ts`). For a persistent `DIRECTORY` workspace, add
+`--workspace-root <dir>`; without it, each run gets a fresh `NONE` temp
+directory that is deleted afterwards.
 
 ## Layout
 
@@ -60,7 +66,10 @@ src/
   dependencies.ts   promotes OPEN -> READY when blocking deps are DONE
   resultContract.ts JSON schema + validator for .orchestrator/result.json
   process.ts    all process control (spawn/timeout/kill) in one file
+  envelope.ts   builds the worker prompt from a TicketEnvelope
+  workspace.ts  NONE/DIRECTORY/GIT_WORKTREE workspace provider
   adapters/fakeAdapter.ts  scriptable AgentAdapter test double
+  adapters/claudeCli.ts    real Claude Code CLI adapter
   scheduler.ts  tick() / runUntilIdle()
   recovery.ts   restart recovery for orphaned "running" runs
   cli.ts        the `magarine` CLI
@@ -106,6 +115,35 @@ silent, this implementation made the following calls:
   no adapter in this batch needs, since `FakeAdapter` never spawns a real
   process. Whichever Batch 2 adapter actually shells out should extend
   `process.ts`, not add a second process-control module.
+  (Superseded in Batch 2: `process.ts` now does real tree-kill on both
+  platforms — see that file's own header.)
+- **`ClaudeCliAdapter` has no way to signal "cancel this run without
+  consuming a ticket attempt, pause the adapter, alert the user"**, which
+  `docs/strategy/batch-2-spec.md`'s Role E section asks for on a
+  not-logged-in/auth failure. `WorkerEvent` (this file) only has
+  `progress`/`question`/`result_raw`/`failure`, and `scheduler.ts`'s
+  `applyWorkerEvent` routes every `failure` through the same
+  `worker_retryable_failure` transition regardless of `retryable`. Adding a
+  new `WorkerEvent` variant would be dead code without a matching
+  `scheduler.ts` change, which is out of the adapter role's owned files.
+  `adapters/claudeCli.ts` instead classifies this case correctly
+  (`classifyOutcome`, `kind: 'adapter_unavailable'`) and emits the closest
+  available signal: a non-retryable `failure` with an `ADAPTER_UNAVAILABLE`
+  marker in the message.
+- **Per-ticket budget override is schema-landed, not plumbed.** Migration
+  `0003_budget_fields` adds `tickets.max_budget_usd_override`, but
+  `TicketEnvelope` (built by `scheduler.ts`'s `buildEnvelope`) carries no
+  budget field, so `ClaudeCliAdapter` has no way to receive a per-ticket
+  override. It is constructed with one `maxBudgetUsd` for its whole
+  lifetime, read from the project's `max_budget_usd` column by `cli.ts`.
+  Wiring the override through requires a `scheduler.ts`/`types.ts` change
+  outside this role's owned files.
+- **Workspace routing is adapter-wide, not per-ticket.** `scheduler.ts`
+  never passes a `workspace` into `startWorker`, and `TicketEnvelope` has no
+  `workspaceType` field, so `ClaudeCliAdapter` cannot know a given ticket's
+  configured workspace type. It is constructed with one `workspaceType`
+  (`NONE` unless `--workspace-root` is given) applied to every run; an
+  explicit `workspace` passed by a future caller overrides it per call.
 
 ## Cost visibility
 
@@ -118,7 +156,15 @@ scripts can set it via the optional `usage` field on `succeed`,
 
 ## What was not built
 
-Per the batch spec, nothing beyond the eight numbered deliverables was
-attempted: no real adapter, no HTTP API, no UI, no Manager/Submanager, no
-Git worktree provider. `packages/core/` does not depend on anything outside
-itself.
+Batch 1: per the batch spec, nothing beyond the eight numbered deliverables
+was attempted: no real adapter, no HTTP API, no UI, no Manager/Submanager,
+no Git worktree provider. `packages/core/` does not depend on anything
+outside itself (still true in Batch 2).
+
+Batch 2 (Role E, Claude Code adapter): `GIT_WORKTREE` still throws "not
+supported yet" (`workspace.ts`); the "cancel a run without consuming an
+attempt" and per-ticket budget override gaps are described above under
+"Design decisions"; the `budget exceeded` failure classification is
+SOFT/UNKNOWN — no spike run ever forced it
+(`docs/spikes/claude-cli-adapter.md` §2.4), so `adapters/claudeCli.ts`'s
+pattern match on the error message is inferred, not observed.

@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { join } from 'node:path';
-import { openDb } from './db/index.ts';
+import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
+import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
+import { resolveExecutable } from './process.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { runUntilIdle, tick } from './scheduler.ts';
 import { addDependency, createProject, createTicket, listTickets } from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
-import type { WorkspaceType } from './types.ts';
+import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
 // `--db` (default: `.magarine/magarine.db` under the current directory,
@@ -54,10 +56,56 @@ const FLAG_SPECS: Record<string, string[]> = {
   'project create': ['name', 'description', 'max-parallel'],
   'ticket add': ['project', 'title', 'description', 'max-attempts', 'priority', 'workspace'],
   'dep add': ['project', 'ticket', 'depends-on', 'type'],
-  tick: ['project', 'max-parallel'],
-  run: ['until-idle', 'project', 'max-parallel'],
+  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root'],
+  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root'],
   status: ['project'],
 };
+
+// Builds the AgentAdapter for `tick`/`run --until-idle` from `--adapter`
+// (default: fake). `claude` spawns the real Claude Code CLI via
+// ClaudeCliAdapter (see adapters/claudeCli.ts). `--claude-exe` overrides the
+// executable; if omitted, it defaults to `resolveExecutable('claude')`
+// (process.ts), which unwraps the npm .cmd shim on Windows so the adapter
+// always spawns the real binary directly — spawning through the shim
+// reintroduces the argument corruption and the unkillable worker the batch
+// 1 spike hit (docs/spikes/claude-cli-adapter.md §0). The project's
+// `max_budget_usd` (migration 0003) is read directly with a scoped query
+// rather than through store.ts's `Project` type, so this file is the only
+// one touched for budget wiring.
+function buildAdapter(db: Db, flags: Flags): AgentAdapter {
+  const kind = typeof flags.adapter === 'string' ? flags.adapter : 'fake';
+
+  if (kind === 'fake') {
+    return new FakeAdapter();
+  }
+
+  if (kind === 'claude') {
+    let claudeExe = typeof flags['claude-exe'] === 'string' ? flags['claude-exe'] : undefined;
+    if (!claudeExe) {
+      try {
+        claudeExe = resolveExecutable('claude');
+      } catch (err) {
+        throw new Error(
+          `--claude-exe was not given and resolveExecutable('claude') failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
+    const projectRow = db
+      .prepare('SELECT max_budget_usd FROM projects WHERE id = ?')
+      .get(String(flags.project ?? '')) as { max_budget_usd: number } | undefined;
+    const workspaceRoot = typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : undefined;
+    return new ClaudeCliAdapter({
+      claudeExe,
+      maxBudgetUsd: projectRow?.max_budget_usd ?? 2.0,
+      workspaceType: workspaceRoot ? 'DIRECTORY' : 'NONE',
+      workspaceRoot,
+    });
+  }
+
+  throw new Error(`Unknown adapter: ${kind}`);
+}
 
 function checkKnownFlags(key: string, flags: Flags): string | null {
   const known = FLAG_SPECS[key];
@@ -134,7 +182,7 @@ async function main(): Promise<void> {
   if (command === 'tick') {
     const db = openDb(dbPath(flags));
     recoverOrphanedRuns(db);
-    const adapter = new FakeAdapter();
+    const adapter = buildAdapter(db, flags);
     const result = await tick({
       db,
       adapter,
@@ -148,7 +196,7 @@ async function main(): Promise<void> {
   if (command === 'run' && flags['until-idle']) {
     const db = openDb(dbPath(flags));
     recoverOrphanedRuns(db);
-    const adapter = new FakeAdapter();
+    const adapter = buildAdapter(db, flags);
     await runUntilIdle({
       db,
       adapter,

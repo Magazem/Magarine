@@ -97,4 +97,16 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE runs ADD COLUMN usage_json TEXT;
     `,
   },
+  {
+    // Per-project spend ceiling (default $2.00, per batch-2-spec.md's floor
+    // price ruling) and an optional per-ticket override. SQLite's ALTER
+    // TABLE ADD COLUMN ... DEFAULT applies the default to existing rows too,
+    // so projects created before this migration get max_budget_usd = 2.0
+    // rather than NULL.
+    id: '0003_budget_fields',
+    sql: `
+      ALTER TABLE projects ADD COLUMN max_budget_usd REAL NOT NULL DEFAULT 2.00;
+      ALTER TABLE tickets ADD COLUMN max_budget_usd_override REAL;
+    `,
+  },
 ];

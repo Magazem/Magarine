@@ -13,7 +13,7 @@ test('runMigrations is idempotent: applying twice does not error or duplicate ro
   const applied = db.prepare('SELECT id FROM schema_migrations ORDER BY id').all() as Array<{ id: string }>;
   assert.deepEqual(
     applied.map((r) => r.id),
-    ['0001_init', '0002_runs_usage_json']
+    ['0001_init', '0002_runs_usage_json', '0003_budget_fields']
   );
 });
 
@@ -40,7 +40,7 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     const applied = db.prepare('SELECT id FROM schema_migrations ORDER BY id').all() as Array<{ id: string }>;
     assert.deepEqual(
       applied.map((r) => r.id),
-      ['0001_init', '0002_runs_usage_json']
+      ['0001_init', '0002_runs_usage_json', '0003_budget_fields']
     );
 
     // usage_json now exists and is writable.
