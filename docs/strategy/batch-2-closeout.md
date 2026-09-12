@@ -30,11 +30,16 @@ the same scope. Say if you want message text followed literally in future.
 ## 2. `pnpm test`, cold checkout, run by me
 
 ```
-tests 93
-pass 93
+tests 94
+pass 94
 fail 0
-duration_ms 6432.8
+duration_ms 6567.4
 ```
+
+Correction: this document first recorded 93. Role E's final change, wiring the executable
+resolver as the `--claude-exe` default plus its test, landed between my test run and my
+commit. The commit captured it; my number was one run stale. 94 is the verified figure and
+the commit for Role E contains the 94th test.
 
 Scope was clean. Role D touched only `process.ts` and its test. Role E did not touch
 `process.ts` at all, which I checked explicitly. Role E's one cross-file edit was two
@@ -88,10 +93,13 @@ The budget-exceeded classifier labels itself synthetic **in its own test name**,
 spike section where the class was never forced. That is the right way to carry an unverified
 assumption forward.
 
-Its report understated one thing: it said the executable resolver was "not wired in yet",
-but the code defaults `--claude-exe` to `resolveExecutable('claude')` with a clear error
-fallback. The report was written before my mid-flight note landed. No integration work was
-needed from me, contrary to your close-out item 3.
+Its first report said the executable resolver was "not wired in yet" while the committed code
+already defaulted `--claude-exe` to `resolveExecutable('claude')` with a clear error fallback.
+It had wired it in response to my mid-flight note and its report lagged its own work. It later
+confirmed this and added the 94th test, which proves the default resolves on this machine
+without spawning anything, and a companion test that forces resolution to fail by emptying
+PATH in a subprocess and asserts the clear error. **No integration work was needed from me,
+contrary to your close-out item 3.**
 
 ---
 
