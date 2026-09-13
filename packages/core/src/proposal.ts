@@ -77,6 +77,22 @@ export interface Proposal {
 export const MAX_COMMANDS = 20;
 export const MAX_CREATE_TICKET_COMMANDS = 15;
 
+// Human-readable restatement of the five command shapes above, for the
+// Manager's own prompt (managerEnvelope.ts). Kept here, next to the types it
+// describes, rather than hand-duplicated in the envelope module, so a future
+// change to one of the five commands has one obvious place its prompt text
+// needs to change too.
+export const MANAGER_COMMAND_SCHEMA_DESCRIPTION = `A proposal is a JSON object: { "commands": [...], "rationale": "<string>" }.
+At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of them "create_ticket". Every command must be one of exactly these five shapes -- no others exist:
+
+- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "workspace_type"?: "NONE"|"DIRECTORY"|"GIT_WORKTREE", "model"?: "<string>", "max_budget_usd"?: <number> }
+- { "type": "add_dependency", "ticket_id": "<existing ticket id>", "depends_on_ticket_id": "<existing ticket id>" }
+- { "type": "change_priority", "ticket_id": "<existing ticket id>", "priority": <number> }
+- { "type": "request_user_decision", "question": "<string>", "context": "<string>" }
+- { "type": "update_project_brief", "brief": "<string>" }
+
+"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency" and "change_priority" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
+
 const COMMAND_TYPES = new Set<ManagerCommand['type']>([
   'create_ticket',
   'add_dependency',

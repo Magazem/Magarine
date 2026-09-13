@@ -46,7 +46,16 @@ export interface InboxItem {
 // type, which was the bug: `worker_failed_final`'s `budget_exceeded`
 // payload carries `failureClass`/`tally`/`overshoot`, no `summary` or
 // `message`, so it used to print only "worker_failed_final".
-function reasonFor(eventType: string, payload: unknown): string {
+// Exported for managerEnvelope.ts's "last five final failures with their
+// reasons" (batch-9-spec.md section 2): the same short, human-readable line
+// this file already extracts for the inbox is the right level of detail for
+// the Manager too -- a curated one-line reason, not the raw event payload
+// (which, for some failure shapes, carries the full WorkerResult: summary,
+// checks, artifacts). "no transcripts, no worker prompts" in the spec means
+// no full prompts/results/artifact listings reaching the envelope; a failed
+// ticket's own reported reason for failing is exactly the "reasons" the
+// spec asks the Manager's envelope to carry.
+export function reasonFor(eventType: string, payload: unknown): string {
   const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
 
   if (eventType === 'project_spend_cap_reached') {
