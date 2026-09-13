@@ -322,10 +322,16 @@ test('budget exceeded (HARD: the exact shape docs/strategy/batch-4-spec.md secti
 
   const { events, workspaceRoot } = await runOnce({ stdoutFile, exitCode: 0 });
   try {
-    const terminal = events.at(-1)!;
+    const terminal = events.at(-1)! as { type: string; retryable: boolean; message: string; failureClass?: string; stoppedBy?: string };
     assert.equal(terminal.type, 'failure');
-    assert.equal((terminal as { retryable: boolean }).retryable, false);
-    assert.match((terminal as { message: string }).message, /budget exceeded/);
+    assert.equal(terminal.retryable, false);
+    assert.match(terminal.message, /budget exceeded/);
+    // Batch 6: previously absent -- scheduler.ts's `event.failureClass ??
+    // 'adapter_failure'` fallback silently mis-recorded a real tool-side
+    // budget stop as a generic adapter failure. stoppedBy distinguishes
+    // this from the scheduler's own estimate-driven stop.
+    assert.equal(terminal.failureClass, 'budget_exceeded');
+    assert.equal(terminal.stoppedBy, 'tool_max_budget_usd');
   } finally {
     rmSync(workspaceRoot, { recursive: true, force: true });
     rmSync(syntheticDir, { recursive: true, force: true });

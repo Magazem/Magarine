@@ -629,9 +629,44 @@ test('a progress event whose cumulative costUsd crosses the ceiling stops the wo
   assert.deepEqual(finalEvent.payload, {
     retryable: false,
     failureClass: 'budget_exceeded',
+    stoppedBy: 'scheduler_estimate',
     tally: 1.5,
     ceiling: 1,
     overshoot: 0.5,
+  });
+});
+
+test("the tool's own budget stop (claudeCli.ts's classifyOutcome, surfaced as a failure event with failureClass 'budget_exceeded') records budget_exceeded on the run, not the generic adapter_failure default, and is distinguishable from the scheduler's own stop via stoppedBy", async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'tool reports its own budget stop' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, {
+    type: 'failure',
+    message: 'budget exceeded: subtype: error_max_budget_usd',
+    retryable: false,
+    failureClass: 'budget_exceeded',
+    stoppedBy: 'tool_max_budget_usd',
+  });
+  await s.done;
+
+  const run = getRun(db, s.runId)!;
+  assert.equal(run.status, 'failed');
+  assert.equal(run.failureClass, 'budget_exceeded', 'must not fall through to the generic adapter_failure default');
+
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  const finalEvent = events.find((e) => e.eventType === 'worker_failed_final')!;
+  assert.ok(finalEvent);
+  assert.deepEqual(finalEvent.payload, {
+    message: 'budget exceeded: subtype: error_max_budget_usd',
+    retryable: false,
+    failureClass: 'budget_exceeded',
+    stoppedBy: 'tool_max_budget_usd',
   });
 });
 

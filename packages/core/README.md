@@ -106,19 +106,29 @@ Three layers, from the hard control down to the least reliable:
    ceiling, and refuses to spawn if the total would exceed the cap. This is
    the only layer the daemon fully controls, because not spawning is a
    decision it never has to unwind.
-2. **Per-run ceiling (`ticket add --budget <usd>`, else the project
-   default).** The adapter passes this to the tool and the scheduler
-   independently tracks cumulative spend from the run's own progress
-   events, stopping the run once the tally crosses the ceiling.
-3. **The tool's own `--max-budget-usd` flag.** Kept as a courtesy to the
-   tool, never relied on as the daemon's actual guarantee — the daemon's own
-   tally in layer 2 is what actually stops a run.
+2. **The tool's own `--max-budget-usd` flag, which is the real
+   enforcement for this adapter.** It prices every category (input, output,
+   both cache-write TTLs, cache-read) from its own authoritative
+   between-turn accounting, so it is accurate where the daemon's own tally
+   below is not.
+3. **The daemon's own running tally (`ticket add --budget <usd>`, else the
+   project default), which is a live display plus the fallback for an
+   adapter with no flag of its own — not a second enforcement layer.** Batch
+   6 found that mid-run token counts on the stream undercount true output
+   token usage by an amount that varies with how output-heavy the run is (see
+   `pricing.ts`/`claudeCli.ts`), so this tally can under-report real spend
+   and must not be trusted to stop a run before the tool's own flag does.
+   Numbers shown from this tally (on the board, in the inbox) are labelled
+   "at least $x, live estimate"; a completed run's exact, tool-reported
+   figure is shown unlabelled once it lands.
 
-**Known limitation, stated plainly:** the daemon checks spending *between*
+**Known limitation, stated plainly:** the tool checks spending *between*
 turns, not during one, so a run can exceed its ceiling by up to the cost of
 one turn. On a trivial ticket, one turn is close to the floor price, so a
 very low ceiling can look "overshot" many times over without any runaway
-spend actually happening — the overshoot is bounded, not unbounded.
+spend actually happening — the overshoot is bounded, not unbounded. The
+daemon's own tally (layer 3) has no such bound on an output-heavy,
+cache-light run, which is exactly why it is not the enforcement layer.
 
 `board` shows the project's total spend against its cap at the top of its
 output, and each ticket's own spend on its row (see below).
@@ -431,3 +441,26 @@ therefore still calibrated against the single batch 4 fixture; confirmed
 HARD, though, that the stream it's calibrated against carries no
 per-message cost field that would make the constant unnecessary (see that
 constant's own header comment).
+
+Batch 6 (Role K, pricing and model control): `BLENDED_USD_PER_RAW_TOKEN` is
+removed; `pricing.ts`'s `priceUsage` prices per model and per token category
+instead, verified exact (0.000% off) against both fixtures at the
+*completed*-run level. The *mid-run* tally cannot be made accurate the same
+way: assistant-line usage undercounts true output tokens by an amount that
+varies with how output-heavy the run is (16.1% and 6.1% of true on the two
+fixtures this repo has), with no other signal on the stream carrying the
+difference. A character-count proxy for output length was tried, per the
+Strategist's ruling, and closed only 3.15%/9.37% of that gap on the two
+fixtures — dropped, not shipped, because it does not close "most" of the
+gap the ruling required. See "Budget and spend caps" above for the resulting
+division of labour: the tool's own `--max-budget-usd` flag is the real
+enforcement; the daemon's tally is a labelled lower-bound display. A real
+tool-side budget stop was found to be silently mis-recorded as the generic
+`adapter_failure` (never had a `failureClass` at all); fixed, and a
+`stoppedBy` field now distinguishes the tool's stop from the daemon's own.
+Not built: `claude-opus-5` and `claude-haiku-4-5-20251001`'s exact model-id
+strings are not verified against any real stream line (no fixture uses
+either model) — `pricing.ts`'s rate-table keys for them are the spec's
+literal names, and an unpinned/mismatched model falls back to the loud
+unknown-model rate rather than mispricing silently, but this is a real gap,
+not a closed one, until a real run confirms them.

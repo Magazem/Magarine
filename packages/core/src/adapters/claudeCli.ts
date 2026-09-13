@@ -229,7 +229,22 @@ function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown): WorkerEvent 
     case 'retryable':
       return { type: 'failure', message: outcome.reason, retryable: true, usage };
     case 'budget_exceeded':
-      return { type: 'failure', message: `budget exceeded: ${outcome.reason}`, retryable: false, usage };
+      // Batch 6: this outcome previously carried no failureClass at all, so
+      // scheduler.ts's `event.failureClass ?? 'adapter_failure'` fallback
+      // silently mis-recorded a real tool-side budget stop as a generic
+      // adapter failure -- found while adding `stoppedBy`, not something
+      // that was ever asserted correct by a test. `stoppedBy:
+      // 'tool_max_budget_usd'` distinguishes this from the scheduler's own
+      // estimate-driven stop (scheduler.ts's progress-event ceiling check),
+      // which sets `stoppedBy: 'scheduler_estimate'` on its own transition.
+      return {
+        type: 'failure',
+        message: `budget exceeded: ${outcome.reason}`,
+        retryable: false,
+        failureClass: 'budget_exceeded',
+        stoppedBy: 'tool_max_budget_usd',
+        usage,
+      };
     case 'adapter_unavailable':
       return {
         type: 'failure',

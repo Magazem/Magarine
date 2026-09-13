@@ -484,7 +484,7 @@ async function applyWorkerEventInner(
           ticketId: ticket.id,
           event: 'worker_failure',
           idempotencyKey: `worker_failure:${run.id}:budget_exceeded`,
-          payload: { retryable: false, failureClass: 'budget_exceeded', tally, ceiling: ctx.ceilingUsd, overshoot },
+          payload: { retryable: false, failureClass: 'budget_exceeded', stoppedBy: 'scheduler_estimate', tally, ceiling: ctx.ceilingUsd, overshoot },
         });
         return true;
       }
@@ -544,7 +544,7 @@ async function applyWorkerEventInner(
         ticketId: ticket.id,
         event: 'worker_failure',
         idempotencyKey: `worker_failure:${run.id}`,
-        payload: { message: event.message, retryable: event.retryable, failureClass: event.failureClass },
+        payload: { message: event.message, retryable: event.retryable, failureClass: event.failureClass, stoppedBy: event.stoppedBy },
       });
       return true;
     }

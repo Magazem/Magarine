@@ -191,6 +191,8 @@ export type WorkerEvent =
       retryable: boolean;
       /** Adapter-defined classification, e.g. 'adapter_unavailable' | 'budget_exceeded' | 'worker_reported_failure'. Absent means the adapter did not classify beyond retryable/non-retryable. */
       failureClass?: string;
+      /** Batch 6: for a `budget_exceeded` failureClass specifically, which guard actually stopped the run -- 'tool_max_budget_usd' (the tool's own `--max-budget-usd` flag, accurate, checked between turns) or 'scheduler_estimate' (the daemon's live tally, a known lower bound -- see pricing.ts/claudeCli.ts). Absent for every other failureClass. */
+      stoppedBy?: string;
       usage?: unknown;
     };
 
