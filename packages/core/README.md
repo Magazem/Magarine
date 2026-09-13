@@ -42,7 +42,9 @@ node src/cli.ts inbox --project <projectId> --json
 node src/cli.ts activity --project <projectId> --json
 node src/cli.ts decide --ticket <ticketId> --answer "use option A" --json
 node src/cli.ts retry --ticket <ticketId> --json
-node src/cli.ts resume --adapter <projectId> --json
+node src/cli.ts approve --ticket <ticketId> --json
+node src/cli.ts reject --ticket <ticketId> --reason "missing test coverage" --json
+node src/cli.ts resume --project <projectId> --json
 ```
 
 `ticket add` also takes `--workspace NONE|DIRECTORY` (default `NONE`), a
@@ -121,7 +123,7 @@ spend actually happening — the overshoot is bounded, not unbounded.
 `board` shows the project's total spend against its cap at the top of its
 output, and each ticket's own spend on its row (see below).
 
-### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `resume`
+### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `approve`, `reject`, `resume`
 
 - **`board --project <id>`**: the project's total spend against its
   `--max-spend` cap (or "no cap set" if none was given) on the first line,
@@ -131,10 +133,17 @@ output, and each ticket's own spend on its row (see below).
   not yet `DONE`. Ticket spend sums that ticket's own runs; project spend
   sums every ticket's spend in turn.
 - **`inbox --project <id>`**: events that need the user's attention and are
-  still unresolved — a `worker_needs_user_decision` while its ticket is
-  still `BLOCKED`, an exhausted retry while its ticket is still `FAILED`.
-  There is no separate "acknowledged" flag; an item stops appearing on its
-  own once `decide`/`retry` moves the ticket past that status.
+  still unresolved. Ticket-scoped: a `worker_needs_user_decision` while its
+  ticket is still `BLOCKED`, a `worker_needs_review` while its ticket is
+  still `REVIEW`, an exhausted retry or rejection (`worker_failed_final`,
+  reason on the line) while its ticket is still `FAILED`. Project-scoped:
+  `project_spend_cap_reached` (the run that would have exceeded the cap,
+  and by how much, on the line) while the project's pause is still in
+  effect. Id first on every line either way — ticket id for a ticket-scoped
+  item, project id for a project-scoped one. There is no separate
+  "acknowledged" flag; an item stops appearing on its own once
+  `decide`/`retry`/`approve`/`reject`/`resume` moves the ticket or project
+  past the state that put it there.
 - **`activity [--project <id> | --ticket <id>] [--all]`**: the event log,
   collapsed by default (internal bookkeeping events hidden); `--all` shows
   everything, including those.
@@ -148,11 +157,23 @@ output, and each ticket's own spend on its row (see below).
 - **`retry --ticket <id>`**: manually retries a `FAILED` ticket via the
   `manual_retry` transition, which moves it back to `READY` and raises its
   `maxAttempts` by one. Refuses if the ticket isn't `FAILED`.
-- **`resume --adapter <projectId>`**: clears a project's adapter pause (set
-  when an `adapter_unavailable` failure trips it). Refuses if the project
-  isn't paused, or doesn't exist.
+- **`approve --ticket <id>`**: moves a `REVIEW` ticket to `DONE` via
+  `review_approved`, then resolves the project's dependents' readiness —
+  the same as a worker-reported `worker_done` does — so a dependent blocked
+  only on this ticket becomes `READY` immediately, without a separate
+  `tick`. Refuses if the ticket isn't `REVIEW`.
+- **`reject --ticket <id> --reason "<text>"`**: returns a `REVIEW` ticket to
+  `READY` via `review_rejected`, consuming one attempt, same as an ordinary
+  worker failure. On the last attempt it exhausts to `FAILED`, persisted as
+  `worker_failed_final` (the same outcome type any other exhausted failure
+  reaches), reason attached, and reaches the inbox the same way. `--reason`
+  is required. Refuses if the ticket isn't `REVIEW`.
+- **`resume --project <id>`**: clears a project's pause, whatever caused it
+  — an `adapter_unavailable` failure or a `project_spend_cap_reached`
+  refusal both trip the same pause, so one command clears either. Refuses
+  if the project isn't paused, or doesn't exist.
 
-All six accept `--json`.
+All eight accept `--json`.
 
 ### Notification policy (`policy.ts`)
 
@@ -242,7 +263,7 @@ src/
   scheduler.ts  tick() / runUntilIdle()
   recovery.ts   restart recovery for orphaned "running" runs
   policy.ts     notification policy table: classify(eventType) -> visibility/requiresUser
-  commands/     board, inbox, activity, decide, retry, resume (cli.ts stays thin)
+  commands/     board, inbox, activity, decide, retry, approve, reject, resume (cli.ts stays thin)
   cli.ts        the `magarine` CLI
   *.test.ts     tests, colocated with the module they cover
 ```
@@ -267,9 +288,11 @@ silent, this implementation made the following calls:
   `WorkerResult`. This matches the doc's lifecycle diagram, which treats the
   two as different branches.
 - **Superseded in Batch 3: `BLOCKED` is no longer a dead end.** `decide`
-  resolves it via the `user_decision` transition. `REVIEW` still has no
-  outgoing edge or CLI command (no `approve`) — batch 3's scope was
-  `decide`/`retry` specifically, not a `REVIEW` -> `DONE` approval flow.
+  resolves it via the `user_decision` transition. (Batch 3's scope was
+  `decide`/`retry` specifically, not a `REVIEW` -> `DONE` approval flow.)
+- **Superseded in Batch 4: `REVIEW` is no longer a dead end either.**
+  `approve`/`reject` resolve it via `review_approved`/`review_rejected` —
+  see "Surfaces" above.
 - **A non-retryable adapter failure still goes through the retry-exhaustion
   path.** `WorkerEvent.failure` carries a `retryable` boolean, but this batch
   routes every failure (retryable or not) through the same
@@ -334,11 +357,20 @@ SOFT/UNKNOWN — no spike run ever forced it
 pattern match on the error message is inferred, not observed.
 
 Batch 3 (Role G, surfaces and policy): no `REVIEW` -> `DONE` approval
-command (see "Design decisions" above). `worker_retryable_failure`'s two
-document rows (ordinary retry vs. retry-limit-exhausted) collapse onto one
-policy row, since `classify(eventType)` has no way to tell them apart from
-the event type alone — this is a real, unresolved gap escalated to the
-Strategist, not a decision made here. `adapter_unavailable` and
-`workspace_preparation_failed` are documented in `policy.ts` but not wired
-through `classify` (they never go through `recordTicketTransition`, so
-there is no write site in this role's files to wire them into).
+command (see "Design decisions" above; closed in Batch 4, see below).
+`worker_retryable_failure`'s two document rows (ordinary retry vs.
+retry-limit-exhausted) collapse onto one policy row, since `classify(eventType)`
+has no way to tell them apart from the event type alone — this is a real,
+unresolved gap escalated to the Strategist, not a decision made here (closed
+in Batch 4: see `worker_failed_retryable`/`worker_failed_final` below).
+`adapter_unavailable` and `workspace_preparation_failed` are documented in
+`policy.ts` but not wired through `classify` (they never go through
+`recordTicketTransition`, so there is no write site in this role's files to
+wire them into).
+
+Batch 4 (Role I part 2, review flow): `approve`/`reject`/`resume --project`
+land the review flow this role's spec closed off in Batch 3, and the failure
+split named above (`worker_failed_retryable` vs. `worker_failed_final`,
+Role H) is what lets `worker_failed_final` reach the inbox with a reason on
+the line regardless of whether it came from an exhausted retry or an
+exhausted rejection.

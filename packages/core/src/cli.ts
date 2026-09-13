@@ -7,12 +7,23 @@ import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
 import { resolveExecutable } from './process.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { runUntilIdle, tick } from './scheduler.ts';
-import { addDependency, createProject, createTicket, getProject, getTicket, listTickets } from './store.ts';
+import {
+  addDependency,
+  createProject,
+  createTicket,
+  getProject,
+  getTicket,
+  listTickets,
+  setProjectMaxSpendUsd,
+  setTicketBudgetOverride,
+} from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
+import { approve, ApproveError } from './commands/approve.ts';
 import { buildActivity, formatActivity } from './commands/activity.ts';
 import { buildBoard, formatBoard } from './commands/board.ts';
 import { buildInbox, formatInbox } from './commands/inbox.ts';
 import { decide, DecideError } from './commands/decide.ts';
+import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { artifactsDir as resolveArtifactsDir, dbPath as resolveDbPath, resolveStateDir } from './paths.ts';
@@ -151,7 +162,9 @@ const FLAG_SPECS: Record<string, string[]> = {
   activity: ['project', 'ticket', 'all'],
   decide: ['ticket', 'answer'],
   retry: ['ticket'],
-  resume: ['adapter'],
+  approve: ['ticket'],
+  reject: ['ticket', 'reason'],
+  resume: ['project'],
 };
 
 // Builds the AgentAdapter for `tick`/`run --until-idle` from `--adapter`
@@ -231,27 +244,6 @@ function buildAdapter(db: Db, flags: Flags): AgentAdapter {
   throw new Error(`Unknown adapter: ${kind}`);
 }
 
-// `projects.max_spend_usd` (the project-level spend cap, batch-4-spec.md
-// section 1 ruling 1) is Role H's column to add, and may not exist yet in a
-// given database. Checked explicitly rather than letting `--max-spend` fail
-// as a raw sqlite "no such column" error -- a wrong flag, or a feature whose
-// backing column has not landed yet, must say so in plain words, never leak
-// a database error to the user.
-function hasMaxSpendColumn(db: Db): boolean {
-  const rows = db.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
-  return rows.some((r) => r.name === 'max_spend_usd');
-}
-
-function setMaxSpendUsd(db: Db, projectId: string, maxSpendUsd: number): void {
-  if (!hasMaxSpendColumn(db)) {
-    throw new Error(
-      '--max-spend requires the projects.max_spend_usd column, which does not exist in this database yet ' +
-        '(pending migration from the store/schema owner). Re-run once it has landed.'
-    );
-  }
-  db.prepare('UPDATE projects SET max_spend_usd = ? WHERE id = ?').run(maxSpendUsd, projectId);
-}
-
 function checkKnownFlags(key: string, flags: Flags): string | null {
   const known = FLAG_SPECS[key];
   if (!known) return null;
@@ -289,12 +281,10 @@ async function main(): Promise<void> {
       name: String(flags.name ?? positionals[1] ?? ''),
       description: typeof flags.description === 'string' ? flags.description : null,
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+      maxSpendUsd: typeof flags['max-spend'] === 'string' ? Number(flags['max-spend']) : null,
       brief: typeof flags.brief === 'string' ? flags.brief : null,
       workspaceRoot: typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : null,
     });
-    if (typeof flags['max-spend'] === 'string') {
-      setMaxSpendUsd(db, project.id, Number(flags['max-spend']));
-    }
     output(flags, project, `Created project ${project.id} (${project.name})`);
     return;
   }
@@ -309,9 +299,9 @@ async function main(): Promise<void> {
       return;
     }
     if (typeof flags['max-spend'] === 'string') {
-      setMaxSpendUsd(db, projectId, Number(flags['max-spend']));
+      setProjectMaxSpendUsd(db, projectId, Number(flags['max-spend']));
     }
-    output(flags, { id: projectId }, `Updated project ${projectId}`);
+    output(flags, getProject(db, projectId), `Updated project ${projectId}`);
     return;
   }
 
@@ -328,12 +318,12 @@ async function main(): Promise<void> {
       acceptanceCriteria: flagList(flags, 'acceptance'),
     });
 
-    // `max_budget_usd_override` (migration 0003_budget_fields) has no
-    // store.ts writer of its own yet, the same way `tick`'s budget lookup
-    // above reads `max_budget_usd` straight off `projects` rather than
-    // through store.ts — this file is the one place budget wiring touches.
+    // `setTicketBudgetOverride` enforces `MIN_BUDGET_USD` (store.ts) with a
+    // message naming the floor -- a raw `UPDATE` here would bypass it, which
+    // is exactly the hole batch 4's close-out found: `--budget 0.01` was
+    // silently accepted despite the twenty-five-cent floor.
     if (typeof flags.budget === 'string') {
-      db.prepare('UPDATE tickets SET max_budget_usd_override = ? WHERE id = ?').run(Number(flags.budget), ticket.id);
+      setTicketBudgetOverride(db, ticket.id, Number(flags.budget));
     }
 
     // Dependencies are attached, and only then is readiness resolved --
@@ -466,11 +456,43 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'approve') {
+    const db = openDb(dbPath(flags));
+    try {
+      const ticket = approve(db, { ticketId: String(flags.ticket ?? '') });
+      output(flags, ticket, `${ticket.id} approved, now ${ticket.status}`);
+    } catch (err) {
+      if (err instanceof ApproveError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
+  if (command === 'reject') {
+    const db = openDb(dbPath(flags));
+    try {
+      const ticket = reject(db, { ticketId: String(flags.ticket ?? ''), reason: String(flags.reason ?? '') });
+      output(flags, ticket, `${ticket.id} rejected, now ${ticket.status}`);
+    } catch (err) {
+      if (err instanceof RejectError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
   if (command === 'resume') {
     const db = openDb(dbPath(flags));
     try {
-      const project = resume(db, { projectId: String(flags.adapter ?? '') });
-      output(flags, project, `${project.id}'s adapter resumed`);
+      const project = resume(db, { projectId: String(flags.project ?? '') });
+      output(flags, project, `${project.id} resumed`);
     } catch (err) {
       if (err instanceof ResumeError) {
         process.stderr.write(`${err.message}\n`);
@@ -483,7 +505,7 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|status|board|inbox|activity|decide|retry|resume> [--flags] [--json]\n'
+    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }

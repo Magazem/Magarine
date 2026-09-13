@@ -1,5 +1,5 @@
 import type { Db } from '../db/index.ts';
-import { getDependencies, getTicket, listTickets } from '../store.ts';
+import { getDependencies, getProject, getTicket, listTickets } from '../store.ts';
 import type { Ticket, TicketStatus } from '../types.ts';
 
 // `board`: every ticket in a project, its attempts, its cost, and what is
@@ -18,7 +18,7 @@ export interface BoardTicket {
 export interface BoardResult {
   /** Sum of `costUsd` over every ticket in the project. */
   projectSpendUsd: number;
-  /** `projects.max_spend_usd`, or null when no cap is set (or the column does not exist yet). */
+  /** `projects.max_spend_usd`, or null when no cap is set. */
   projectMaxSpendUsd: number | null;
   tickets: BoardTicket[];
 }
@@ -75,20 +75,6 @@ function projectSpendUsd(db: Db, tickets: Ticket[]): number {
   return tickets.reduce((total, t) => total + ticketCostUsd(db, t.id), 0);
 }
 
-// `projects.max_spend_usd` (the project-level spend cap, ruling 1 layer 1)
-// is Role H's column to add and may not exist in a given database yet. A
-// missing column, or no cap set, both read as "no cap" here rather than
-// throwing -- the board must never crash because an optional feature's
-// column has not landed.
-function projectMaxSpendUsd(db: Db, projectId: string): number | null {
-  const columns = db.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
-  if (!columns.some((c) => c.name === 'max_spend_usd')) return null;
-  const row = db.prepare('SELECT max_spend_usd FROM projects WHERE id = ?').get(projectId) as
-    | { max_spend_usd: number | null }
-    | undefined;
-  return row?.max_spend_usd ?? null;
-}
-
 export function buildBoard(db: Db, projectId: string): BoardResult {
   const tickets = listTickets(db, projectId)
     .slice()
@@ -96,7 +82,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
 
   return {
     projectSpendUsd: projectSpendUsd(db, tickets),
-    projectMaxSpendUsd: projectMaxSpendUsd(db, projectId),
+    projectMaxSpendUsd: getProject(db, projectId)?.maxSpendUsd ?? null,
     tickets: tickets.map((t) => ({
       id: t.id,
       title: t.title,
