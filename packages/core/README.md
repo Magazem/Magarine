@@ -66,12 +66,70 @@ into every worker's `TicketEnvelope.projectBrief`) and `--workspace-root
 project, required once any ticket in it uses `--workspace DIRECTORY`).
 Both default to `null`/unset if omitted.
 
+`project create --max-spend <usd>` and `project set --project <id> --max-spend
+<usd>` set the project's spend cap (see "Budget and spend caps" below).
+`project set` also refuses (clean message, no stack trace) if the project id
+doesn't exist.
+
+### State directory
+
+Nothing is written under the current working directory unless the user asked
+for it. Every subcommand resolves its state directory in this order:
+
+1. `--state-dir <dir>`, if given.
+2. Else the `MAGARINE_HOME` environment variable, if set.
+3. Else `<home directory>/.magarine/`.
+
+The database lives at `<state dir>/magarine.db`, worker artefacts at
+`<state dir>/artifacts/`. `--db <path>` remains a separate, explicit
+override: if given, it is used verbatim and the state directory is not
+consulted for the database path at all (though `--state-dir`/`MAGARINE_HOME`
+still govern the artefacts directory in that case). This logic lives in one
+place, `paths.ts`, and both `cli.ts` and `scheduler.ts`'s `artifactsDir`
+default go through it.
+
+This matters beyond tidiness: a daemon defaulting to the working directory
+means real worker output can land inside whatever project's repository
+happened to be checked out where the daemon was launched from — exactly what
+an earlier close-out on this project found had happened with the artefact
+store's old `<cwd>/.magarine/artifacts` default.
+
+### Budget and spend caps
+
+Three layers, from the hard control down to the least reliable:
+
+1. **Project spend cap (`project create --max-spend <usd>` /
+   `project set --max-spend <usd>`).** Before spawning a run, the daemon
+   sums recorded spend across the project's tickets, adds the new run's
+   ceiling, and refuses to spawn if the total would exceed the cap. This is
+   the only layer the daemon fully controls, because not spawning is a
+   decision it never has to unwind.
+2. **Per-run ceiling (`ticket add --budget <usd>`, else the project
+   default).** The adapter passes this to the tool and the scheduler
+   independently tracks cumulative spend from the run's own progress
+   events, stopping the run once the tally crosses the ceiling.
+3. **The tool's own `--max-budget-usd` flag.** Kept as a courtesy to the
+   tool, never relied on as the daemon's actual guarantee — the daemon's own
+   tally in layer 2 is what actually stops a run.
+
+**Known limitation, stated plainly:** the daemon checks spending *between*
+turns, not during one, so a run can exceed its ceiling by up to the cost of
+one turn. On a trivial ticket, one turn is close to the floor price, so a
+very low ceiling can look "overshot" many times over without any runaway
+spend actually happening — the overshoot is bounded, not unbounded.
+
+`board` shows the project's total spend against its cap at the top of its
+output, and each ticket's own spend on its row (see below).
+
 ### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `resume`
 
-- **`board --project <id>`**: every ticket in the project, one line each,
-  ticket id first: id, status, title, attempts (`n/max`), cost (sum of
-  `total_cost_usd` across the ticket's runs), and, if any, which of its
-  blocking dependencies are not yet `DONE`.
+- **`board --project <id>`**: the project's total spend against its
+  `--max-spend` cap (or "no cap set" if none was given) on the first line,
+  then every ticket in the project, one line each, ticket id first: id,
+  status, title, attempts (`n/max`), cost (sum of `total_cost_usd` across
+  the ticket's runs), and, if any, which of its blocking dependencies are
+  not yet `DONE`. Ticket spend sums that ticket's own runs; project spend
+  sums every ticket's spend in turn.
 - **`inbox --project <id>`**: events that need the user's attention and are
   still unresolved — a `worker_needs_user_decision` while its ticket is
   still `BLOCKED`, an exhausted retry while its ticket is still `FAILED`.
@@ -130,10 +188,10 @@ through `recordTicketTransition`) two more event types scheduler.ts emits
 directly: `adapter_unavailable` and `workspace_preparation_failed`, both
 `inbox`/`requiresUser`.
 
-Every command accepts `--json` for machine-readable output and `--db <path>`
-to point at a specific SQLite file (default: `.magarine/magarine.db` under
-the current directory). `tick` runs one scheduling pass; `run --until-idle`
-loops `tick` until nothing new starts.
+Every command accepts `--json` for machine-readable output, plus `--db
+<path>` and `--state-dir <dir>` -- see "State directory" below for how the
+database and artefact paths are actually resolved. `tick` runs one
+scheduling pass; `run --until-idle` loops `tick` until nothing new starts.
 
 `tick`/`run --until-idle` accept `--adapter fake|claude` (default `fake`).
 `fake` uses a fresh, unscripted `FakeAdapter` per invocation, so every ticket

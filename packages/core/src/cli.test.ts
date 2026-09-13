@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,8 +8,11 @@ import { spawnManaged } from './process.ts';
 
 const cliPath = fileURLToPath(new URL('./cli.ts', import.meta.url));
 
-async function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args] });
+async function run(
+  args: string[],
+  opts: { env?: NodeJS.ProcessEnv; cwd?: string } = {}
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], env: opts.env, cwd: opts.cwd });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));
@@ -175,5 +178,77 @@ test('an unknown flag is reported by name instead of failing deep inside a DB co
     assert.match(res.stderr, /--depends-on/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// State directory resolution (paths.ts), driven through the real CLI
+// entry point rather than by calling resolveStateDir() directly, per
+// batch-4-spec.md section 1 ruling 5: nothing is written under the current
+// working directory unless the user asked for it.
+
+test('--state-dir places the database under <state-dir>/magarine.db, not the current working directory', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'magarine-statedir-'));
+  try {
+    const res = await run(['project', 'create', '--name', 'P', '--state-dir', stateDir, '--json']);
+    assert.equal(res.code, 0, res.stderr);
+    assert.ok(existsSync(join(stateDir, 'magarine.db')), 'db file must be created under --state-dir');
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('MAGARINE_HOME places the database under <MAGARINE_HOME>/magarine.db when --state-dir and --db are both absent', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'magarine-magarinehome-'));
+  try {
+    const res = await run(['project', 'create', '--name', 'P', '--json'], {
+      env: { ...process.env, MAGARINE_HOME: home },
+    });
+    assert.equal(res.code, 0, res.stderr);
+    assert.ok(existsSync(join(home, 'magarine.db')), 'db file must be created under MAGARINE_HOME');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('--db still overrides --state-dir as an explicit path', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'magarine-statedir-override-'));
+  const dbFile = join(stateDir, 'custom.db');
+  try {
+    const res = await run(['project', 'create', '--name', 'P', '--state-dir', stateDir, '--db', dbFile, '--json']);
+    assert.equal(res.code, 0, res.stderr);
+    assert.ok(existsSync(dbFile), '--db path must be used verbatim');
+    assert.ok(
+      !existsSync(join(stateDir, 'magarine.db')),
+      '--db must not also produce a state-dir-relative magarine.db'
+    );
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('with no --state-dir, no MAGARINE_HOME, and no --db, the daemon falls back to <home>/.magarine and never writes under the process cwd', async () => {
+  const fakeHome = mkdtempSync(join(tmpdir(), 'magarine-fakehome-'));
+  const scratchCwd = mkdtempSync(join(tmpdir(), 'magarine-scratchcwd-'));
+  try {
+    const res = await run(['project', 'create', '--name', 'P', '--json'], {
+      cwd: scratchCwd,
+      // node:os.homedir() reads USERPROFILE on Windows, HOME on POSIX;
+      // overriding both makes the fallback path deterministic regardless
+      // of the host machine actually running this test. MAGARINE_HOME is
+      // explicitly cleared so a value set on the host doesn't leak in.
+      env: { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome, MAGARINE_HOME: '' },
+    });
+    assert.equal(res.code, 0, res.stderr);
+    assert.ok(
+      existsSync(join(fakeHome, '.magarine', 'magarine.db')),
+      'db file must land under <home>/.magarine/magarine.db'
+    );
+    assert.ok(
+      !existsSync(join(scratchCwd, '.magarine')),
+      'nothing may be written under the current working directory unless the user asked for it'
+    );
+  } finally {
+    rmSync(fakeHome, { recursive: true, force: true });
+    rmSync(scratchCwd, { recursive: true, force: true });
   }
 });

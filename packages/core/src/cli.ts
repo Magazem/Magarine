@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
 import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
 import { resolveExecutable } from './process.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { runUntilIdle, tick } from './scheduler.ts';
-import { addDependency, createProject, createTicket, getTicket, listTickets } from './store.ts';
+import { addDependency, createProject, createTicket, getProject, getTicket, listTickets } from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
 import { buildActivity, formatActivity } from './commands/activity.ts';
 import { buildBoard, formatBoard } from './commands/board.ts';
@@ -14,12 +15,17 @@ import { buildInbox, formatInbox } from './commands/inbox.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
+import { artifactsDir as resolveArtifactsDir, dbPath as resolveDbPath, resolveStateDir } from './paths.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
-// `--db` (default: `.magarine/magarine.db` under the current directory,
-// built with node:path so it works unchanged on Windows and Linux), does
-// one thing, and prints either a human line or JSON with `--json`.
+// `--db` (an explicit override) or, failing that, at
+// `<state dir>/magarine.db` -- see paths.ts for how the state directory
+// itself is resolved (`--state-dir`, else `MAGARINE_HOME`, else
+// `<home>/.magarine/`). Nothing is written under the current working
+// directory unless the user asked for it with `--state-dir` or `--db`. Does
+// one thing per subcommand, and prints either a human line or JSON with
+// `--json`.
 
 interface Flags {
   [key: string]: string | boolean | string[];
@@ -67,11 +73,30 @@ function flagList(flags: Flags, key: string): string[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function dbPath(flags: Flags): string {
-  return typeof flags.db === 'string' ? flags.db : join(process.cwd(), '.magarine', 'magarine.db');
+function stateDir(flags: Flags): string {
+  return resolveStateDir({
+    stateDirFlag: typeof flags['state-dir'] === 'string' ? flags['state-dir'] : undefined,
+  });
 }
 
-const COMMON_FLAGS = ['db', 'json'];
+// `openDb` does not create the directories leading up to its path -- it
+// never had to before, since every existing caller pointed it at a file
+// inside a directory that already existed. Once the default moved to
+// `<state dir>/magarine.db`, that stopped being true: a fresh
+// `~/.magarine/` (or a fresh `--state-dir`) may not exist yet, so this
+// creates it up front rather than letting `DatabaseSync` fail with a raw
+// "unable to open database file".
+function dbPath(flags: Flags): string {
+  const path = typeof flags.db === 'string' ? flags.db : resolveDbPath(stateDir(flags));
+  mkdirSync(dirname(path), { recursive: true });
+  return path;
+}
+
+function artifactsDir(flags: Flags): string {
+  return resolveArtifactsDir(stateDir(flags));
+}
+
+const COMMON_FLAGS = ['db', 'json', 'state-dir'];
 
 // Every flag each subcommand accepts, beyond `--db`/`--json`. An unknown
 // flag is silently dropped by `parseFlags` (it just never lands in `flags`)
@@ -85,7 +110,12 @@ const FLAG_SPECS: Record<string, string[]> = {
   // `projects.workspace_root`, required once any ticket in the project uses
   // `--workspace DIRECTORY` (one shared directory per project, not per
   // ticket -- see workspace.ts).
-  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root'],
+  // `--max-spend` sets `projects.max_spend_usd` (batch-4-spec.md section 1
+  // ruling 1's project-level spend cap, layer 1 of three: refuses to spawn a
+  // run once the project's total recorded spend plus the run's ceiling
+  // would exceed it). That column is Role H's to add; see `hasMaxSpendColumn`.
+  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root', 'max-spend'],
+  'project set': ['project', 'max-spend'],
   'ticket add': [
     'project',
     'title',
@@ -201,6 +231,27 @@ function buildAdapter(db: Db, flags: Flags): AgentAdapter {
   throw new Error(`Unknown adapter: ${kind}`);
 }
 
+// `projects.max_spend_usd` (the project-level spend cap, batch-4-spec.md
+// section 1 ruling 1) is Role H's column to add, and may not exist yet in a
+// given database. Checked explicitly rather than letting `--max-spend` fail
+// as a raw sqlite "no such column" error -- a wrong flag, or a feature whose
+// backing column has not landed yet, must say so in plain words, never leak
+// a database error to the user.
+function hasMaxSpendColumn(db: Db): boolean {
+  const rows = db.prepare('PRAGMA table_info(projects)').all() as Array<{ name: string }>;
+  return rows.some((r) => r.name === 'max_spend_usd');
+}
+
+function setMaxSpendUsd(db: Db, projectId: string, maxSpendUsd: number): void {
+  if (!hasMaxSpendColumn(db)) {
+    throw new Error(
+      '--max-spend requires the projects.max_spend_usd column, which does not exist in this database yet ' +
+        '(pending migration from the store/schema owner). Re-run once it has landed.'
+    );
+  }
+  db.prepare('UPDATE projects SET max_spend_usd = ? WHERE id = ?').run(maxSpendUsd, projectId);
+}
+
 function checkKnownFlags(key: string, flags: Flags): string | null {
   const known = FLAG_SPECS[key];
   if (!known) return null;
@@ -241,7 +292,26 @@ async function main(): Promise<void> {
       brief: typeof flags.brief === 'string' ? flags.brief : null,
       workspaceRoot: typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : null,
     });
+    if (typeof flags['max-spend'] === 'string') {
+      setMaxSpendUsd(db, project.id, Number(flags['max-spend']));
+    }
     output(flags, project, `Created project ${project.id} (${project.name})`);
+    return;
+  }
+
+  if (command === 'project' && subcommand === 'set') {
+    const db = openDb(dbPath(flags));
+    const projectId = String(flags.project ?? positionals[1] ?? '');
+    const project = getProject(db, projectId);
+    if (!project) {
+      process.stderr.write(`No such project: ${projectId}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    if (typeof flags['max-spend'] === 'string') {
+      setMaxSpendUsd(db, projectId, Number(flags['max-spend']));
+    }
+    output(flags, { id: projectId }, `Updated project ${projectId}`);
     return;
   }
 
@@ -306,6 +376,7 @@ async function main(): Promise<void> {
       projectId: String(flags.project ?? ''),
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
+      artifactsDir: artifactsDir(flags),
     });
     output(flags, result, `Started ${result.started.length} run(s).`);
     return;
@@ -321,6 +392,7 @@ async function main(): Promise<void> {
       projectId: String(flags.project ?? ''),
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
+      artifactsDir: artifactsDir(flags),
     });
     output(flags, { idle: true }, 'Idle: no more runnable tickets.');
     return;
@@ -411,7 +483,7 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    'Usage: magarine <project create|ticket add|dep add|tick|run --until-idle|status|board|inbox|activity|decide|retry|resume> [--flags] [--json]\n'
+    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|status|board|inbox|activity|decide|retry|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }

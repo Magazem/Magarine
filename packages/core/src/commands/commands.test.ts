@@ -136,6 +136,61 @@ test('board shows attempts, cost, and blocking dependencies through the real CLI
   });
 });
 
+test('board shows project spend against its cap at the top, above the ticket rows', async () => {
+  await withTempDb('magarine-board-spend-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'NoCap', '--json', '--db', dbFile])).stdout
+    );
+    const res = await run(['board', '--project', project.id, '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    const lines = res.stdout.split('\n');
+    assert.match(lines[0], /^Project spend: \$\d+\.\d{2} \(/, 'the spend line must be the first line of the board');
+    assert.match(lines[0], /no cap set/, 'a project with no --max-spend has no cap, not a fabricated one');
+
+    const jsonRes = JSON.parse((await run(['board', '--project', project.id, '--json', '--db', dbFile])).stdout) as {
+      projectSpendUsd: number;
+      projectMaxSpendUsd: number | null;
+    };
+    assert.equal(jsonRes.projectSpendUsd, 0);
+    assert.equal(jsonRes.projectMaxSpendUsd, null);
+  });
+});
+
+// projects.max_spend_usd (batch-4-spec.md section 1 ruling 1's project-level
+// spend cap) is the other engineer's column to add and may not exist in a
+// given database yet -- this test is written to pass either way, loudly,
+// rather than silently degrading to "does nothing" if the graceful-failure
+// path is ever hit by mistake once the column has actually landed.
+test('project create --max-spend and project set --max-spend either take effect end-to-end, or fail with a message naming the missing column', async () => {
+  await withTempDb('magarine-maxspend-', async (dbFile) => {
+    const createRes = await run(['project', 'create', '--name', 'Capped', '--max-spend', '5', '--json', '--db', dbFile]);
+
+    if (createRes.code === 0) {
+      const project = JSON.parse(createRes.stdout);
+      const boardRes = await run(['board', '--project', project.id, '--db', dbFile]);
+      assert.match(boardRes.stdout, /cap \$5\.00/, 'board header must reflect the cap set at creation');
+
+      const setRes = await run(['project', 'set', '--project', project.id, '--max-spend', '9', '--db', dbFile]);
+      assert.equal(setRes.code, 0, setRes.stderr);
+      const boardRes2 = await run(['board', '--project', project.id, '--db', dbFile]);
+      assert.match(boardRes2.stdout, /cap \$9\.00/, 'project set --max-spend must update the cap the board shows');
+    } else {
+      assert.notEqual(createRes.code, 0);
+      assert.match(createRes.stderr, /max_spend_usd/, 'a missing-column failure must name the column plainly');
+      assert.doesNotMatch(createRes.stderr, /\.ts:\d+/, 'must not leak a raw stack trace to the user');
+    }
+  });
+});
+
+test('project set on an unknown project id fails by name, not with a silent no-op or a DB error', async () => {
+  await withTempDb('magarine-projectset-unknown-', async (dbFile) => {
+    await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);
+    const res = await run(['project', 'set', '--project', 'proj_doesnotexist', '--max-spend', '5', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /No such project/);
+  });
+});
+
 test('inbox shows a needs-user-decision item before decide, and not after', async () => {
   await withTempDb('magarine-inbox-', async (dbFile) => {
     const project = JSON.parse(
