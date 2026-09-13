@@ -25,10 +25,18 @@ import type {
 // apply once you spawn the real .exe; see batch-2-spec.md section 0).
 //
 // The not-logged-in/auth gap this comment used to describe (batch 2: no way
-// to cancel without consuming an attempt or pause the adapter) was closed in
-// batch 3 -- scheduler.ts's `cancelTicketRun`/`pauseProjectAdapter` handle a
-// non-retryable `failure` with `failureClass: 'adapter_unavailable'` the way
-// this adapter classifies it (see `classifyOutcome`). Batch 4 closes the
+// to cancel without consuming an attempt or pause the adapter) is closed as
+// of batch 10, and is proven by workerSpawnedPipeline.test.ts's
+// 'adapter_unavailable' test -- the recorded not-logged-in fixture driven
+// through this real adapter and a real scheduler tick.
+//
+// An earlier version of this comment claimed the gap was closed in batch 3
+// and named no test. It was not closed. `outcomeToEvent` never set
+// `failureClass`, so scheduler.ts's guard never matched and the intended
+// path was unreachable from the real adapter for seven batches, while this
+// comment asserted otherwise. Hence the rule that now applies project-wide:
+// a comment claiming a path is handled elsewhere must name the test that
+// proves it, or it is deleted. Batch 4 closes the
 // related gap for every OTHER failure: the scheduler now asks for one
 // `worker_failure` transition carrying `retryable`, and stateMachine.ts
 // decides READY vs FAILED from that flag rather than treating every failure
@@ -304,6 +312,18 @@ function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown, unknownModel:
         type: 'failure',
         message: `ADAPTER_UNAVAILABLE: ${outcome.reason}`,
         retryable: false,
+        // Load-bearing, not decorative. scheduler.ts's failure branch matches
+        // on `retryable === false && failureClass === 'adapter_unavailable'`
+        // before it will cancel the run without consuming an attempt, pause
+        // the project's adapter and file the inbox notice. Omit this field
+        // and a genuinely not-logged-in worker silently takes the generic
+        // path instead: FAILED, an attempt burned, no pause, no inbox item.
+        // That is what happened from batch 3 until batch 10, because only
+        // FakeAdapter ever reached this path and the fake sets the field by
+        // hand. Proven by workerSpawnedPipeline.test.ts's 'adapter_unavailable'
+        // test, which drives the recorded not-logged-in fixture through the
+        // real adapter and a real scheduler tick.
+        failureClass: 'adapter_unavailable',
         usage,
         unknownModel,
       };

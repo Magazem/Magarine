@@ -417,7 +417,7 @@ test('timeout: a real spawned process that hangs past the wall-clock timeout is 
 // inbox event) once claudeCli.ts's outcomeToEvent sets `failureClass:
 // 'adapter_unavailable'` on this outcome, the same way it already sets
 // `failureClass: 'budget_exceeded'` on its sibling case just above it.
-test('adapter_unavailable: KNOWN BUG -- a real not-logged-in worker does NOT reach the dedicated pause/no-attempt-consumed path, because claudeCli.ts never sets failureClass on this outcome', async () => {
+test('adapter_unavailable: a real not-logged-in worker returns the ticket to READY without consuming an attempt, pauses the project adapter, and files a dedicated inbox event', async () => {
   const { db, projectId, ticketId } = setUp();
   const adapter = buildAdapter({ stdoutFile: notLoggedInStdout, exitCode: 0 });
 
@@ -425,23 +425,29 @@ test('adapter_unavailable: KNOWN BUG -- a real not-logged-in worker does NOT rea
   await Promise.all(result.started.map((s) => s.done));
 
   const ticket = getTicket(db, ticketId)!;
-  // Intended (per scheduler.ts's own adapter_unavailable branch): READY,
-  // attemptCount 0, paused, dedicated inbox event. Actual, locked in here:
-  assert.equal(ticket.status, 'FAILED', 'BUG: should be READY (run_cancelled) -- see comment above');
-  assert.equal(ticket.attemptCount, 1, 'BUG: should be 0 (no attempt consumed) -- see comment above');
-  assert.equal(isProjectAdapterPaused(db, projectId), false, 'BUG: should be true -- see comment above');
+  // A missing tool login is the user's problem to fix, not the ticket's
+  // fault, so none of it counts against the ticket: it goes back to READY
+  // with its attempt budget untouched, the project's adapter is paused so
+  // the daemon stops throwing more workers at a login that is not there,
+  // and the owner is told in the inbox rather than left to infer it from a
+  // FAILED ticket.
+  assert.equal(ticket.status, 'READY');
+  assert.equal(ticket.attemptCount, 0, "a missing login must not consume the ticket's attempt budget");
+  assert.equal(isProjectAdapterPaused(db, projectId), true);
   const inboxEvent = listEventsForEntity(db, 'ticket', ticketId).find((e) => e.eventType === 'adapter_unavailable');
-  assert.equal(inboxEvent, undefined, 'BUG: should find a dedicated adapter_unavailable inbox event -- see comment above');
+  assert.ok(inboxEvent, 'the owner must be told in the inbox, not left to infer it from a FAILED ticket');
   const failedFinal = listEventsForEntity(db, 'ticket', ticketId).find((e) => e.eventType === 'worker_failed_final');
-  assert.ok(failedFinal, 'falls through to the generic worker_failed_final path instead');
+  assert.equal(failedFinal, undefined, 'must not fall through to the generic failure path');
 
-  // MUTATION CHECK: this test's whole point is that scheduler.ts's guard
-  // does not match the real event. To confirm it is real (not a mistake in
-  // my own test setup), I temporarily added `failureClass:
-  // 'adapter_unavailable'` to claudeCli.ts's outcomeToEvent 'adapter_unavailable'
-  // case (the fix this bug needs) and reran: the ticket landed READY with
-  // attemptCount 0, isProjectAdapterPaused true, and a real inbox event --
-  // i.e. every assertion above flipped, proving this test is actually
-  // sensitive to the guard/emission mismatch and not vacuously true. Reverted
-  // immediately after (claudeCli.ts is not a file this role may edit).
+  // This test named a live bug when it was written in batch 10: claudeCli.ts's
+  // outcomeToEvent did not set failureClass on this outcome, so scheduler.ts's
+  // guard never matched and every assertion above was inverted -- FAILED, one
+  // attempt burned, no pause, no inbox event. The one-line fix landed in the
+  // same batch and this test is what proves it.
+  //
+  // MASKED: the LIVE not-logged-in path is not exercised here. This drives a
+  // RECORDED fixture of a real not-logged-in run. Logging the owner's own
+  // `claude` tool out to produce the real thing is not ours to do, so the
+  // classification and the whole downstream path are proven, and the act of a
+  // real tool reporting the auth failure today is not re-proven.
 });
