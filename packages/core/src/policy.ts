@@ -42,17 +42,29 @@ const POLICY: Record<string, EventPolicy> = {
   // "Internal worker question" (Internal: Yes, Activity: Yes, Inbox: No).
   worker_question: { visibility: 'activity', requiresUser: false },
 
-  // "Worker retry" (Internal: Yes, Activity: Yes, Inbox: No). NOTE: the doc
-  // also has a separate "Retry limit exhausted" row (Inbox: Yes) but this
-  // codebase's scheduler emits the *same* event type,
-  // `worker_retryable_failure`, whether the ticket is retried or exhausted
-  // to FAILED (the outcome is only visible in the ticket's resulting
-  // status, not in the event type). `classify(eventType)` takes no other
-  // context, so it cannot distinguish the two cases; this row picks the
-  // more common case (an ordinary retry). See the completeness test's
-  // comment and this module's file header in the delivery report for the
-  // same caveat spelled out for the Orchestrator/Strategist.
-  worker_retryable_failure: { visibility: 'activity', requiresUser: false },
+  // Batch 4 (docs/strategy/batch-4-spec.md section 1 ruling 4) replaces the
+  // old single `worker_retryable_failure` event (which could not tell an
+  // ordinary retry from an exhausted one) with a verb the scheduler asks
+  // for, `worker_failure`, and two concrete outcome types that
+  // stateMachine.ts actually persists and classifies:
+  //
+  // "Worker retry" (Internal: Yes, Activity: Yes, Inbox: No) -- the ticket
+  // returned to READY with attempts remaining.
+  worker_failed_retryable: { visibility: 'activity', requiresUser: false },
+  // "Retry limit exhausted" (Inbox: Yes) -- the ticket landed in FAILED,
+  // whether by exhaustion or because the failure was not retryable at all
+  // (e.g. `budget_exceeded`). Now a real, distinct event type, so this row
+  // is no longer a compromise between two cases the way its predecessor was.
+  worker_failed_final: { visibility: 'inbox', requiresUser: true },
+  // `worker_failure` itself is never the event_type actually persisted --
+  // stateMachine.ts's `recordTicketTransition` always classifies the
+  // concrete outcome type above instead (see its comment). This row exists
+  // purely because `worker_failure` remains a member of stateMachine.ts's
+  // `TransitionEvent` union (it is the verb scheduler.ts asks for), and
+  // policy.test.ts's completeness check parses that union verbatim and
+  // demands a row for every member. Picks the more common case (an ordinary
+  // retry), same convention its predecessor used for the same reason.
+  worker_failure: { visibility: 'activity', requiresUser: false },
 
   // "Worker completed", the no-review-needed half (Internal: No, Activity:
   // Yes, Inbox: No, since review was not needed).
@@ -151,6 +163,32 @@ const POLICY: Record<string, EventPolicy> = {
   // misconfiguration only the user can fix, so it needs to reach them the
   // same way `adapter_unavailable` does, not silently stall the ticket.
   workspace_preparation_failed: { visibility: 'inbox', requiresUser: true },
+
+  // --- Batch 4: review flow and project spend cap ---
+  // docs/strategy/batch-4-spec.md section 2's cross-role contract. Not in
+  // the architecture document (review approval didn't exist yet); doc-silent
+  // default judgement, matching the treatment `worker_done`/
+  // `worker_failed_retryable` get: the ticket moved on, nothing needs a
+  // user's attention beyond what's already visible on the board.
+  review_approved: { visibility: 'activity', requiresUser: false },
+  // The non-exhausted case only -- exhaustion is persisted as
+  // `worker_failed_final` instead (see stateMachine.ts) and already has its
+  // own inbox row above.
+  review_rejected: { visibility: 'activity', requiresUser: false },
+  // `project_resume` clears a project's pause (whatever its cause) and is
+  // never a ticket-status transition, so it is not a `TransitionEvent`
+  // member and this row is not exercised by the completeness test -- same
+  // shape as `adapter_unavailable`/`workspace_preparation_failed` above.
+  // Real and used: store.ts's `resumeProject` classifies through this row.
+  // User-initiated, so silent by default (activity, not inbox), matching
+  // `manual_retry`'s reasoning.
+  project_resume: { visibility: 'activity', requiresUser: false },
+  // Documentation-only, same shape as `adapter_unavailable`: fired by
+  // scheduler.ts directly (entityType 'project', not 'ticket') when a
+  // project's spend cap would be exceeded by the next spawn. The daemon
+  // refused to spawn and paused the project, so this needs the owner's
+  // attention the same way an adapter pause does.
+  project_spend_cap_reached: { visibility: 'inbox', requiresUser: true },
 };
 
 export function classify(eventType: string): EventPolicy {

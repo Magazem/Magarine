@@ -98,11 +98,21 @@ export const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    // Per-project spend ceiling (default $2.00, per batch-2-spec.md's floor
-    // price ruling) and an optional per-ticket override. SQLite's ALTER
-    // TABLE ADD COLUMN ... DEFAULT applies the default to existing rows too,
-    // so projects created before this migration get max_budget_usd = 2.0
-    // rather than NULL.
+    // `projects.max_budget_usd`: the ceiling for ONE RUN (default $2.00,
+    // per batch-2-spec.md's floor price ruling), and
+    // `tickets.max_budget_usd_override`: an optional override of that same
+    // per-run ceiling for one ticket. SQLite's ALTER TABLE ADD COLUMN ...
+    // DEFAULT applies the default to existing rows too, so projects created
+    // before this migration get max_budget_usd = 2.0 rather than NULL.
+    //
+    // DELIBERATELY NOT THE SAME THING as `projects.max_spend_usd` added in
+    // 0005_project_spend_cap below, despite the one-word difference in the
+    // name: max_budget_usd bounds what a single run may cost; max_spend_usd
+    // bounds the CUMULATIVE total across every run the project will ever
+    // spend. A project can have max_budget_usd = 2.00 (no single run may
+    // exceed $2) and max_spend_usd = 50.00 (the project stops spawning once
+    // its running total would exceed $50) at the same time -- they answer
+    // different questions and neither implies the other.
     id: '0003_budget_fields',
     sql: `
       ALTER TABLE projects ADD COLUMN max_budget_usd REAL NOT NULL DEFAULT 2.00;
@@ -124,6 +134,24 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE artifacts ADD COLUMN run_id TEXT;
       ALTER TABLE artifacts ADD COLUMN project_id TEXT;
       CREATE INDEX IF NOT EXISTS idx_artifacts_project_path ON artifacts(project_id, path_or_uri);
+    `,
+  },
+  {
+    // `projects.max_spend_usd`: an optional CUMULATIVE cap across every run
+    // the project will ever spend -- checked at spawn time (scheduler.ts's
+    // `tick()`) against the sum of all recorded run costs plus the ceiling
+    // of the run about to start. NULL means "no cap".
+    //
+    // DELIBERATELY NOT THE SAME THING as `projects.max_budget_usd` /
+    // `tickets.max_budget_usd_override` added in 0003_budget_fields above,
+    // despite the one-word difference in the name -- see that migration's
+    // comment for the distinction spelled out both ways. Unlike the per-run
+    // ceiling, most projects will never set a spend cap, so there is no
+    // sensible non-null default to apply to existing rows the way
+    // 0003_budget_fields's max_budget_usd default was.
+    id: '0005_project_spend_cap',
+    sql: `
+      ALTER TABLE projects ADD COLUMN max_spend_usd REAL;
     `,
   },
 ];

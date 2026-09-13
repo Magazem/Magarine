@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,6 +110,33 @@ test('happy path: falls back to the stream structured_output when no .orchestrat
   }
 });
 
+test("the running cost tally on progress events is deduped by assistant message id and, by construction (calibrated against this exact fixture), reproduces the fixture's own reported total_cost_usd", async () => {
+  // This fixture's stream repeats each of its two real assistant turns
+  // across two stream-json lines with the SAME message.id (observed by
+  // inspecting the raw file directly), summing to the terminal result's own
+  // usage. A naive per-line accumulation would double the true cost.
+  const { events, workspaceRoot } = await runOnce({
+    stdoutFile: fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'),
+    exitCode: 0,
+    createFiles: { 'hello.txt': 'hello from magarine worker' },
+  });
+  try {
+    const progressWithCost = events.filter(
+      (e): e is { type: 'progress'; message: string; costUsd?: number } => e.type === 'progress' && typeof e.costUsd === 'number'
+    );
+    assert.ok(progressWithCost.length > 0, 'expected at least one progress event carrying a cumulative costUsd');
+    const finalTally = progressWithCost.at(-1)!.costUsd!;
+    // The fixture's own `result` line reports total_cost_usd: 0.3673715 for
+    // the same two turns (spikes/claude-cli/runs/2026-09-12T14-15-13-624Z-stream/stdout.txt).
+    assert.ok(
+      Math.abs(finalTally - 0.3673715) < 0.0005,
+      `expected the deduped tally (${finalTally}) to reproduce the fixture's total_cost_usd (0.3673715) -- a mismatch this large means either dedup broke or the calibration constant drifted`
+    );
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('artefact verification: a schema-valid result claiming an artefact that was never written is classified retryable', async () => {
   const { events, workspaceRoot } = await runOnce({
     stdoutFile: fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'),
@@ -168,7 +195,7 @@ test('timeout: a hung worker is killed by the wall-clock timeout and classified 
   }
 });
 
-test('budget exceeded (SOFT: no recorded spike fixture forced this class — see docs/spikes/claude-cli-adapter.md §2.4; this stdout is authored here, not replayed from spikes/claude-cli/runs/): classified as a non-retryable failed attempt', async () => {
+test('budget exceeded (HARD: the exact shape docs/strategy/batch-4-spec.md section 0 recorded from probing the real tool directly -- subtype error_max_budget_usd, no result text): classified as a non-retryable failed attempt', async () => {
   const syntheticDir = mkdtempSync(join(tmpdir(), 'magarine-synthetic-budget-'));
   const stdoutFile = join(syntheticDir, 'stdout.json');
   writeFileSync(
@@ -176,8 +203,7 @@ test('budget exceeded (SOFT: no recorded spike fixture forced this class — see
     JSON.stringify({
       type: 'result',
       is_error: true,
-      subtype: 'success',
-      result: 'Error: max-budget-usd of $2.00 exceeded before completion',
+      subtype: 'error_max_budget_usd',
     }) + '\n'
   );
 
@@ -190,6 +216,52 @@ test('budget exceeded (SOFT: no recorded spike fixture forced this class — see
   } finally {
     rmSync(workspaceRoot, { recursive: true, force: true });
     rmSync(syntheticDir, { recursive: true, force: true });
+  }
+});
+
+test('two tickets with different envelope.maxBudgetUsd overrides produce two different --max-budget-usd arguments to the fake executable', async () => {
+  // Batch 4 item 2: before this, ClaudeCliAdapter always used its own
+  // constructor-level maxBudgetUsd for the flag, so a per-ticket override
+  // never reached the tool (batch-3-closeout.md §8 item 3). Proven here by
+  // reading back the real argv the fake executable was actually invoked
+  // with (via testFixtures/fakeClaudeExe.ts's argvFile), not by inspecting
+  // the adapter's internals.
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-claudecli-argv-'));
+  const argvDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-argv-out-'));
+  try {
+    async function maxBudgetArgFor(maxBudgetUsd: number, ticketId: string): Promise<string> {
+      const argvFile = join(argvDir, `${ticketId}.json`);
+      const adapter = new ClaudeCliAdapter({
+        claudeExe: process.execPath,
+        argsPrefix: [fakeExePath],
+        maxBudgetUsd: 2, // constructor default -- must NOT be what ends up on the command line
+        workspaceType: 'DIRECTORY',
+        workspaceRoot,
+        env: { MAGARINE_FAKE_SPEC: JSON.stringify({ exitCode: 0, argvFile }) },
+      });
+      const handle = await adapter.startWorker({ ticket: envelope({ ticketId, maxBudgetUsd }), systemPolicy: 'default' });
+      await new Promise<void>((resolve) => {
+        void adapter.observe(handle, (event) => {
+          if (event.type === 'result_raw' || event.type === 'failure') resolve();
+        });
+      });
+      const argv: string[] = JSON.parse(readFileSync(argvFile, 'utf8'));
+      const flagIndex = argv.indexOf('--max-budget-usd');
+      assert.ok(flagIndex >= 0, '--max-budget-usd must be on the command line');
+      return argv[flagIndex + 1];
+    }
+
+    const [cheap, expensive] = await Promise.all([
+      maxBudgetArgFor(0.5, 'tkt_cheap'),
+      maxBudgetArgFor(9.5, 'tkt_expensive'),
+    ]);
+
+    assert.equal(cheap, '0.5');
+    assert.equal(expensive, '9.5');
+    assert.notEqual(cheap, expensive);
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(argvDir, { recursive: true, force: true });
   }
 });
 

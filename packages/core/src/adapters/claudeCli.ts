@@ -23,24 +23,24 @@ import type {
 // only needed to work around npm-shim indirection on Windows, which does not
 // apply once you spawn the real .exe; see batch-2-spec.md section 0).
 //
-// KNOWN GAP, not built: the spec asks for a not-logged-in/auth failure to
-// "cancel the run without consuming a ticket attempt" and "pause the
-// adapter with an inbox event". Neither is expressible with the WorkerEvent
-// union or scheduler.ts as they exist after batch 1 (every WorkerEvent
-// either isn't terminal, or is `result_raw`/`failure`; scheduler.ts's
-// applyWorkerEvent() routes every `failure` through the same
-// worker_retryable_failure ticket transition regardless of `retryable`).
-// Adding a new WorkerEvent variant would be dead code, since scheduler.ts's
-// switch does not handle it and scheduler.ts belongs to a different,
-// already-completed role. This adapter instead classifies the case
-// correctly (see `classifyOutcome`, kind: 'adapter_unavailable') and reports
-// it as a non-retryable `failure` WorkerEvent with an ADAPTER_UNAVAILABLE
-// marker in the message, which is the closest available signal. True
-// "don't consume an attempt / pause the adapter" behaviour needs a
-// scheduler-level change that is out of this role's owned files.
+// The not-logged-in/auth gap this comment used to describe (batch 2: no way
+// to cancel without consuming an attempt or pause the adapter) was closed in
+// batch 3 -- scheduler.ts's `cancelTicketRun`/`pauseProjectAdapter` handle a
+// non-retryable `failure` with `failureClass: 'adapter_unavailable'` the way
+// this adapter classifies it (see `classifyOutcome`). Batch 4 closes the
+// related gap for every OTHER failure: the scheduler now asks for one
+// `worker_failure` transition carrying `retryable`, and stateMachine.ts
+// decides READY vs FAILED from that flag rather than treating every failure
+// the same way (see stateMachine.ts's module header comment).
 export interface ClaudeCliAdapterOptions {
   /** Path to the `claude` executable (or, in production, whatever `resolveExecutable('claude')` returns once Role D lands). */
   claudeExe: string;
+  /**
+   * Fallback only, used if a call to `startWorker` is ever given an envelope
+   * with no `maxBudgetUsd` (defensive; TicketEnvelope's field is not
+   * optional in practice). The real per-run ceiling is
+   * `input.ticket.maxBudgetUsd` -- see `startWorker`.
+   */
   maxBudgetUsd: number;
   workspaceType: WorkspaceType;
   workspaceRoot?: string;
@@ -93,16 +93,22 @@ export type ClaudeCliOutcome =
   | { kind: 'adapter_unavailable'; reason: string };
 
 // Not logged in exits 0 with is_error:true and this text in `result`
-// (docs/spikes/claude-cli-adapter.md §3.1, HARD). Budget-exceeded has no
-// recorded fixture (§2.4) — this pattern is inferred, not observed; see
-// claudeCli.test.ts's budget-exceeded test for the SOFT/UNKNOWN label.
+// (docs/spikes/claude-cli-adapter.md §3.1, HARD).
 const AUTH_ERROR_PATTERN = /not logged in|please run \/login|login required/i;
-const BUDGET_ERROR_PATTERN = /max[- ]budget|budget.?exceeded|spend limit/i;
+
+// Batch 4 (docs/strategy/batch-4-spec.md section 0, HARD): the Orchestrator
+// probed the real tool directly and found budget overspend signalled in a
+// FIELD, not prose -- `subtype: 'error_max_budget_usd'` with `result:
+// undefined`. The previous version of this file matched a regex against
+// `result` text, which can never fire against a message that doesn't exist
+// (batch-3-closeout.md §5). Discriminate on the field; no prose pattern.
+const BUDGET_EXCEEDED_SUBTYPE = 'error_max_budget_usd';
 
 interface ResultLine {
   is_error?: boolean;
   result?: unknown;
   structured_output?: unknown;
+  subtype?: string;
 }
 
 function extractResultText(line: ResultLine | undefined): string {
@@ -139,12 +145,12 @@ export function classifyOutcome(input: {
   }
 
   if (input.resultLine?.is_error === true) {
+    if (input.resultLine.subtype === BUDGET_EXCEEDED_SUBTYPE) {
+      return { kind: 'budget_exceeded', reason: `subtype: ${BUDGET_EXCEEDED_SUBTYPE}` };
+    }
     const text = extractResultText(input.resultLine);
     if (AUTH_ERROR_PATTERN.test(text)) {
       return { kind: 'adapter_unavailable', reason: text || 'worker reported an authentication error' };
-    }
-    if (BUDGET_ERROR_PATTERN.test(text)) {
-      return { kind: 'budget_exceeded', reason: text };
     }
     return { kind: 'retryable', reason: text || 'worker reported is_error: true' };
   }
@@ -253,6 +259,38 @@ function describeProgress(line: Record<string, unknown>): string | null {
   return null;
 }
 
+// Batch 4 item 3: the daemon needs its own running cost estimate, not just
+// the tool's terminal `total_cost_usd` (which only arrives once, at the very
+// end -- too late for the scheduler to stop an overspending run mid-flight).
+// Assistant messages in the stream carry token `usage` but never a per-message
+// cost; a real $-per-category rate table is not evidence this project has
+// (SOFT/UNKNOWN -- batch-3-closeout.md §8 flags even the per-ticket floor
+// price as unexplained). Rather than invent per-category rates for an
+// unlisted model, this uses ONE blended $-per-raw-token rate, calibrated
+// directly against the one real recorded run this repository has both the
+// full stream AND the tool's own authoritative total for:
+// spikes/claude-cli/runs/2026-09-12T14-15-13-624Z-stream. That run's two
+// distinct assistant turns (four stream lines, but message.id repeats --
+// see the dedup below) sum to 61244 raw tokens (input + output +
+// cache_creation + cache_read) against a reported total_cost_usd of
+// 0.3673715. See claudeCli.test.ts's calibration test, which reproduces that
+// exact number from this constant and that fixture's usage. This is a SOFT
+// estimate used only to trigger the scheduler's own budget stop
+// (scheduler.ts); the tool's own `total_cost_usd` on the terminal result
+// line remains what gets persisted to `runs.usage_json` and displayed on the
+// board (store.ts).
+const BLENDED_USD_PER_RAW_TOKEN = 0.3673715 / 61244;
+
+function rawTokenCount(usage: Record<string, unknown>): number {
+  const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+  return (
+    num(usage.input_tokens) +
+    num(usage.output_tokens) +
+    num(usage.cache_creation_input_tokens) +
+    num(usage.cache_read_input_tokens)
+  );
+}
+
 interface HandleState {
   ticketId: string;
   runId: string;
@@ -262,6 +300,9 @@ interface HandleState {
   workspaceType: WorkspaceType;
   eventLog: WorkerEvent[];
   listeners: Array<(event: WorkerEvent) => void>;
+  /** Assistant message ids already tallied, so a repeated stream emission of the same turn (observed in real fixtures) is not double-counted. */
+  talliedMessageIds: Set<string>;
+  costTallyUsd: number;
 }
 
 export class ClaudeCliAdapter implements AgentAdapter {
@@ -298,7 +339,14 @@ export class ClaudeCliAdapter implements AgentAdapter {
       '--permission-mode',
       this.options.permissionMode ?? 'bypassPermissions',
       '--max-budget-usd',
-      String(this.options.maxBudgetUsd),
+      // Batch 4 item 2: the ceiling comes from the envelope (the ticket's
+      // own override, or the project default if unset -- see
+      // store.ts's resolveMaxBudgetUsd), not the adapter's constructor
+      // option. Before this, every ticket got the same flag value
+      // regardless of its own override (batch-3-closeout.md §8 item 3): the
+      // constructor value was always used, so the CLI's `ticket add
+      // --budget` had no effect on what the tool itself enforced.
+      String(input.ticket.maxBudgetUsd ?? this.options.maxBudgetUsd),
     ];
 
     const managed = spawnManaged({
@@ -320,6 +368,8 @@ export class ClaudeCliAdapter implements AgentAdapter {
       workspaceType,
       eventLog: [],
       listeners: [],
+      talliedMessageIds: new Set(),
+      costTallyUsd: 0,
     };
     this.handles.set(handleId, state);
 
@@ -340,8 +390,17 @@ export class ClaudeCliAdapter implements AgentAdapter {
         if (obj.type === 'result') {
           resultLine = obj as ResultLine;
         } else {
+          if (obj.type === 'assistant') {
+            const msg = obj.message as Record<string, unknown> | undefined;
+            const usage = msg?.usage as Record<string, unknown> | undefined;
+            const messageId = typeof msg?.id === 'string' ? msg.id : undefined;
+            if (usage && messageId && !state.talliedMessageIds.has(messageId)) {
+              state.talliedMessageIds.add(messageId);
+              state.costTallyUsd += rawTokenCount(usage) * BLENDED_USD_PER_RAW_TOKEN;
+            }
+          }
           const message = describeProgress(obj);
-          if (message) this.publish(state, { type: 'progress', message });
+          if (message) this.publish(state, { type: 'progress', message, costUsd: state.costTallyUsd });
         }
       }
     });
@@ -381,11 +440,19 @@ export class ClaudeCliAdapter implements AgentAdapter {
       }
 
       const usage = extractUsage(resultLine);
-      this.publish(state, outcomeToEvent(outcome, usage));
 
+      // Cleanup before publish, not after: publish() calls every observer
+      // synchronously, and a test (or a real caller) awaiting the terminal
+      // event and then immediately checking the filesystem must not race an
+      // async cleanup that is still in flight. (Pre-existing ordering bug,
+      // not introduced by batch 4 -- caught here because it occasionally
+      // flaked the full suite under load: "NONE workspace directories are
+      // removed after the run completes" in claudeCli.test.ts.)
       if (workspaceType === 'NONE') {
         await ws.cleanup();
       }
+
+      this.publish(state, outcomeToEvent(outcome, usage));
     });
 
     return { id: handleId, ticketId: input.ticket.ticketId, runId };

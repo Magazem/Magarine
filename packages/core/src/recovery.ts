@@ -18,10 +18,9 @@ export function recoverOrphanedRuns(db: Db): RecoveryResult {
     finishRun(db, run.id, { status: 'failed', failureClass: 'orphaned_on_restart' });
     const result = recordTicketTransition(db, {
       ticketId: run.ticketId,
-      event: 'worker_retryable_failure',
+      event: 'worker_failure',
       idempotencyKey: `recovery:${run.id}`,
-      payload: { reason: 'orphaned_on_restart' },
-      visibility: 'activity',
+      payload: { reason: 'orphaned_on_restart', retryable: true, failureClass: 'orphaned_on_restart' },
     });
     if (result.applied) {
       recovered.push(run.id);

@@ -4,14 +4,26 @@ import { openDb } from './db/index.ts';
 import {
   createArtifact,
   createProject,
+  createRun,
   createTicket,
   findConflictingArtifact,
+  finishRun,
   getProject,
+  getTicket,
   isProjectAdapterPaused,
   listArtifactsForTicket,
+  MIN_BUDGET_USD,
+  listEventsForProject,
   pauseProjectAdapter,
+  projectSpendUsd,
   resolveMaxBudgetUsd,
+  resumeProject,
   resumeProjectAdapter,
+  setProjectMaxBudgetUsd,
+  setProjectMaxSpendUsd,
+  setRunUsage,
+  setTicketBudgetOverride,
+  ticketSpendUsd,
 } from './store.ts';
 
 test('createProject defaults maxBudgetUsd, brief and workspaceRoot, and accepts overrides', () => {
@@ -123,4 +135,123 @@ test('findConflictingArtifact returns undefined for a path nobody has declared',
   const project = createProject(db, { name: 'p' });
   const ticket = createTicket(db, { projectId: project.id, title: 't' });
   assert.equal(findConflictingArtifact(db, project.id, '/tmp/nope.txt', ticket.id), undefined);
+});
+
+// --- Batch 4: the minimum ceiling floor ---
+
+test('createProject rejects a max_budget_usd below the floor, naming the floor', () => {
+  const db = openDb(':memory:');
+  assert.throws(() => {
+    createProject(db, { name: 'p', maxBudgetUsd: 0.1 });
+  }, new RegExp(`\\$${MIN_BUDGET_USD.toFixed(2)}`));
+});
+
+test('createProject rejects a max_spend_usd below the floor', () => {
+  const db = openDb(':memory:');
+  assert.throws(() => {
+    createProject(db, { name: 'p', maxSpendUsd: 0.01 });
+  }, new RegExp(`\\$${MIN_BUDGET_USD.toFixed(2)}`));
+});
+
+test('createProject accepts a max_budget_usd exactly at the floor', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxBudgetUsd: MIN_BUDGET_USD });
+  assert.equal(project.maxBudgetUsd, MIN_BUDGET_USD);
+});
+
+test('createTicket rejects a maxBudgetUsdOverride below the floor', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  assert.throws(() => {
+    createTicket(db, { projectId: project.id, title: 't', maxBudgetUsdOverride: 0.1 });
+  }, new RegExp(`\\$${MIN_BUDGET_USD.toFixed(2)}`));
+});
+
+test('setProjectMaxBudgetUsd persists a value above the floor and rejects one below it', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+
+  setProjectMaxBudgetUsd(db, project.id, 5);
+  assert.equal(getProject(db, project.id)!.maxBudgetUsd, 5);
+
+  assert.throws(() => setProjectMaxBudgetUsd(db, project.id, 0.1), new RegExp(`\\$${MIN_BUDGET_USD.toFixed(2)}`));
+});
+
+test('setProjectMaxSpendUsd sets, clears (null), and enforces the floor when non-null', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  assert.equal(getProject(db, project.id)!.maxSpendUsd, null);
+
+  setProjectMaxSpendUsd(db, project.id, 10);
+  assert.equal(getProject(db, project.id)!.maxSpendUsd, 10);
+
+  setProjectMaxSpendUsd(db, project.id, null);
+  assert.equal(getProject(db, project.id)!.maxSpendUsd, null);
+
+  assert.throws(() => setProjectMaxSpendUsd(db, project.id, 0.01), new RegExp(`\\$${MIN_BUDGET_USD.toFixed(2)}`));
+});
+
+test('setTicketBudgetOverride sets, clears (null), and enforces the floor when non-null', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+
+  setTicketBudgetOverride(db, ticket.id, 3);
+  assert.equal(getTicket(db, ticket.id)!.maxBudgetUsdOverride, 3);
+
+  setTicketBudgetOverride(db, ticket.id, null);
+  assert.equal(getTicket(db, ticket.id)!.maxBudgetUsdOverride, null);
+
+  assert.throws(() => setTicketBudgetOverride(db, ticket.id, 0.1), new RegExp(`\\$${MIN_BUDGET_USD.toFixed(2)}`));
+});
+
+test('resumeProject clears the pause (whatever its cause) and records a project_resume event', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  pauseProjectAdapter(db, project.id);
+  assert.equal(isProjectAdapterPaused(db, project.id), true);
+
+  resumeProject(db, project.id);
+
+  assert.equal(isProjectAdapterPaused(db, project.id), false);
+  const events = listEventsForProject(db, project.id);
+  const resumeEvent = events.find((e) => e.eventType === 'project_resume');
+  assert.ok(resumeEvent, 'must record a project_resume event');
+  assert.equal(resumeEvent!.entityType, 'project');
+});
+
+// --- Batch 4: ticket/project spend sums ---
+
+test('ticketSpendUsd sums total_cost_usd across a ticket\'s runs, ignoring runs with no or malformed usage', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+
+  const run1 = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
+  setRunUsage(db, run1.id, { total_cost_usd: 0.3 });
+  finishRun(db, run1.id, { status: 'failed' });
+
+  const run2 = createRun(db, { ticketId: ticket.id, attempt: 2, adapter: 'fake' });
+  setRunUsage(db, run2.id, { total_cost_usd: 0.2 });
+  finishRun(db, run2.id, { status: 'succeeded' });
+
+  const run3 = createRun(db, { ticketId: ticket.id, attempt: 3, adapter: 'fake' });
+  // No usage recorded at all -- contributes nothing.
+
+  assert.equal(ticketSpendUsd(db, ticket.id), 0.5);
+  assert.ok(run3.id, 'run3 exists purely to prove it contributes nothing');
+});
+
+test('projectSpendUsd sums ticketSpendUsd across every ticket in the project', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const a = createTicket(db, { projectId: project.id, title: 'a' });
+  const b = createTicket(db, { projectId: project.id, title: 'b' });
+
+  const runA = createRun(db, { ticketId: a.id, attempt: 1, adapter: 'fake' });
+  setRunUsage(db, runA.id, { total_cost_usd: 0.4 });
+  const runB = createRun(db, { ticketId: b.id, attempt: 1, adapter: 'fake' });
+  setRunUsage(db, runB.id, { total_cost_usd: 0.15 });
+
+  assert.equal(projectSpendUsd(db, project.id), 0.55);
 });

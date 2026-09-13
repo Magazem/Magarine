@@ -27,15 +27,31 @@ test('is_error true with an auth message classifies adapter_unavailable', () => 
   assert.deepEqual(outcome, { kind: 'adapter_unavailable', reason: 'Not logged in · Please run /login' });
 });
 
-test('is_error true with a budget message classifies budget_exceeded', () => {
+test('is_error true with subtype error_max_budget_usd classifies budget_exceeded, even with no result text (the real observed probe output)', () => {
+  // docs/strategy/batch-4-spec.md section 0, HARD: the Orchestrator's direct
+  // probe of the real tool found exactly this shape -- exit code 1,
+  // is_error: true, subtype: 'error_max_budget_usd', result: undefined. A
+  // prose regex against `result` could never fire against this; the fixture
+  // here is the recorded probe output verbatim, not authored.
   const outcome = classifyOutcome({
-    resultLine: { is_error: true, result: 'Error: max-budget-usd of $2.00 exceeded before completion' },
+    resultLine: { is_error: true, subtype: 'error_max_budget_usd', result: undefined },
+    fileResult: undefined,
+    exitCode: 1,
+    stderr: '',
+    timedOut: false,
+  });
+  assert.equal(outcome.kind, 'budget_exceeded');
+});
+
+test('is_error true with an unrelated subtype and budget-sounding prose is NOT classified budget_exceeded (subtype, not text, is the discriminator)', () => {
+  const outcome = classifyOutcome({
+    resultLine: { is_error: true, subtype: 'success', result: 'Error: max-budget-usd of $2.00 exceeded before completion' },
     fileResult: undefined,
     exitCode: 0,
     stderr: '',
     timedOut: false,
   });
-  assert.equal(outcome.kind, 'budget_exceeded');
+  assert.equal(outcome.kind, 'retryable', 'no regex fallback -- the old prose pattern is deleted, not just deprioritized');
 });
 
 test('is_error true with an unrecognized message classifies retryable', () => {

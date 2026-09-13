@@ -14,6 +14,7 @@ import {
   isProjectAdapterPaused,
   listArtifactsForTicket,
   listEventsForEntity,
+  listEventsForProject,
   listTicketsByStatus,
 } from './store.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
@@ -562,4 +563,121 @@ test('progress events are persisted as worker_progress internal events on the ru
   const progressEvents = events.filter((e) => e.eventType === 'worker_progress');
   assert.equal(progressEvents.length, 200, 'capped at 200 per run even though 205 were emitted');
   assert.equal(progressEvents[0].visibility, 'internal');
+});
+
+// --- Batch 4: the daemon's own cost tally stops a run independent of the tool's own ceiling check ---
+
+test('a progress event whose cumulative costUsd crosses the ceiling stops the worker and records a non-retryable budget_exceeded failure with the tally and overshoot', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'chatty and expensive' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'turn 1', costUsd: 0.4 });
+  assert.equal(getTicket(db, ticket.id)!.status, 'IN_PROGRESS', 'under the ceiling: no stop yet');
+  assert.equal(adapter.isStopped(s.handle.id), false);
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'turn 2', costUsd: 1.5 });
+  await s.done;
+
+  assert.ok(adapter.isStopped(s.handle.id), 'the scheduler must ask the adapter to stop the worker itself');
+  const after = getTicket(db, ticket.id)!;
+  assert.equal(after.status, 'FAILED', 'non-retryable: final regardless of attempts remaining');
+  assert.equal(after.attemptCount, 1);
+
+  const run = getRun(db, s.runId)!;
+  assert.equal(run.status, 'failed');
+  assert.equal(run.failureClass, 'budget_exceeded');
+
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  const finalEvent = events.find((e) => e.eventType === 'worker_failed_final')!;
+  assert.ok(finalEvent, 'must persist under the concrete worker_failed_final type, not worker_failure');
+  assert.equal(finalEvent.visibility, 'inbox');
+  assert.equal(finalEvent.requiresUser, true);
+  assert.deepEqual(finalEvent.payload, {
+    retryable: false,
+    failureClass: 'budget_exceeded',
+    tally: 1.5,
+    ceiling: 1,
+    overshoot: 0.5,
+  });
+});
+
+test('a project spend cap that admits one run refuses the second at spawn time, pauses the project, and emits project_spend_cap_reached exactly once', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 0.6, maxSpendUsd: 1.0 });
+  const adapter = new FakeAdapter();
+  const first = createTicket(db, { projectId: project.id, title: 'first' });
+  const second = createTicket(db, { projectId: project.id, title: 'second' });
+  adapter.setScript(first.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
+  adapter.setScript(second.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+
+  // First run: 0 recorded so far + 0.6 ceiling = 0.6, under the 1.0 cap.
+  const firstTick = await tick(deps);
+  assert.deepEqual(firstTick.started.map((s) => s.ticketId), [first.id]);
+  await Promise.all(firstTick.started.map((s) => s.done));
+  assert.equal(getTicket(db, first.id)!.status, 'DONE');
+
+  // Second run: 0.6 recorded + 0.6 ceiling = 1.2, over the 1.0 cap -- refused.
+  const secondTick = await tick(deps);
+  assert.equal(secondTick.started.length, 0, 'the cap must refuse to spawn the second ticket');
+  assert.equal(getTicket(db, second.id)!.status, 'READY', 'left READY, not started, not failed');
+  assert.equal(isProjectAdapterPaused(db, project.id), true);
+
+  const events = listEventsForProject(db, project.id);
+  const capEvents = events.filter((e) => e.eventType === 'project_spend_cap_reached');
+  assert.equal(capEvents.length, 1, 'exactly one project_spend_cap_reached event');
+  assert.equal(capEvents[0].entityType, 'project');
+  assert.equal(capEvents[0].visibility, 'inbox');
+  assert.equal(capEvents[0].requiresUser, true);
+
+  // A paused project starts nothing further, and does not emit the event again.
+  const thirdTick = await tick(deps);
+  assert.equal(thirdTick.started.length, 0);
+  assert.equal(
+    listEventsForProject(db, project.id).filter((e) => e.eventType === 'project_spend_cap_reached').length,
+    1,
+    'still exactly one -- a paused project short-circuits before the cap check runs again'
+  );
+});
+
+test('a project with no max_spend_usd set never refuses a spawn on spend-cap grounds', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+  adapter.setScript(ticket.id, { kind: 'succeed' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+  const { started } = await tick(deps);
+
+  assert.equal(started.length, 1);
+  await Promise.all(started.map((s) => s.done));
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+});
+
+test('a progress event at or under the ceiling never stops the worker', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'exactly on budget' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'turn 1', costUsd: 1 });
+  assert.equal(adapter.isStopped(s.handle.id), false, 'exactly at the ceiling is not over it');
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'finished on budget', artifacts: [], checks: [], blockers: [], questions: [] },
+  });
+  await s.done;
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
 });

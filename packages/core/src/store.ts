@@ -1,5 +1,6 @@
 import type { Db } from './db/index.ts';
 import { newId } from './id.ts';
+import { classify } from './policy.ts';
 import type {
   Artifact,
   DependencyType,
@@ -18,6 +19,19 @@ import type {
 // transition itself. `stateMachine.ts` is the only module allowed to write
 // `tickets.status`.
 
+// Batch 4 section 1 ruling 1, layer 2: no ceiling (project max_budget_usd or
+// ticket max_budget_usd_override) may be set below this floor. SOFT --
+// derived from batch 2/3's measured per-ticket cost ($0.10-0.63), set from
+// the higher end of that range so it doesn't lie on a cheaper day. Lives in
+// exactly one place; every setter below enforces it.
+export const MIN_BUDGET_USD = 0.25;
+
+function assertAboveFloor(value: number, label: string): void {
+  if (value < MIN_BUDGET_USD) {
+    throw new Error(`${label} must be at least $${MIN_BUDGET_USD.toFixed(2)}, got $${value.toFixed(2)}`);
+  }
+}
+
 interface ProjectRow {
   id: string;
   name: string;
@@ -25,6 +39,7 @@ interface ProjectRow {
   default_adapter: string | null;
   max_parallel_workers: number;
   max_budget_usd: number;
+  max_spend_usd: number | null;
   brief: string | null;
   workspace_root: string | null;
   adapter_paused_at: string | null;
@@ -40,6 +55,7 @@ function rowToProject(row: ProjectRow): Project {
     defaultAdapter: row.default_adapter,
     maxParallelWorkers: row.max_parallel_workers,
     maxBudgetUsd: row.max_budget_usd,
+    maxSpendUsd: row.max_spend_usd,
     brief: row.brief,
     workspaceRoot: row.workspace_root,
     adapterPausedAt: row.adapter_paused_at,
@@ -56,22 +72,30 @@ export function createProject(
     defaultAdapter?: string | null;
     maxParallelWorkers?: number;
     maxBudgetUsd?: number;
+    maxSpendUsd?: number | null;
     brief?: string | null;
     workspaceRoot?: string | null;
   }
 ): Project {
+  const maxBudgetUsd = input.maxBudgetUsd ?? 2.0;
+  assertAboveFloor(maxBudgetUsd, 'a project\'s max_budget_usd');
+  if (input.maxSpendUsd != null) {
+    assertAboveFloor(input.maxSpendUsd, 'a project\'s max_spend_usd');
+  }
+
   const now = new Date().toISOString();
   const id = newId('proj');
   db.prepare(
-    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, brief, workspace_root, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, brief, workspace_root, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.name,
     input.description ?? null,
     input.defaultAdapter ?? null,
     input.maxParallelWorkers ?? 1,
-    input.maxBudgetUsd ?? 2.0,
+    maxBudgetUsd,
+    input.maxSpendUsd ?? null,
     input.brief ?? null,
     input.workspaceRoot ?? null,
     now,
@@ -80,12 +104,60 @@ export function createProject(
   return getProject(db, id)!;
 }
 
+// Setter for `ticket add --budget`/a future `project set --max-budget` to
+// call instead of writing the column directly, so the floor is enforced no
+// matter which surface sets it.
+export function setProjectMaxBudgetUsd(db: Db, projectId: string, maxBudgetUsd: number): void {
+  assertAboveFloor(maxBudgetUsd, 'a project\'s max_budget_usd');
+  db.prepare('UPDATE projects SET max_budget_usd = ?, updated_at = ? WHERE id = ?').run(
+    maxBudgetUsd,
+    new Date().toISOString(),
+    projectId
+  );
+}
+
+// Setter for a future `project set --max-spend`/`project create --max-spend`
+// to call. `null` clears the cap.
+export function setProjectMaxSpendUsd(db: Db, projectId: string, maxSpendUsd: number | null): void {
+  if (maxSpendUsd != null) {
+    assertAboveFloor(maxSpendUsd, 'a project\'s max_spend_usd');
+  }
+  db.prepare('UPDATE projects SET max_spend_usd = ?, updated_at = ? WHERE id = ?').run(
+    maxSpendUsd,
+    new Date().toISOString(),
+    projectId
+  );
+}
+
 export function pauseProjectAdapter(db: Db, projectId: string): void {
   db.prepare('UPDATE projects SET adapter_paused_at = ? WHERE id = ?').run(new Date().toISOString(), projectId);
 }
 
 export function resumeProjectAdapter(db: Db, projectId: string): void {
   db.prepare('UPDATE projects SET adapter_paused_at = NULL WHERE id = ?').run(projectId);
+}
+
+// The `project_resume` transition named in docs/strategy/batch-4-spec.md
+// section 2's cross-role contract: "clears a project pause, whatever its
+// cause" -- there is exactly one pause column regardless of what tripped it
+// (an adapter_unavailable failure or a project_spend_cap_reached refusal),
+// so clearing it is the same operation either way. Unlike
+// `resumeProjectAdapter` (which only flips the column, silently, and
+// remains for existing call sites), this also records the event so the
+// action shows up in the project's activity log. Intended for Role I's
+// `resume --project` command to call instead of `resumeProjectAdapter`.
+export function resumeProject(db: Db, projectId: string): void {
+  resumeProjectAdapter(db, projectId);
+  const policy = classify('project_resume');
+  insertEvent(db, {
+    projectId,
+    eventType: 'project_resume',
+    entityType: 'project',
+    entityId: projectId,
+    visibility: policy.visibility,
+    requiresUser: policy.requiresUser,
+    idempotencyKey: newId('evt'),
+  });
 }
 
 export function isProjectAdapterPaused(db: Db, projectId: string): boolean {
@@ -160,6 +232,10 @@ export function createTicket(
     maxBudgetUsdOverride?: number | null;
   }
 ): Ticket {
+  if (input.maxBudgetUsdOverride != null) {
+    assertAboveFloor(input.maxBudgetUsdOverride, 'a ticket\'s max_budget_usd_override');
+  }
+
   const now = new Date().toISOString();
   const id = newId('tkt');
   db.prepare(
@@ -183,6 +259,21 @@ export function createTicket(
     now
   );
   return getTicket(db, id)!;
+}
+
+// Setter for `ticket add --budget` (and any future override-setting command)
+// to call instead of writing the column directly, so the floor is enforced
+// no matter which surface sets it. `null` clears the override (falls back
+// to the project default).
+export function setTicketBudgetOverride(db: Db, ticketId: string, maxBudgetUsdOverride: number | null): void {
+  if (maxBudgetUsdOverride != null) {
+    assertAboveFloor(maxBudgetUsdOverride, 'a ticket\'s max_budget_usd_override');
+  }
+  db.prepare('UPDATE tickets SET max_budget_usd_override = ?, updated_at = ? WHERE id = ?').run(
+    maxBudgetUsdOverride,
+    new Date().toISOString(),
+    ticketId
+  );
 }
 
 export function getTicket(db: Db, id: string): Ticket | undefined {
@@ -287,6 +378,35 @@ export function listRunsByStatus(db: Db, status: RunStatus): Run[] {
   return rows.map(rowToRun);
 }
 
+// Batch 4 section 2's cross-role contract: "Ticket spend is the sum of
+// total_cost_usd over its runs; project spend is the sum over its tickets."
+// `usage_json` is an opaque, adapter-defined blob this codebase never
+// validates (see setRunUsage) -- a run with no usage recorded, or a shape
+// without `total_cost_usd`, contributes nothing rather than throwing. Used
+// by scheduler.ts's spawn-time project cap check; commands/board.ts (Role
+// I's file) computes the same figure today with its own inline copy of this
+// logic and can switch to calling this instead.
+export function ticketSpendUsd(db: Db, ticketId: string): number {
+  const rows = db.prepare('SELECT usage_json FROM runs WHERE ticket_id = ?').all(ticketId) as Array<{
+    usage_json: string | null;
+  }>;
+  let total = 0;
+  for (const row of rows) {
+    if (!row.usage_json) continue;
+    try {
+      const usage = JSON.parse(row.usage_json) as { total_cost_usd?: unknown };
+      if (typeof usage.total_cost_usd === 'number') total += usage.total_cost_usd;
+    } catch {
+      // Malformed adapter-defined JSON contributes nothing rather than crashing.
+    }
+  }
+  return total;
+}
+
+export function projectSpendUsd(db: Db, projectId: string): number {
+  return listTickets(db, projectId).reduce((sum, ticket) => sum + ticketSpendUsd(db, ticket.id), 0);
+}
+
 export function setRunWorkerSessionRef(db: Db, runId: string, workerSessionRef: string): void {
   db.prepare('UPDATE runs SET worker_session_ref = ? WHERE id = ?').run(workerSessionRef, runId);
 }
@@ -374,6 +494,15 @@ function rowToEvent(row: EventDbRow): EventRow {
     idempotencyKey: row.idempotency_key,
     createdAt: row.created_at,
   };
+}
+
+// Cheap existence check by idempotency key, used by stateMachine.ts to tell
+// a replayed event apart from a genuinely new one BEFORE evaluating the
+// transition against the ticket's current (possibly already-advanced)
+// status. See recordTicketTransition's comment for why the ordering matters.
+export function hasEvent(db: Db, idempotencyKey: string): boolean {
+  const row = db.prepare('SELECT 1 FROM events WHERE idempotency_key = ?').get(idempotencyKey);
+  return row !== undefined;
 }
 
 export function listEventsForEntity(db: Db, entityType: string, entityId: string): EventRow[] {

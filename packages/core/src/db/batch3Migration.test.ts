@@ -93,6 +93,7 @@ test('a database migrated only to 0001+0002+0003 picks up 0004 (batch 3 fields) 
     '0002_runs_usage_json',
     '0003_budget_fields',
     '0004_batch3_scheduler_seam',
+    '0005_project_spend_cap',
   ]);
   assert.deepEqual(snapshot.projectBeforeUpdate, {
     brief: null,

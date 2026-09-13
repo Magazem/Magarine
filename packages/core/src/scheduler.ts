@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
@@ -22,6 +22,7 @@ import {
   listEventsForProject,
   listTicketsByStatus,
   pauseProjectAdapter,
+  projectSpendUsd,
   resolveMaxBudgetUsd,
   setRunUsage,
   setRunWorkerSessionRef,
@@ -311,6 +312,10 @@ interface ApplyEventContext {
   workspaceType: WorkspaceType;
   artifactsDir: string;
   workspaceCleanup: () => Promise<void>;
+  /** This run's resolved ceiling (ticket override, else project default). Batch 4 item 3. */
+  ceilingUsd: number;
+  /** Asks the adapter to stop the worker. Kept as a closure so this module never needs the adapter/handle types directly. */
+  stopWorker: () => Promise<void>;
 }
 
 // Applies one WorkerEvent for a single run and, if it was terminal, cleans
@@ -347,6 +352,28 @@ async function applyWorkerEventInner(
 ): Promise<boolean> {
   switch (event.type) {
     case 'progress': {
+      // Batch 4 item 3 (docs/strategy/batch-4-spec.md section 1 ruling 1,
+      // layer 2): the daemon keeps its own running account of spend rather
+      // than trusting only the tool's own between-turn ceiling check. The
+      // adapter reports its cumulative estimate on every progress event that
+      // carries one; once it crosses this run's ceiling, the scheduler stops
+      // the worker itself and records a non-retryable `budget_exceeded`
+      // failure with the tally and the overshoot, independent of whether the
+      // tool ever reports `error_max_budget_usd` on its own.
+      if (typeof event.costUsd === 'number' && event.costUsd > ctx.ceilingUsd) {
+        await ctx.stopWorker();
+        const tally = event.costUsd;
+        const overshoot = tally - ctx.ceilingUsd;
+        finishRun(db, run.id, { status: 'failed', failureClass: 'budget_exceeded' });
+        recordTicketTransition(db, {
+          ticketId: ticket.id,
+          event: 'worker_failure',
+          idempotencyKey: `worker_failure:${run.id}:budget_exceeded`,
+          payload: { retryable: false, failureClass: 'budget_exceeded', tally, ceiling: ctx.ceilingUsd, overshoot },
+        });
+        return true;
+      }
+
       if (ctx.progressSeq.n >= 200) return false;
       ctx.progressSeq.n += 1;
       insertEvent(db, {
@@ -354,7 +381,7 @@ async function applyWorkerEventInner(
         eventType: 'worker_progress',
         entityType: 'run',
         entityId: run.id,
-        payload: { message: event.message },
+        payload: { message: event.message, costUsd: event.costUsd },
         visibility: 'internal',
         idempotencyKey: `worker_progress:${run.id}:${ctx.progressSeq.n}`,
       });
@@ -393,16 +420,16 @@ async function applyWorkerEventInner(
       }
 
       // Retryable, or non-retryable but not adapter_unavailable: both are a
-      // failed attempt (attempt_count increments; READY if attempts remain,
-      // else FAILED), same as before batch 3 — the delta is that the real
-      // failureClass is now recorded on the run instead of a hardcoded one.
+      // failed attempt (attempt_count increments; the state machine decides
+      // READY vs FAILED from `retryable` and the attempt count, per
+      // docs/strategy/batch-4-spec.md section 1 ruling 4). The real
+      // failureClass is recorded on the run either way.
       finishRun(db, run.id, { status: 'failed', failureClass: event.failureClass ?? 'adapter_failure' });
       recordTicketTransition(db, {
         ticketId: ticket.id,
-        event: 'worker_retryable_failure',
-        idempotencyKey: `worker_retryable_failure:${run.id}`,
+        event: 'worker_failure',
+        idempotencyKey: `worker_failure:${run.id}`,
         payload: { message: event.message, retryable: event.retryable, failureClass: event.failureClass },
-        visibility: 'activity',
       });
       return true;
     }
@@ -414,10 +441,9 @@ async function applyWorkerEventInner(
         finishRun(db, run.id, { status: 'failed', failureClass: 'malformed_result' });
         recordTicketTransition(db, {
           ticketId: ticket.id,
-          event: 'worker_retryable_failure',
-          idempotencyKey: `worker_retryable_failure:${run.id}`,
-          payload: { errors: validated.errors },
-          visibility: 'activity',
+          event: 'worker_failure',
+          idempotencyKey: `worker_failure:${run.id}`,
+          payload: { errors: validated.errors, retryable: true, failureClass: 'malformed_result' },
         });
         return true;
       }
@@ -470,10 +496,9 @@ async function applyWorkerEventInner(
           finishRun(db, run.id, { status: 'failed', failureClass: 'worker_reported_failure' });
           recordTicketTransition(db, {
             ticketId: ticket.id,
-            event: 'worker_retryable_failure',
-            idempotencyKey: `worker_retryable_failure:${run.id}`,
-            payload: result,
-            visibility: 'activity',
+            event: 'worker_failure',
+            idempotencyKey: `worker_failure:${run.id}`,
+            payload: { ...result, retryable: true, failureClass: 'worker_reported_failure' },
           });
           break;
       }
@@ -511,6 +536,15 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
   const readyTickets = listTicketsByStatus(deps.db, deps.projectId, 'READY').slice(0, available);
   const started: StartedRun[] = [];
 
+  // Batch 4 section 1 ruling 1, layer 1: the hard control is at spawn time,
+  // because declining to start a worker is the only cost decision the
+  // daemon fully controls. Tracked as a running local tally (recorded spend
+  // plus each ticket's ceiling as it is admitted this tick) rather than
+  // re-querying `projectSpendUsd` per ticket, so a burst of several READY
+  // tickets in one high-concurrency tick cannot each individually pass the
+  // check against the same stale baseline and collectively overcommit.
+  let projectedSpend = project.maxSpendUsd != null ? projectSpendUsd(deps.db, deps.projectId) : 0;
+
   for (const ticket of readyTickets) {
     // Defense in depth: re-verify readiness right before starting work,
     // rather than trusting the READY status read a moment ago. A wrong row
@@ -526,6 +560,30 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         visibility: 'internal',
       });
       continue;
+    }
+
+    if (project.maxSpendUsd != null) {
+      const ceiling = resolveMaxBudgetUsd(project, ticket);
+      if (projectedSpend + ceiling > project.maxSpendUsd) {
+        insertEvent(deps.db, {
+          projectId: project.id,
+          eventType: 'project_spend_cap_reached',
+          entityType: 'project',
+          entityId: project.id,
+          payload: { ticketId: ticket.id, projectedSpend: projectedSpend + ceiling, maxSpendUsd: project.maxSpendUsd },
+          visibility: 'inbox',
+          requiresUser: true,
+          idempotencyKey: `project_spend_cap_reached:${randomUUID()}`,
+        });
+        pauseProjectAdapter(deps.db, project.id);
+        // Stop considering further READY tickets this tick: the project is
+        // now paused, and `isProjectAdapterPaused` at the top of the next
+        // tick() call is what actually prevents any further spawn -- this
+        // break just avoids evaluating (and possibly emitting duplicate
+        // cap-reached events for) the rest of this tick's own batch.
+        break;
+      }
+      projectedSpend += ceiling;
     }
 
     let ws;
@@ -586,6 +644,8 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       workspaceType: ticket.workspaceType,
       artifactsDir,
       workspaceCleanup: ws.cleanup,
+      ceilingUsd: envelope.maxBudgetUsd,
+      stopWorker: () => deps.adapter.stop(handle),
     };
 
     let timeoutTimer: NodeJS.Timeout | undefined;

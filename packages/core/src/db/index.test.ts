@@ -15,7 +15,13 @@ test('runMigrations is idempotent: applying twice does not error or duplicate ro
     (r) => r.id
   );
   db.close();
-  assert.deepEqual(applied, ['0001_init', '0002_runs_usage_json', '0003_budget_fields', '0004_batch3_scheduler_seam']);
+  assert.deepEqual(applied, [
+    '0001_init',
+    '0002_runs_usage_json',
+    '0003_budget_fields',
+    '0004_batch3_scheduler_seam',
+    '0005_project_spend_cap',
+  ]);
 });
 
 interface Snapshot {
@@ -76,6 +82,7 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     '0002_runs_usage_json',
     '0003_budget_fields',
     '0004_batch3_scheduler_seam',
+    '0005_project_spend_cap',
   ]);
   assert.equal(snapshot.usageJsonInputTokens, 1);
 });

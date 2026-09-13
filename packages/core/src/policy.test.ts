@@ -86,3 +86,18 @@ test('documentation-only rows for the two non-transition event types scheduler.t
   assert.deepEqual(classify('adapter_unavailable'), { visibility: 'inbox', requiresUser: true });
   assert.deepEqual(classify('workspace_preparation_failed'), { visibility: 'inbox', requiresUser: true });
 });
+
+test('spot checks against batch 4\'s failure split: retryable is quiet, final reaches the inbox', () => {
+  assert.deepEqual(classify('worker_failed_retryable'), { visibility: 'activity', requiresUser: false });
+  assert.deepEqual(classify('worker_failed_final'), { visibility: 'inbox', requiresUser: true });
+});
+
+test('spot checks against batch 4\'s review flow', () => {
+  assert.deepEqual(classify('review_approved'), { visibility: 'activity', requiresUser: false });
+  assert.deepEqual(classify('review_rejected'), { visibility: 'activity', requiresUser: false });
+});
+
+test('non-TransitionEvent rows for batch 4\'s project-level events', () => {
+  assert.deepEqual(classify('project_resume'), { visibility: 'activity', requiresUser: false });
+  assert.deepEqual(classify('project_spend_cap_reached'), { visibility: 'inbox', requiresUser: true });
+});

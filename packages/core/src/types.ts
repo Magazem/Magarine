@@ -18,7 +18,10 @@ export interface Project {
   description: string | null;
   defaultAdapter: string | null;
   maxParallelWorkers: number;
+  /** The ceiling for ONE RUN (the tool's --max-budget-usd flag). Deliberately distinct from `maxSpendUsd` below despite the one-word name difference -- see db/schema.ts's 0003/0005 migration comments. */
   maxBudgetUsd: number;
+  /** Optional CUMULATIVE cap across every run the project will ever spend (batch 4). Null means no cap. Enforced at spawn time -- see scheduler.ts's `tick()`. NOT the same thing as `maxBudgetUsd` above. */
+  maxSpendUsd: number | null;
   /** Project brief handed to every worker via TicketEnvelope.projectBrief. */
   brief: string | null;
   /** Required when any ticket in the project uses the DIRECTORY workspace type: one shared directory for the whole project. */
@@ -172,7 +175,12 @@ export interface WorkerResult {
 // A terminal event (`result_raw` or `failure`) ends the run; `progress` and
 // `question` do not.
 export type WorkerEvent =
-  | { type: 'progress'; message: string }
+  | {
+      type: 'progress';
+      message: string;
+      /** Cumulative spend for the run so far, if the adapter can report it (batch 4 item 3). Absent means the adapter has no running estimate. */
+      costUsd?: number;
+    }
   | { type: 'question'; message: string }
   | { type: 'result_raw'; raw: unknown; usage?: unknown }
   | {

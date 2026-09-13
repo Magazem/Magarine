@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from './db/index.ts';
-import { createProject, createTicket, listEventsForEntity, getTicket } from './store.ts';
+import { addDependency, createProject, createTicket, listEventsForEntity, getTicket } from './store.ts';
 import { recordTicketTransition, InvalidTransitionError } from './stateMachine.ts';
+import { resolveReadiness } from './dependencies.ts';
 
 function setup() {
   const db = openDb(':memory:');
@@ -62,37 +63,85 @@ test('a second event with the same idempotency key is ignored', () => {
   assert.equal(getTicket(db, ticket.id)!.status, 'READY');
 });
 
-test('worker_retryable_failure returns ticket to READY and increments attempt_count while attempts remain', () => {
+test('worker_failure (retryable) returns ticket to READY, increments attempt_count, and persists as worker_failed_retryable', () => {
   const { db, ticket } = setup(); // maxAttempts: 2
   recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
   recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
 
   const result = recordTicketTransition(db, {
     ticketId: ticket.id,
-    event: 'worker_retryable_failure',
+    event: 'worker_failure',
     idempotencyKey: 'c',
+    payload: { retryable: true },
   });
 
   assert.equal(result.ticket.status, 'READY');
   assert.equal(result.ticket.attemptCount, 1);
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  assert.equal(events.at(-1)!.eventType, 'worker_failed_retryable', 'must persist under the concrete outcome type, not the verb');
+  assert.equal(events.at(-1)!.visibility, 'activity');
 });
 
-test('worker_retryable_failure moves to FAILED once max_attempts is reached', () => {
+test('worker_failure (retryable) moves to FAILED once max_attempts is reached, and persists as worker_failed_final', () => {
   const { db, ticket } = setup(); // maxAttempts: 2
   recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
   recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
-  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_retryable_failure', idempotencyKey: 'c' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_failure', idempotencyKey: 'c', payload: { retryable: true } });
   // Back to READY with attempt_count 1; simulate second run picked up.
   recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'd' });
 
   const result = recordTicketTransition(db, {
     ticketId: ticket.id,
-    event: 'worker_retryable_failure',
+    event: 'worker_failure',
     idempotencyKey: 'e',
+    payload: { retryable: true },
   });
 
   assert.equal(result.ticket.status, 'FAILED');
   assert.equal(result.ticket.attemptCount, 2);
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  assert.equal(events.at(-1)!.eventType, 'worker_failed_final');
+  assert.equal(events.at(-1)!.visibility, 'inbox');
+  assert.equal(events.at(-1)!.requiresUser, true);
+});
+
+test('worker_failure (not retryable) goes straight to FAILED on the first attempt, even with attempts remaining, and persists as worker_failed_final', () => {
+  const { db, ticket } = setup(); // maxAttempts: 2
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+
+  const result = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_failure',
+    idempotencyKey: 'c',
+    payload: { retryable: false, failureClass: 'budget_exceeded', tally: 1.5, overshoot: 0.5 },
+  });
+
+  assert.equal(result.ticket.status, 'FAILED', 'a non-retryable failure is final regardless of attempts remaining');
+  assert.equal(result.ticket.attemptCount, 1);
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  const finalEvent = events.at(-1)!;
+  assert.equal(finalEvent.eventType, 'worker_failed_final');
+  assert.equal(finalEvent.visibility, 'inbox');
+  assert.equal(finalEvent.requiresUser, true);
+  assert.deepEqual(finalEvent.payload, { retryable: false, failureClass: 'budget_exceeded', tally: 1.5, overshoot: 0.5 });
+});
+
+test('worker_failure without an explicit boolean retryable in its payload throws rather than defaulting', () => {
+  const { db, ticket } = setup();
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+
+  assert.throws(() => {
+    recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_failure', idempotencyKey: 'c', payload: {} });
+  }, /explicit boolean "retryable"/);
+});
+
+test('worker_failure refuses a ticket that is not IN_PROGRESS', () => {
+  const { db, ticket } = setup();
+  assert.throws(() => {
+    recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_failure', idempotencyKey: 'a', payload: { retryable: true } });
+  }, InvalidTransitionError);
 });
 
 test('worker_question is a self-loop on IN_PROGRESS and is recorded as an event', () => {
@@ -153,12 +202,13 @@ test('manual_retry moves FAILED to READY and raises max_attempts by one', () => 
   const { db, ticket } = setup(); // maxAttempts: 2
   recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
   recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
-  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_retryable_failure', idempotencyKey: 'c' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_failure', idempotencyKey: 'c', payload: { retryable: true } });
   recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'd' });
   const exhausted = recordTicketTransition(db, {
     ticketId: ticket.id,
-    event: 'worker_retryable_failure',
+    event: 'worker_failure',
     idempotencyKey: 'e',
+    payload: { retryable: true },
   });
   assert.equal(exhausted.ticket.status, 'FAILED');
   assert.equal(exhausted.ticket.maxAttempts, 2);
@@ -220,5 +270,135 @@ test('run_cancelled refuses a ticket that is not IN_PROGRESS', () => {
   const { db, ticket } = setup();
   assert.throws(() => {
     recordTicketTransition(db, { ticketId: ticket.id, event: 'run_cancelled', idempotencyKey: 'a' });
+  }, InvalidTransitionError);
+});
+
+test('a replayed worker_failure (same idempotency key, ticket already advanced) is a silent no-op, not an InvalidTransitionError', () => {
+  const { db, ticket } = setup();
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+  const first = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_failure',
+    idempotencyKey: 'dup',
+    payload: { retryable: true },
+  });
+  assert.equal(first.applied, true);
+  assert.equal(getTicket(db, ticket.id)!.status, 'READY');
+
+  // The ticket is now READY, not IN_PROGRESS -- computeNextState's
+  // 'worker_failure' branch would throw InvalidTransitionError if evaluated
+  // against this status. The idempotency check must short-circuit before
+  // that ever happens.
+  const replay = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_failure',
+    idempotencyKey: 'dup',
+    payload: { retryable: true },
+  });
+  assert.equal(replay.applied, false);
+  assert.equal(getTicket(db, ticket.id)!.status, 'READY', 'unchanged by the replay');
+  assert.equal(getTicket(db, ticket.id)!.attemptCount, 1, 'not double-counted');
+});
+
+test('review_approved moves REVIEW to DONE', () => {
+  const { db, ticket } = setup();
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_needs_review', idempotencyKey: 'c' });
+
+  const result = recordTicketTransition(db, { ticketId: ticket.id, event: 'review_approved', idempotencyKey: 'd' });
+
+  assert.equal(result.ticket.status, 'DONE');
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  assert.equal(events.at(-1)!.eventType, 'review_approved');
+  assert.equal(events.at(-1)!.visibility, 'activity');
+});
+
+test('review_approved refuses a ticket that is not in REVIEW', () => {
+  const { db, ticket } = setup();
+  assert.throws(() => {
+    recordTicketTransition(db, { ticketId: ticket.id, event: 'review_approved', idempotencyKey: 'a' });
+  }, InvalidTransitionError);
+});
+
+test('review_rejected returns a ticket to READY, consumes one attempt, and persists as review_rejected while attempts remain', () => {
+  const { db, ticket } = setup(); // maxAttempts: 2
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_needs_review', idempotencyKey: 'c' });
+
+  const result = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'review_rejected',
+    idempotencyKey: 'd',
+    payload: { reason: 'not quite right' },
+  });
+
+  assert.equal(result.ticket.status, 'READY');
+  assert.equal(result.ticket.attemptCount, 1);
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  assert.equal(events.at(-1)!.eventType, 'review_rejected');
+  assert.equal(events.at(-1)!.visibility, 'activity');
+  assert.deepEqual(events.at(-1)!.payload, { reason: 'not quite right' });
+});
+
+test('review_rejected at the last attempt lands in FAILED, persisted as worker_failed_final, and reaches the inbox', () => {
+  const { db, ticket } = setup(); // maxAttempts: 2
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_needs_review', idempotencyKey: 'c' });
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'review_rejected',
+    idempotencyKey: 'd',
+    payload: { reason: 'first rejection' },
+  });
+  // Back to READY with attempt_count 1; simulate a second attempt reaching review again.
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'e' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_needs_review', idempotencyKey: 'f' });
+
+  const result = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'review_rejected',
+    idempotencyKey: 'g',
+    payload: { reason: 'second rejection' },
+  });
+
+  assert.equal(result.ticket.status, 'FAILED');
+  assert.equal(result.ticket.attemptCount, 2);
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  const finalEvent = events.at(-1)!;
+  assert.equal(finalEvent.eventType, 'worker_failed_final', 'exhaustion reuses the same concrete type as an exhausted worker_failure');
+  assert.equal(finalEvent.visibility, 'inbox');
+  assert.equal(finalEvent.requiresUser, true);
+  assert.deepEqual(finalEvent.payload, { reason: 'second rejection' });
+});
+
+test('approving a ticket makes its dependent READY on the next resolve (batch-4-spec.md Role H item 7 acceptance)', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const blocker = createTicket(db, { projectId: project.id, title: 'blocker' });
+  const dependent = createTicket(db, { projectId: project.id, title: 'dependent' });
+  addDependency(db, { ticketId: dependent.id, dependsOnTicketId: blocker.id });
+  resolveReadiness(db, project.id);
+  assert.equal(getTicket(db, blocker.id)!.status, 'READY');
+  assert.equal(getTicket(db, dependent.id)!.status, 'OPEN', 'still blocked on the blocker');
+
+  recordTicketTransition(db, { ticketId: blocker.id, event: 'run_started', idempotencyKey: 'b1' });
+  recordTicketTransition(db, { ticketId: blocker.id, event: 'worker_needs_review', idempotencyKey: 'b2' });
+  const approved = recordTicketTransition(db, { ticketId: blocker.id, event: 'review_approved', idempotencyKey: 'b3' });
+  assert.equal(approved.ticket.status, 'DONE');
+
+  const { promoted } = resolveReadiness(db, project.id);
+
+  assert.deepEqual(promoted.map((t) => t.id), [dependent.id]);
+  assert.equal(getTicket(db, dependent.id)!.status, 'READY');
+});
+
+test('review_rejected refuses a ticket that is not in REVIEW', () => {
+  const { db, ticket } = setup();
+  assert.throws(() => {
+    recordTicketTransition(db, { ticketId: ticket.id, event: 'review_rejected', idempotencyKey: 'a', payload: { reason: 'x' } });
   }, InvalidTransitionError);
 });
