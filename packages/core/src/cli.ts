@@ -80,7 +80,12 @@ const COMMON_FLAGS = ['db', 'json'];
 // `--blocked-by` instead of `--depends-on`. Checked up front so a typo is
 // reported as a typo.
 const FLAG_SPECS: Record<string, string[]> = {
-  'project create': ['name', 'description', 'max-parallel'],
+  // `--brief` seeds `projects.brief` (read into every worker's
+  // `TicketEnvelope.projectBrief`); `--workspace-root` seeds
+  // `projects.workspace_root`, required once any ticket in the project uses
+  // `--workspace DIRECTORY` (one shared directory per project, not per
+  // ticket -- see workspace.ts).
+  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root'],
   'ticket add': [
     'project',
     'title',
@@ -101,8 +106,15 @@ const FLAG_SPECS: Record<string, string[]> = {
   // `--fake-script <ticketId>=<kind>`, repeatable; `<kind>` is one of
   // FakeAdapter's FakeScript kinds (succeed, retryable_failure, question,
   // needs_user_decision, malformed_result, hang).
-  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root', 'fake-script'],
-  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'workspace-root', 'fake-script'],
+  //
+  // `--workspace-root`, a lifetime flag on the adapter, is gone: workspace
+  // is now resolved per ticket (each ticket's own `--workspace`, and
+  // `project create --workspace-root` for the project's one shared
+  // DIRECTORY), not chosen once for the whole `run`/`tick` invocation. See
+  // scheduler.ts's `tick()`, which now prepares and passes a `workspace`
+  // per ticket rather than the adapter carrying one for its whole lifetime.
+  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script'],
+  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script'],
   status: ['project'],
   board: ['project'],
   inbox: ['project'],
@@ -172,12 +184,17 @@ function buildAdapter(db: Db, flags: Flags): AgentAdapter {
     const projectRow = db
       .prepare('SELECT max_budget_usd FROM projects WHERE id = ?')
       .get(String(flags.project ?? '')) as { max_budget_usd: number } | undefined;
-    const workspaceRoot = typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : undefined;
+    // `workspaceType`/`workspaceRoot` here are ClaudeCliAdapterOptions'
+    // required construction-time fallback, never actually used: scheduler.ts
+    // now prepares a workspace per ticket and passes it into every
+    // `startWorker` call, which the adapter always prefers over its own
+    // constructor default (see claudeCli.ts's `startWorker`). 'NONE' with no
+    // root is simply the least surprising placeholder for a value nothing
+    // reads.
     return new ClaudeCliAdapter({
       claudeExe,
       maxBudgetUsd: projectRow?.max_budget_usd ?? 2.0,
-      workspaceType: workspaceRoot ? 'DIRECTORY' : 'NONE',
-      workspaceRoot,
+      workspaceType: 'NONE',
     });
   }
 
@@ -221,6 +238,8 @@ async function main(): Promise<void> {
       name: String(flags.name ?? positionals[1] ?? ''),
       description: typeof flags.description === 'string' ? flags.description : null,
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+      brief: typeof flags.brief === 'string' ? flags.brief : null,
+      workspaceRoot: typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : null,
     });
     output(flags, project, `Created project ${project.id} (${project.name})`);
     return;
@@ -286,6 +305,7 @@ async function main(): Promise<void> {
       adapter,
       projectId: String(flags.project ?? ''),
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+      runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
     });
     output(flags, result, `Started ${result.started.length} run(s).`);
     return;
@@ -300,6 +320,7 @@ async function main(): Promise<void> {
       adapter,
       projectId: String(flags.project ?? ''),
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+      runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
     });
     output(flags, { idle: true }, 'Idle: no more runnable tickets.');
     return;

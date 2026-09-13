@@ -1,7 +1,8 @@
 import type { Db } from './db/index.ts';
 import { withTransaction } from './db/index.ts';
+import { classify } from './policy.ts';
 import { getTicket, insertEvent } from './store.ts';
-import type { EventVisibility, Ticket, TicketStatus } from './types.ts';
+import type { Ticket, TicketStatus } from './types.ts';
 
 // The ticket state machine. `recordTicketTransition` is the ONLY function in
 // this codebase that writes `tickets.status`. Every other module that needs
@@ -114,8 +115,18 @@ export interface RecordTransitionInput {
   event: TransitionEvent;
   idempotencyKey: string;
   payload?: unknown;
-  visibility?: EventVisibility;
-  requiresUser?: boolean;
+  /**
+   * @deprecated ignored. Visibility and requiresUser are now derived from
+   * `policy.ts`'s `classify(event)`, not taken from the caller — see
+   * docs/strategy/batch-3-spec.md's Role G part 2. Left on the type only so
+   * existing call sites that still pass these (dependencies.ts,
+   * scheduler.ts) do not need to change to keep compiling; they are dead
+   * parameters now, worth deleting next time those files are touched, but
+   * that is not this role's file to edit.
+   */
+  visibility?: unknown;
+  /** @deprecated ignored, see `visibility` above. */
+  requiresUser?: unknown;
 }
 
 export interface RecordTransitionResult {
@@ -131,6 +142,14 @@ export function recordTicketTransition(db: Db, input: RecordTransitionInput): Re
       throw new Error(`ticket not found: ${input.ticketId}`);
     }
 
+    // Every event this function writes goes through the notification policy
+    // table (policy.ts), not whatever the caller happened to pass — this is
+    // the wiring batch-3-spec.md's Role G part 2 asks for, so a transition's
+    // visibility/requiresUser is a property of the event type itself,
+    // decided in one place, rather than something every call site has to
+    // get right on its own.
+    const policy = classify(input.event);
+
     // Check idempotency before validating the transition: a replayed event
     // for a transition that has already happened would otherwise look like
     // an invalid transition from the ticket's *current* (already-advanced)
@@ -141,8 +160,8 @@ export function recordTicketTransition(db: Db, input: RecordTransitionInput): Re
       entityType: 'ticket',
       entityId: ticket.id,
       payload: input.payload,
-      visibility: input.visibility,
-      requiresUser: input.requiresUser,
+      visibility: policy.visibility,
+      requiresUser: policy.requiresUser,
       idempotencyKey: input.idempotencyKey,
     });
 

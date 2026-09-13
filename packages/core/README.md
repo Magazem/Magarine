@@ -29,7 +29,7 @@ load time; nothing is compiled to disk first).
 The CLI is not published as a `bin`; run it directly with Node:
 
 ```sh
-node src/cli.ts project create --name "My Project" --json
+node src/cli.ts project create --name "My Project" --brief "One-paragraph project brief" --json
 node src/cli.ts ticket add --project <projectId> --title "T1" --json
 node src/cli.ts ticket add --project <projectId> --title "T2" --json
 node src/cli.ts ticket add --project <projectId> --title "T3" --json
@@ -60,6 +60,12 @@ Readiness is resolved only after every `--depends-on` from that same command
 has been attached, never before — a ticket created with dependencies is
 never briefly `READY` while some of them are still missing.
 
+`project create` also takes `--brief "<text>"` (seeds `projects.brief`, read
+into every worker's `TicketEnvelope.projectBrief`) and `--workspace-root
+<dir>` (seeds `projects.workspace_root`: one shared directory for the whole
+project, required once any ticket in it uses `--workspace DIRECTORY`).
+Both default to `null`/unset if omitted.
+
 ### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `resume`
 
 - **`board --project <id>`**: every ticket in the project, one line each,
@@ -76,9 +82,14 @@ never briefly `READY` while some of them are still missing.
   everything, including those.
 - **`decide --ticket <id> --answer "<text>"`**: answers a `BLOCKED`
   ticket's pending question and moves it to `READY`. Refuses (clean
-  message, no stack trace) if the ticket isn't `BLOCKED`.
-- **`retry --ticket <id>`**: manually retries a `FAILED` ticket, moving it
-  back to `READY`. Refuses if the ticket isn't `FAILED`.
+  message, no stack trace) if the ticket isn't `BLOCKED`. Records a
+  `user_decision` event (`{ ticketId, question, answer }`) — this is also
+  the state machine transition itself, not a separate notification; the
+  question text is pulled from the ticket's most recent
+  `worker_needs_user_decision` event.
+- **`retry --ticket <id>`**: manually retries a `FAILED` ticket via the
+  `manual_retry` transition, which moves it back to `READY` and raises its
+  `maxAttempts` by one. Refuses if the ticket isn't `FAILED`.
 - **`resume --adapter <projectId>`**: clears a project's adapter pause (set
   when an `adapter_unavailable` failure trips it). Refuses if the project
   isn't paused, or doesn't exist.
@@ -95,22 +106,29 @@ All six accept `--json`.
 source (rather than a hand-copied list, and without editing that file — see
 below) and fails the build if a transition event has no row.
 
-Wiring `classify` into `stateMachine.ts`'s write site (so the stored
-`visibility`/`requires_user` columns come from the policy table instead of
-each caller passing its own) is **not done yet**. Another engineer is
-adding three transitions to `stateMachine.ts` in parallel this batch; that
-file is deliberately untouched here to avoid colliding with that work. Wiring
-is a follow-up, one line at the transition's write site.
+`classify` is wired into `stateMachine.ts`'s write site: every transition's
+`visibility`/`requires_user` is derived from `policy.ts` there, not taken
+from the caller. `RecordTransitionInput.visibility`/`.requiresUser` are kept
+on the type as ignored/deprecated fields (some existing call sites in
+`scheduler.ts`/`dependencies.ts` still pass them; they are now dead
+parameters, harmless to leave and not this role's file to clean up) rather
+than removed, so nothing else needed to change to pick up the wiring.
 
-Six event types new to this batch (`manual_retry`, `user_decided`,
-`run_cancelled`, `worker_progress`, `artifact_collision`, `user_decision`)
-have rows even though most are not named in the architecture document; where
-the document is silent, `policy.ts` applies its own stated default
-("silent by default") rather than inventing a tier, and says so in a comment
-on each row. See that file for the one row (`run_cancelled`) flagged as
-genuinely ambiguous: it backs two different scenarios (an adapter pause that
-should reach the inbox, and a plain shutdown cancellation that shouldn't)
-that `classify(eventType)` cannot tell apart from the event type alone.
+Several event types new to this batch (`manual_retry`, `run_cancelled`,
+`artifact_collision`, `user_decision`) have rows even though most are not
+named in the architecture document; where the document is silent,
+`policy.ts` applies its own stated default ("silent by default") rather than
+inventing a tier, and says so in a comment on each row. `run_cancelled` was
+flagged in part 1 as the most uncertain row (it seemed to back both an
+adapter-pause cancellation that should reach the inbox, and a plain shutdown
+cancellation that shouldn't); reading Role F's landed implementation
+resolved this — `adapter_unavailable` is its own separate event
+(`inbox`/`requiresUser`), fired alongside `run_cancelled` rather than
+folded into it, so `run_cancelled` itself never needs to reach the inbox on
+its own. `policy.ts` also documents (but does not wire, since neither goes
+through `recordTicketTransition`) two more event types scheduler.ts emits
+directly: `adapter_unavailable` and `workspace_preparation_failed`, both
+`inbox`/`requiresUser`.
 
 Every command accepts `--json` for machine-readable output and `--db <path>`
 to point at a specific SQLite file (default: `.magarine/magarine.db` under
@@ -125,9 +143,18 @@ spawns the real Claude Code CLI (`adapters/claudeCli.ts`) directly (never
 through the `claude` npm shim, which is what corrupted arguments and made
 workers unkillable in the Batch 1 spike). `--claude-exe <path>` overrides
 the executable; if omitted, it defaults to `resolveExecutable('claude')`
-(`process.ts`). For a persistent `DIRECTORY` workspace, add
-`--workspace-root <dir>`; without it, each run gets a fresh `NONE` temp
-directory that is deleted afterwards.
+(`process.ts`). Workspace is resolved per ticket now (each ticket's own
+`--workspace`, plus the project's `--workspace-root` from `project create`
+for `DIRECTORY`'s one shared directory) rather than as a `tick`/`run` flag —
+there is no lifetime `--workspace-root` on `tick`/`run` any more; giving one
+is reported as an unknown flag.
+
+`--run-timeout <seconds>` caps how long a single run is allowed to take
+before the scheduler cancels it itself (`SchedulerDeps.runTimeoutMs`,
+milliseconds under the hood): the run is marked `cancelled`
+(`failureClass: 'run_timeout'`) and its ticket goes back to `READY` without
+consuming an attempt, the same as a SIGINT/SIGTERM cancellation. Omit it for
+no cap (the previous, still-default behaviour).
 
 With `--adapter fake` (the default), `--fake-script <ticketId>=<kind>`
 (repeatable) scripts the permanent `FakeAdapter` test double per ticket id —
@@ -181,14 +208,10 @@ silent, this implementation made the following calls:
   non-terminal `WorkerEvent` of type `question`, separate from the terminal
   `WorkerResult`. This matches the doc's lifecycle diagram, which treats the
   two as different branches.
-- **`REVIEW` and `BLOCKED` are dead ends in this batch.** There is no CLI
-  command to approve a `REVIEW` ticket into `DONE` or to resolve a `BLOCKED`
-  ticket, because the spec's CLI command list for this batch is exactly
-  `project create`, `ticket add`, `dep add`, `tick`, `run --until-idle`,
-  `status` — no `approve`/`decide`. The transition table has no outgoing
-  edge from `REVIEW` or `BLOCKED` yet. Batch 3 adds `decide`/`retry` per the
-  strategy doc; wiring those in is a one-line addition to the transition
-  table plus a CLI command, not a redesign.
+- **Superseded in Batch 3: `BLOCKED` is no longer a dead end.** `decide`
+  resolves it via the `user_decision` transition. `REVIEW` still has no
+  outgoing edge or CLI command (no `approve`) — batch 3's scope was
+  `decide`/`retry` specifically, not a `REVIEW` -> `DONE` approval flow.
 - **A non-retryable adapter failure still goes through the retry-exhaustion
   path.** `WorkerEvent.failure` carries a `retryable` boolean, but this batch
   routes every failure (retryable or not) through the same
@@ -216,20 +239,17 @@ silent, this implementation made the following calls:
   (`classifyOutcome`, `kind: 'adapter_unavailable'`) and emits the closest
   available signal: a non-retryable `failure` with an `ADAPTER_UNAVAILABLE`
   marker in the message.
-- **Per-ticket budget override is schema-landed, not plumbed.** Migration
-  `0003_budget_fields` adds `tickets.max_budget_usd_override`, but
-  `TicketEnvelope` (built by `scheduler.ts`'s `buildEnvelope`) carries no
-  budget field, so `ClaudeCliAdapter` has no way to receive a per-ticket
-  override. It is constructed with one `maxBudgetUsd` for its whole
-  lifetime, read from the project's `max_budget_usd` column by `cli.ts`.
-  Wiring the override through requires a `scheduler.ts`/`types.ts` change
-  outside this role's owned files.
-- **Workspace routing is adapter-wide, not per-ticket.** `scheduler.ts`
-  never passes a `workspace` into `startWorker`, and `TicketEnvelope` has no
-  `workspaceType` field, so `ClaudeCliAdapter` cannot know a given ticket's
-  configured workspace type. It is constructed with one `workspaceType`
-  (`NONE` unless `--workspace-root` is given) applied to every run; an
-  explicit `workspace` passed by a future caller overrides it per call.
+- **Superseded in Batch 3 (Role F, the scheduler seam):** the two gaps
+  originally described here are closed. Per-ticket budget override is
+  plumbed: `TicketEnvelope.maxBudgetUsd` is resolved (ticket override, else
+  project default) by `scheduler.ts`'s `buildEnvelope`/`resolveMaxBudgetUsd`.
+  Workspace routing is per-ticket, not adapter-wide: `scheduler.ts`'s
+  `tick()` prepares each ticket's own workspace and passes it into every
+  `startWorker` call, which `ClaudeCliAdapter` always prefers over its
+  constructor default — see `cli.ts`'s `buildAdapter`, which now constructs
+  the adapter with a placeholder `workspaceType: 'NONE'` that nothing reads
+  at runtime, rather than deriving one from a lifetime `--workspace-root`
+  flag (removed; see the `tick`/`run --until-idle` section above).
 
 ## Cost visibility
 
@@ -254,3 +274,13 @@ attempt" and per-ticket budget override gaps are described above under
 SOFT/UNKNOWN — no spike run ever forced it
 (`docs/spikes/claude-cli-adapter.md` §2.4), so `adapters/claudeCli.ts`'s
 pattern match on the error message is inferred, not observed.
+
+Batch 3 (Role G, surfaces and policy): no `REVIEW` -> `DONE` approval
+command (see "Design decisions" above). `worker_retryable_failure`'s two
+document rows (ordinary retry vs. retry-limit-exhausted) collapse onto one
+policy row, since `classify(eventType)` has no way to tell them apart from
+the event type alone — this is a real, unresolved gap escalated to the
+Strategist, not a decision made here. `adapter_unavailable` and
+`workspace_preparation_failed` are documented in `policy.ts` but not wired
+through `classify` (they never go through `recordTicketTransition`, so
+there is no write site in this role's files to wire them into).

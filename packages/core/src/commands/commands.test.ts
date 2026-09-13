@@ -186,14 +186,18 @@ test('inbox shows a needs-user-decision item before decide, and not after', asyn
       dbFile,
     ]);
 
-    if (decideRes.code !== 0) {
-      // Expected while stateMachine.ts has not yet picked up Role F's
-      // `user_decided` transition (batch 3, still in progress in parallel).
-      // Report the exact failure rather than silently treating this as a
-      // pass.
-      assert.match(decideRes.stderr, /user_decided|invalid transition/i);
-      return;
-    }
+    // No escape hatch: Role F's `user_decision` transition is landed and
+    // committed (`8afe3b8`), so this must complete the whole round trip, not
+    // merely fail in a way that looks like progress. (A prior version of
+    // this test tolerated a clean `InvalidTransitionError` here as "expected
+    // until it lands" -- that assertion was correct when it was written, but
+    // it was still passing, unchanged, in the committed tree where `decide`
+    // called the wrong event name and could never actually decide anything.
+    // A green suite hid a dead command. Asserting `code === 0` here is what
+    // would have caught that immediately.)
+    assert.equal(decideRes.code, 0, decideRes.stderr);
+    const decided = JSON.parse(decideRes.stdout) as { id: string; status: string };
+    assert.equal(decided.status, 'READY', 'a decided ticket must be READY, not still BLOCKED');
 
     const inboxAfter = JSON.parse(
       (await run(['inbox', '--project', project.id, '--json', '--db', dbFile])).stdout
@@ -207,6 +211,22 @@ test('inbox shows a needs-user-decision item before decide, and not after', asyn
       (await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout
     ) as Array<{ id: string; status: string }>;
     assert.equal(statusAfter.find((t) => t.id === ticket.id)!.status, 'READY');
+
+    // The decision itself must be a persisted, readable record, not just a
+    // side effect of the status change -- this is the contract
+    // scheduler.ts's buildEnvelope reads `relevantDecisions` back out of.
+    const activityAll = JSON.parse(
+      (await run(['activity', '--ticket', ticket.id, '--all', '--json', '--db', dbFile])).stdout
+    ) as Array<{ eventType: string; payload: { ticketId?: string; question?: string; answer?: string } }>;
+    const decisionEvent = activityAll.find((e) => e.eventType === 'user_decision');
+    assert.ok(decisionEvent, 'a user_decision event must be recorded on the ticket');
+    assert.equal(decisionEvent!.payload.ticketId, ticket.id);
+    assert.equal(decisionEvent!.payload.answer, 'go ahead with option A');
+    assert.equal(
+      typeof decisionEvent!.payload.question,
+      'string',
+      'the persisted decision must carry the question it answered'
+    );
   });
 });
 
@@ -285,15 +305,26 @@ test('retry: a ticket that exhausts its attempts reaches FAILED and can be retri
     ) as Array<{ id: string; status: string }>;
     assert.equal(statusBefore.find((t) => t.id === ticket.id)!.status, 'FAILED');
 
+    // No escape hatch: Role F's `manual_retry` transition is landed and
+    // committed. Also confirm the transition's documented side effect
+    // (max_attempts raised by one), not just the status change, so a
+    // ticket that was already at its cap can actually run again.
     const retryRes = await run(['retry', '--ticket', ticket.id, '--json', '--db', dbFile]);
-    if (retryRes.code !== 0) {
-      // Expected until Role F's `manual_retry` transition lands (batch 3,
-      // in progress in parallel).
-      assert.match(retryRes.stderr, /manual_retry|invalid transition/i);
-      return;
-    }
-    const retried = JSON.parse(retryRes.stdout);
+    assert.equal(retryRes.code, 0, retryRes.stderr);
+    const retried = JSON.parse(retryRes.stdout) as { status: string; maxAttempts: number };
     assert.equal(retried.status, 'READY');
+    assert.equal(retried.maxAttempts, 2, 'manual_retry must raise max_attempts by one (was 1)');
+
+    const runAgain = await run(['run', '--until-idle', '--project', project.id, '--json', '--db', dbFile]);
+    assert.equal(runAgain.code, 0, runAgain.stderr);
+    const finalStatus = JSON.parse(
+      (await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ id: string; status: string }>;
+    assert.equal(
+      finalStatus.find((t) => t.id === ticket.id)!.status,
+      'DONE',
+      'after retry, an unscripted fake run must succeed and reach DONE'
+    );
   });
 });
 
@@ -370,5 +401,81 @@ test('resume refuses a project that is not paused, and an unknown project id, wi
     const unknown = await run(['resume', '--adapter', 'proj_does_not_exist', '--db', dbFile]);
     assert.notEqual(unknown.code, 0);
     assert.match(unknown.stderr, /no such project/);
+  });
+});
+
+test('project create accepts --brief and --workspace-root, persisted on the project', async () => {
+  await withTempDb('magarine-project-brief-', async (dbFile) => {
+    const res = await run([
+      'project',
+      'create',
+      '--name',
+      'BriefP',
+      '--brief',
+      'Build the weekend MVP.',
+      '--workspace-root',
+      dbFile + '.workroot',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(res.code, 0, res.stderr);
+    const project = JSON.parse(res.stdout) as { brief: string; workspaceRoot: string };
+    assert.equal(project.brief, 'Build the weekend MVP.');
+    assert.equal(project.workspaceRoot, dbFile + '.workroot');
+  });
+});
+
+test('project create without --brief/--workspace-root leaves them null, unchanged from before this flag existed', async () => {
+  await withTempDb('magarine-project-nobrief-', async (dbFile) => {
+    const res = await run(['project', 'create', '--name', 'NoBriefP', '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    const project = JSON.parse(res.stdout) as { brief: string | null; workspaceRoot: string | null };
+    assert.equal(project.brief, null);
+    assert.equal(project.workspaceRoot, null);
+  });
+});
+
+test('--run-timeout cancels a hung fake run: ticket returns to READY without consuming an attempt', async () => {
+  await withTempDb('magarine-run-timeout-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'TimeoutP', '--json', '--db', dbFile])).stdout
+    );
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'HANGS', '--json', '--db', dbFile])).stdout
+    );
+
+    // The scheduler's own timeout is a pending timer inside this `tick`
+    // process, so Node keeps the process alive and this `run()` call does
+    // not return until the timer has fired and the cancellation has been
+    // applied -- no extra sleep needed after it.
+    const tickRes = await run([
+      'tick',
+      '--project',
+      project.id,
+      '--fake-script',
+      `${ticket.id}=hang`,
+      '--run-timeout',
+      '1',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+
+    const status = JSON.parse(
+      (await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ id: string; status: string; attemptCount: number }>;
+    const timedOut = status.find((t) => t.id === ticket.id)!;
+    assert.equal(timedOut.status, 'READY', 'a timed-out run must return its ticket to READY');
+    assert.equal(timedOut.attemptCount, 0, 'a daemon-initiated cancellation must not consume an attempt');
+
+    const activity = JSON.parse(
+      (await run(['activity', '--ticket', ticket.id, '--all', '--json', '--db', dbFile])).stdout
+    ) as Array<{ eventType: string }>;
+    assert.ok(
+      activity.some((e) => e.eventType === 'run_cancelled'),
+      'a run_cancelled event must be recorded'
+    );
   });
 });

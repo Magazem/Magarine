@@ -81,36 +81,36 @@ const POLICY: Record<string, EventPolicy> = {
   // explicit cancel). Silent by default.
   cancel: { visibility: 'internal', requiresUser: false },
 
-  // --- Rows required ahead of Role F's stateMachine.ts landing ---
-  // The architecture document does not name any of the six event types
-  // below; they are new to batch 3. Per instruction, this file does not
-  // invent a policy for them where the document is silent — each row below
-  // either applies the document's own stated default ("The orchestrator
-  // should be silent by default") or follows an explicit ruling given
-  // outside the document (cited per row). All six are flagged again in the
-  // delivery report for the Strategist to confirm or override.
+  // --- Rows added ahead of Role F's stateMachine.ts landing, part 1 ---
+  // The architecture document does not name any of these event types; they
+  // are new to batch 3. Per instruction, this file does not invent a policy
+  // for them where the document is silent — each row below either applies
+  // the document's own stated default ("The orchestrator should be silent
+  // by default") or follows an explicit ruling given outside the document
+  // (cited per row).
 
   // Doc-silent. Default applied (internal, no user interruption). A manual
   // retry is user-initiated, so the user already knows it happened.
   manual_retry: { visibility: 'internal', requiresUser: false },
 
-  // Doc-silent. Default applied. The user just answered the question that
-  // caused `worker_needs_user_decision`'s inbox item; no second
-  // notification is needed for the resolution itself.
-  user_decided: { visibility: 'internal', requiresUser: false },
-
-  // Doc-silent, and the more uncertain of the six: batch-3-spec.md §2 Role F
-  // item 1 describes this same transition backing two different scenarios
-  // -- an `adapter_unavailable` failure (which that spec explicitly wants
-  // routed to an inbox event, since a human has to fix the adapter and run
-  // `magarine resume`) and a plain SIGINT/shutdown cancellation (which
-  // needs no user action at all). `classify(eventType)` cannot tell those
-  // two apart from the event type alone. This row picks the middle ground
-  // -- visible on `activity` so a cancellation is never silently dropped,
-  // but not `inbox`/`requiresUser`, so an ordinary shutdown does not spam
-  // the inbox. If the adapter-pause case needs to reach the inbox
-  // specifically, it needs its own event type (e.g. `adapter_paused`)
-  // rather than overloading `run_cancelled` -- flagged for the Strategist.
+  // RESOLVED in part 2, having now read Role F's landed implementation
+  // (scheduler.ts's `applyWorkerEventInner`/`cancelTicketRun`): this was
+  // flagged in part 1 as the most uncertain row, because the spec text
+  // described `run_cancelled` as backing both an adapter-pause cancellation
+  // (which needs to reach the inbox) and a plain SIGINT/shutdown
+  // cancellation (which doesn't), and `classify(eventType)` can't tell
+  // those apart from the event type alone. The concern doesn't apply: Role
+  // F implemented the adapter-pause case as its own, separate event type,
+  // `adapter_unavailable` (inbox/requiresUser, inserted directly, not a
+  // ticket-status transition — see below), fired *alongside*
+  // `run_cancelled` rather than instead of it. `run_cancelled` itself is
+  // now purely "this run stopped, not the ticket's fault" bookkeeping in
+  // every case it fires (adapter pause, a run timeout, or SIGINT/SIGTERM),
+  // with no case that needs it to reach the inbox on its own. Doc-silent,
+  // but kept on `activity` (not downgraded to internal) to match what
+  // scheduler.ts already does today and because "a run was cancelled and
+  // why" is meaningful history for the activity log, not pure bookkeeping
+  // noise.
   run_cancelled: { visibility: 'activity', requiresUser: false },
 
   // Doc-silent. Default applied. Two workers colliding on the same declared
@@ -121,8 +121,36 @@ const POLICY: Record<string, EventPolicy> = {
 
   // Not doc-silent: batch-3-spec.md §2's contract is explicit --
   // "A user decision is an event with event_type = 'user_decision', ...
-  // visibility = 'activity'." Applied verbatim.
+  // visibility = 'activity'." Applied verbatim. Note this is also the
+  // *transition* event (BLOCKED -> READY): Role F named the transition
+  // itself `user_decision` rather than a separate `user_decided` verb, so
+  // there is only one event type here, not two (an earlier draft of this
+  // file had a now-removed `user_decided` row for an event type that was
+  // never real).
   user_decision: { visibility: 'activity', requiresUser: false },
+
+  // --- Documentation-only rows: not TransitionEvent members ---
+  // These two are new to batch 3 and are real event types the daemon
+  // emits, but neither goes through `recordTicketTransition` (neither one
+  // changes `tickets.status`), so neither is in `stateMachine.ts`'s
+  // `TransitionEvent` union and neither is exercised by the completeness
+  // test below, or by the `classify` wiring in stateMachine.ts's write
+  // site. scheduler.ts (Role F's file, not this role's to edit) currently
+  // hardcodes these same values directly at its own `insertEvent` call
+  // sites rather than calling `classify`. Recorded here anyway so the
+  // notification policy has one authoritative table instead of two, and so
+  // a future move of these call sites onto `classify` has something to
+  // match against.
+  //
+  // "Permission/credential required" (Internal: No, Activity: Yes, Inbox:
+  // Yes). Fired when a worker reports it can't authenticate; pauses the
+  // project's adapter until `magarine resume`.
+  adapter_unavailable: { visibility: 'inbox', requiresUser: true },
+  // Not in the doc. A ticket's workspace couldn't be prepared (e.g.
+  // DIRECTORY with no project workspace root configured) — a
+  // misconfiguration only the user can fix, so it needs to reach them the
+  // same way `adapter_unavailable` does, not silently stall the ticket.
+  workspace_preparation_failed: { visibility: 'inbox', requiresUser: true },
 };
 
 export function classify(eventType: string): EventPolicy {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
 
-// Flag-level coverage for --adapter/--claude-exe/--workspace-root. No real
+// Flag-level coverage for --adapter/--claude-exe/--run-timeout. No real
 // `claude` tool or network is touched: every case here either errors before
 // any process is spawned, or (the "accepted flags" tests) runs against a
 // project with zero tickets, so buildAdapter() runs but startWorker() is
@@ -95,7 +95,7 @@ test('an unknown --adapter value is reported by name', async () => {
   }
 });
 
-test('--adapter, --claude-exe and --workspace-root are accepted flags for tick (no "Unknown flag" rejection)', async () => {
+test('--adapter, --claude-exe and --run-timeout are accepted flags for tick (no "Unknown flag" rejection)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'magarine-cli-claude-flag-'));
   const dbFile = join(dir, 'magarine.db');
   try {
@@ -112,8 +112,8 @@ test('--adapter, --claude-exe and --workspace-root are accepted flags for tick (
       'claude',
       '--claude-exe',
       'irrelevant-no-ticket-will-spawn-it',
-      '--workspace-root',
-      dir,
+      '--run-timeout',
+      '60',
       '--project',
       project.id,
       '--json',
@@ -124,6 +124,23 @@ test('--adapter, --claude-exe and --workspace-root are accepted flags for tick (
     assert.equal(res.code, 0, res.stderr);
     assert.doesNotMatch(res.stderr, /Unknown flag/);
     assert.deepEqual(JSON.parse(res.stdout).started, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('--workspace-root is no longer an accepted flag on tick/run: workspace is routed per ticket now', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'magarine-cli-workspace-root-removed-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const projectRes = await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+
+    const res = await run(['tick', '--workspace-root', dir, '--project', project.id, '--db', dbFile]);
+
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /Unknown flag/);
+    assert.match(res.stderr, /--workspace-root/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
