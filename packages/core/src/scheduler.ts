@@ -301,8 +301,15 @@ function cancelTicketRun(db: Db, ticketId: string, runId: string, failureClass: 
   }
 }
 
-async function cancelRun(
-  deps: SchedulerDeps,
+// Exported for daemon.ts (batch 8): shutting down the daemon needs to do
+// exactly this -- stop the adapter's live handle and force the run/ticket
+// back to a settled DB state -- for every worker it holds, the same as
+// runUntilIdle's own SIGINT path below. Typed on the two fields it actually
+// reads rather than the full SchedulerDeps, so a caller with no
+// projectId/maxParallelWorkers of its own (the daemon ticks many projects,
+// not one) doesn't have to fabricate placeholder values to call it.
+export async function cancelRun(
+  deps: Pick<SchedulerDeps, 'db' | 'adapter'>,
   sr: { ticketId: string; runId: string; handle: WorkerHandle },
   failureClass: string
 ): Promise<void> {

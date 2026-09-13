@@ -27,6 +27,7 @@ import { decide, DecideError } from './commands/decide.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
+import { serve, ServeError } from './commands/serve.ts';
 import { artifactsDir as resolveArtifactsDir, dbPath as resolveDbPath, resolveStateDir } from './paths.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
@@ -170,6 +171,11 @@ const FLAG_SPECS: Record<string, string[]> = {
   // have a `--fake-script` spelling.
   tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
   run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
+  // Batch 8 (Role M): `serve` has no `--project` -- it ticks every project in
+  // the state directory's database (see daemon.ts's startDaemonLoop). `--port`
+  // defaults to 0 (any free loopback port); `--tick-interval` is in seconds,
+  // matching `--run-timeout`'s convention elsewhere in this file.
+  serve: ['port', 'tick-interval', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
   status: ['project'],
   board: ['project'],
   inbox: ['project'],
@@ -441,6 +447,40 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'serve') {
+    const resolvedDbPath = dbPath(flags);
+    const db = openDb(resolvedDbPath);
+    const adapter = buildAdapter(db, flags);
+    const resolvedStateDir = stateDir(flags);
+    try {
+      await serve({
+        db,
+        dbPath: resolvedDbPath,
+        stateDir: resolvedStateDir,
+        adapter,
+        maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+        runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
+        artifactsDir: artifactsDir(flags),
+        tickIntervalMs: typeof flags['tick-interval'] === 'string' ? Number(flags['tick-interval']) * 1000 : undefined,
+        port: typeof flags.port === 'string' ? Number(flags.port) : undefined,
+        // Never includes the token: only the CLI-facing shape a human or a
+        // script watching stdout needs to find the daemon, not what it needs
+        // to authenticate against it.
+        onListening: (info) => {
+          output(flags, info, `magarine daemon listening on 127.0.0.1:${info.port} (pid ${info.pid})`);
+        },
+      });
+    } catch (err) {
+      if (err instanceof ServeError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
   if (command === 'status') {
     const db = openDb(dbPath(flags));
     const tickets = listTickets(db, String(flags.project ?? ''));
@@ -558,7 +598,7 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
+    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|serve|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }

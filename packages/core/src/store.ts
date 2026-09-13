@@ -207,6 +207,15 @@ export function getProject(db: Db, id: string): Project | undefined {
   return row ? rowToProject(row) : undefined;
 }
 
+// Batch 8 (Role M): the daemon has no `--project` flag -- it ticks every
+// project in the state directory's one database on each pass, not a single
+// one named at invocation time the way the CLI's `tick`/`run --until-idle`
+// do. Plain read, same as every other list function in this file.
+export function listProjects(db: Db): Project[] {
+  const rows = db.prepare('SELECT * FROM projects ORDER BY created_at ASC').all() as ProjectRow[];
+  return rows.map(rowToProject);
+}
+
 interface TicketRow {
   id: string;
   project_id: string;
