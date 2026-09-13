@@ -339,7 +339,27 @@ function extractLateEventDetails(event: WorkerEvent): { failureClass?: string; u
   return {};
 }
 
+// Ruling 1 records "any later TERMINAL event" as late_worker_event -- a
+// late `progress`/`question` is dropped by the settle check in
+// applyWorkerEvent (below) exactly the same as a late terminal event is
+// (no transition, no run-row write either way), but it never MINTS a
+// late_worker_event row. This matters for real, not just for wording: the
+// real adapter's killTree grace period (process.ts's DEFAULT_GRACE_MS,
+// 3000ms) leaves stdout draining well after the scheduler's own
+// budget-stop branch has already committed its finishRun, so a real
+// budget-stopped run can see several late `progress` events before the
+// killed process's own terminal event finally arrives. Recording a row for
+// every one of those would turn the Orchestrator's own pass condition ("one
+// late_worker_event") into "several," for no diagnostic value -- a late
+// progress message carries nothing (no usage field exists on that event
+// type) worth losing by not recording it.
+function isLateEventWorthRecording(event: WorkerEvent): boolean {
+  return event.type === 'failure' || event.type === 'result_raw';
+}
+
 function recordLateWorkerEvent(db: Db, ticket: Ticket, run: Run, event: WorkerEvent, ctx: ApplyEventContext): void {
+  if (!isLateEventWorthRecording(event)) return;
+
   const { failureClass, usage } = extractLateEventDetails(event);
   ctx.lateEventSeq.n += 1;
   const policy = classify('late_worker_event');

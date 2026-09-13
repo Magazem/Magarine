@@ -760,6 +760,36 @@ test('a post-stop terminal event from a budget stop must not crash the daemon (b
   assert.equal(lateEvents.length, 1, 'the post-stop event must be recorded, not silently dropped');
 });
 
+test('a late non-terminal event after settlement is dropped without minting a late_worker_event row (batch 5 guard 1)', async () => {
+  // Ruling 1 records "any later TERMINAL event" as late_worker_event. A
+  // real killed process's stdout can keep draining progress lines during
+  // killTree's grace period well after the scheduler's own budget-stop
+  // branch already settled the run (process.ts's DEFAULT_GRACE_MS); each of
+  // those must be silently absorbed, not turn one late event into several.
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, then keeps chattering' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+  });
+  await s.done;
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'still going, apparently' });
+  adapter.emit(s.handle.id, { type: 'progress', message: 'still going, again' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE', 'unaffected by the late chatter');
+  const lateEvents = listEventsForEntity(db, 'run', s.runId).filter((e) => e.eventType === 'late_worker_event');
+  assert.equal(lateEvents.length, 0, 'a late non-terminal event must not mint a late_worker_event row');
+});
+
 test('a late terminal event after settlement merges its usage into the run row only if the row has none (batch 5 guard 1)', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
