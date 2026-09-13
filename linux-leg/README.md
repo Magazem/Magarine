@@ -24,12 +24,29 @@ instead of a day.
 | `1-setup.sh` | Believed complete, **never run, not even once**. Installs Node into `$HOME/.magarine-linux-leg`, no `sudo`, asks no questions, idempotent by design. Idempotence is a claim, not a result. |
 | `checks/tree-kill.ts` | Believed complete, never run. Proves the POSIX tree-kill path by reading `/proc` directly rather than trusting `spawnManaged`'s own `close` event. |
 | `.gitattributes` | Forces LF, so the scripts survive a checkout from Windows. |
-| `3-run.sh` | **MISSING.** Referenced by both `common.sh` and `checks/tree-kill.ts`. Phase A and Phase B were never written. |
-| Phase A / Phase B reports | **MISSING.** Never produced, because nothing ran. |
-| The two owner pages | **MISSING.** Never written. |
+| `3-run.sh` | **EXISTS, 299 lines, never run.** Reaches a clean `exit "$OVERALL_RC"`, so it is not obviously truncated — but nobody has executed a line of it, so "complete" is a guess, not a result. |
+| `4-send-back.md` | **MISSING.** `3-run.sh` tells the reader to consult it at the end of every run. |
+| `reports/` | Exists, empty. No Phase A or Phase B report was ever produced, because nothing ran. |
+| The two owner pages | **MISSING.** Never written.
 
-So the set is **incomplete as well as unproven**: the scripts that exist point
-at a runner that does not.
+So the set is **incomplete as well as unproven**: `3-run.sh` sends the reader to
+a `4-send-back.md` that was never written, and no script here has been executed
+even once.
+
+### Two corrections to my own record — Orchestrator
+
+I got this directory's contents wrong twice, and an engineer caught it, not me.
+
+1. I recorded on the task board that **"`linux-leg/` is EMPTY"** and that there
+   was "nothing to run". That was true when I looked and false by the time I
+   wrote it — files landed in between. **I reported a snapshot as a durable
+   fact.**
+2. This README's first version then said **`3-run.sh` is MISSING**. It is not;
+   it is 299 lines and reaches a clean exit.
+
+Both errors ran the same way: I checked once, then kept asserting the result
+after it had gone stale. The corrected position is above, and it is deliberately
+stated as *what was observed*, not as a conclusion about completeness.
 
 ## What this does NOT license
 
