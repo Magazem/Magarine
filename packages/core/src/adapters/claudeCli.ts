@@ -84,6 +84,20 @@ function mapWorkerStatus(status: unknown): WorkerResultStatus | null {
       return 'needs_user_decision';
     case 'failed':
       return 'failed';
+    // Batch 7 (Role L, docs/strategy/batch-7-spec.md section 1 ruling 1):
+    // without this case, a real worker's own budget self-stop
+    // (`status: 'budget_insufficient'`, which envelope.ts's prompt now tells
+    // every worker to report) falls through to `default: null` below and
+    // `classifyOutcome` reports it as a generic retryable failure -- the
+    // exact misclassification this status exists to fix, reproduced one
+    // layer down from where it was fixed. Found by the Orchestrator during
+    // batch 7 close-out verification, same shape as batch 4's `failureClass`
+    // propagation gap (batch-6-closeout.md section 3's citation of it):
+    // correct at the point of detection, discarded one layer down, invisible
+    // to a test suite that only ever drives the fake adapter through this
+    // path.
+    case 'budget_insufficient':
+      return 'budget_insufficient';
     default:
       return null;
   }

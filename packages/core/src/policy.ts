@@ -66,6 +66,15 @@ const POLICY: Record<string, EventPolicy> = {
   // retry), same convention its predecessor used for the same reason.
   worker_failure: { visibility: 'activity', requiresUser: false },
 
+  // Batch 7 (Role L): same shape as `worker_failure` above -- the verb
+  // stateMachine.ts's `TransitionEvent` union carries so the completeness
+  // check demands a row, but the concrete type actually persisted is always
+  // `worker_failed_final` (see stateMachine.ts's 'worker_budget_stop' case).
+  // Unlike `worker_failure`, this verb has only one possible destination
+  // (a worker's own budget self-stop is never retryable), so this row is not
+  // a "pick the more common case" compromise -- it is the exact answer.
+  worker_budget_stop: { visibility: 'inbox', requiresUser: true },
+
   // "Worker completed", the no-review-needed half (Internal: No, Activity:
   // Yes, Inbox: No, since review was not needed).
   worker_done: { visibility: 'activity', requiresUser: false },

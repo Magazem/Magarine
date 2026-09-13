@@ -161,10 +161,11 @@ const FLAG_SPECS: Record<string, string[]> = {
   // scheduler.ts's `tick()`, which now prepares and passes a `workspace`
   // per ticket rather than the adapter carrying one for its whole lifetime.
   // `--fake-outcome <ticketId>=<outcome>`, repeatable, batch 5 item 5:
-  // narrower and friendlier than `--fake-script` for the five outcomes the
+  // narrower and friendlier than `--fake-script` for the outcomes the
   // daemon's own vocabulary distinguishes (done/review/needs_user_decision/
-  // retryable/final -- see FakeAdapter's `review`/`final` kinds, new this
-  // batch). Layered on top of `--fake-script`, not a replacement: existing
+  // retryable/final -- see FakeAdapter's `review`/`final` kinds, new that
+  // batch; `budget_insufficient`, the worker's own budget self-stop, new in
+  // batch 7). Layered on top of `--fake-script`, not a replacement: existing
   // scripts (`succeed`, `question`, `malformed_result`, `hang`) still only
   // have a `--fake-script` spelling.
   tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
@@ -211,6 +212,10 @@ const FAKE_OUTCOME_KINDS: Record<string, FakeScript['kind']> = {
   needs_user_decision: 'needs_user_decision',
   retryable: 'retryable_failure',
   final: 'final',
+  // Batch 7 (Role L): the worker's own budget self-stop -- see
+  // fakeAdapter.ts's 'budget_insufficient' FakeScript kind and
+  // scheduler.ts's dedicated `worker_budget_stop` routing for this status.
+  budget_insufficient: 'budget_insufficient',
 };
 
 function buildAdapter(db: Db, flags: Flags): AgentAdapter {

@@ -156,7 +156,14 @@ export interface WorkerHandle {
 // implementation's extension to cover the full ticket lifecycle diagram
 // (worker succeeds / passes auto-checks / retryable failure / question /
 // user decision required). See packages/core/README.md "Design decisions".
-export type WorkerResultStatus = 'done' | 'review' | 'needs_user_decision' | 'failed';
+// Batch 7 (Role L, docs/strategy/batch-7-spec.md section 1 ruling 1):
+// `budget_insufficient` is a worker's own report that it read its budget
+// ceiling out of the envelope, measured its burn rate, and stopped rather
+// than continue past it -- distinct from `failed` (which the scheduler
+// treats as retryable) because retrying under the same ceiling would just
+// reproduce the same stop. See resultContract.ts and stateMachine.ts's
+// `worker_budget_stop` transition.
+export type WorkerResultStatus = 'done' | 'review' | 'needs_user_decision' | 'failed' | 'budget_insufficient';
 
 export interface WorkerResultCheck {
   name: string;

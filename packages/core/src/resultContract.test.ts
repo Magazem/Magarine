@@ -41,6 +41,18 @@ test('rejects an unknown status value', () => {
   assert.equal(result.valid, false);
 });
 
+test('accepts status budget_insufficient (batch 7: the worker\'s own budget self-stop)', () => {
+  const result = validateWorkerResult({
+    ...validExample,
+    status: 'budget_insufficient',
+    summary: 'Stopped after file01.txt: ~$0.08/pair makes all 16 files impossible within the $0.25 ceiling.',
+  });
+  assert.equal(result.valid, true);
+  if (result.valid) {
+    assert.equal(result.data.status, 'budget_insufficient');
+  }
+});
+
 test('rejects a wrong-typed field', () => {
   const result = validateWorkerResult({ ...validExample, checks: 'not an array' });
   assert.equal(result.valid, false);

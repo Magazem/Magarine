@@ -144,6 +144,84 @@ test('worker_failure refuses a ticket that is not IN_PROGRESS', () => {
   }, InvalidTransitionError);
 });
 
+// --- Batch 7 (Role L): the worker's own budget self-stop ---
+
+test('worker_budget_stop lands the ticket in FAILED, persisted as worker_failed_final, without consuming an attempt', () => {
+  const { db, ticket } = setup(); // maxAttempts: 2, attemptCount starts at 0
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+
+  const result = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_budget_stop',
+    idempotencyKey: 'c',
+    payload: {
+      status: 'budget_insufficient',
+      summary: 'Stopped after file01.txt: cost per pair makes the rest impossible within the ceiling.',
+      retryable: false,
+      failureClass: 'worker_budget_stop',
+    },
+  });
+
+  assert.equal(result.ticket.status, 'FAILED', 'a budget stop is final regardless of attempts remaining');
+  assert.equal(result.ticket.attemptCount, 0, 'no attempt is consumed by the worker explaining a budget stop');
+  assert.equal(result.ticket.maxAttempts, 2);
+
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  const finalEvent = events.at(-1)!;
+  assert.equal(finalEvent.eventType, 'worker_failed_final', 'must persist under the same concrete outcome type as any other FAILED-final failure');
+  assert.equal(finalEvent.visibility, 'inbox');
+  assert.equal(finalEvent.requiresUser, true);
+  assert.deepEqual(finalEvent.payload, {
+    status: 'budget_insufficient',
+    summary: 'Stopped after file01.txt: cost per pair makes the rest impossible within the ceiling.',
+    retryable: false,
+    failureClass: 'worker_budget_stop',
+  });
+});
+
+test('worker_budget_stop refuses a ticket that is not IN_PROGRESS', () => {
+  const { db, ticket } = setup();
+  assert.throws(() => {
+    recordTicketTransition(db, {
+      ticketId: ticket.id,
+      event: 'worker_budget_stop',
+      idempotencyKey: 'a',
+      payload: { failureClass: 'worker_budget_stop' },
+    });
+  }, InvalidTransitionError);
+});
+
+test('worker_budget_stop, unlike worker_failure, needs no explicit retryable flag in its payload -- it is never retryable by definition', () => {
+  const { db, ticket } = setup();
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+
+  assert.doesNotThrow(() => {
+    recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_budget_stop', idempotencyKey: 'c', payload: {} });
+  });
+});
+
+test('manual_retry after a worker_budget_stop moves the ticket back to READY, raising max_attempts, with attempt_count untouched', () => {
+  const { db, ticket } = setup(); // maxAttempts: 2, attemptCount starts at 0
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+  const stopped = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_budget_stop',
+    idempotencyKey: 'c',
+    payload: { failureClass: 'worker_budget_stop' },
+  });
+  assert.equal(stopped.ticket.status, 'FAILED');
+  assert.equal(stopped.ticket.attemptCount, 0);
+
+  const retried = recordTicketTransition(db, { ticketId: ticket.id, event: 'manual_retry', idempotencyKey: 'd' });
+
+  assert.equal(retried.ticket.status, 'READY');
+  assert.equal(retried.ticket.attemptCount, 0, 'attempt_count is exactly what it was before the budget stop');
+  assert.equal(retried.ticket.maxAttempts, 3, 'manual_retry still raises max_attempts by one, same as any other retry');
+});
+
 test('worker_question is a self-loop on IN_PROGRESS and is recorded as an event', () => {
   const { db, ticket } = setup();
   recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });

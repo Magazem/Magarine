@@ -93,6 +93,39 @@ test('happy path: reads .orchestrator/result.json in preference to the stream re
   }
 });
 
+// Batch 7 (Role L): a real worker's own budget self-stop, driven through the
+// actual spawned process / stdout-parsing / result-file pipeline
+// (ClaudeCliAdapter.startWorker), not FakeAdapter -- proves the fix in
+// mapWorkerStatus reaches a live run end to end, not just classifyOutcome in
+// isolation (see claudeCli.classify.test.ts's unit-level test for that).
+test('a real worker result reporting status budget_insufficient reaches observers as result_raw, not a generic failure', async () => {
+  const { events, workspaceRoot } = await runOnce({
+    stdoutFile: fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'),
+    exitCode: 0,
+    createFiles: {
+      '.orchestrator/result.json': JSON.stringify({
+        status: 'budget_insufficient',
+        summary: 'per-call cost makes finishing this ticket impossible within the ceiling',
+        artifacts: [],
+        checks: [],
+        blockers: [],
+        questions: [],
+      }),
+    },
+  });
+  try {
+    const terminal = events.at(-1)!;
+    assert.equal(terminal.type, 'result_raw', 'must not fall through to a generic failure event');
+    assert.equal((terminal as { raw: { status: string } }).raw.status, 'budget_insufficient');
+    assert.equal(
+      (terminal as { raw: { summary: string } }).raw.summary,
+      'per-call cost makes finishing this ticket impossible within the ceiling'
+    );
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('happy path: falls back to the stream structured_output when no .orchestrator/result.json is written, and emits progress events from stream-json lines', async () => {
   const { events, workspaceRoot } = await runOnce({
     stdoutFile: fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'),

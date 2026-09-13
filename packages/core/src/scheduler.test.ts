@@ -16,9 +16,12 @@ import {
   listEventsForEntity,
   listEventsForProject,
   listTicketsByStatus,
+  setTicketBudgetOverride,
 } from './store.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { tick, runUntilIdle } from './scheduler.ts';
+import { recordTicketTransition } from './stateMachine.ts';
+import { buildInbox } from './commands/inbox.ts';
 import { testTempRoot } from './testSupport.ts';
 import type { AgentAdapter, AgentAdapterCapabilities, TicketEnvelope, WorkerEvent, WorkerHandle, Workspace } from './types.ts';
 
@@ -221,6 +224,59 @@ test('retry exhaustion reaches FAILED after max_attempts retryable failures', as
   await Promise.all(second.started.map((s) => s.done));
   assert.equal(getTicket(db, ticket.id)!.status, 'FAILED');
   assert.equal(getTicket(db, ticket.id)!.attemptCount, 2);
+});
+
+// Batch 7 (Role L, docs/strategy/batch-7-spec.md section 1 ruling 1): the
+// whole loop this role's acceptance test names -- the worker's own budget
+// self-stop must land FAILED without consuming an attempt, reach the inbox
+// with its own reasoning intact, and return to READY via a plain retry once
+// the owner has raised the ticket's budget.
+test('budget_insufficient (the worker\'s own budget self-stop): FAILED, attempt_count unchanged, inbox carries the worker\'s reasoning, retry after raising the budget returns to READY', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'sixteen files', maxAttempts: 2 });
+  const reasoning =
+    'Stopped after creating file01.txt (verified) because per-call cost (~$0.08-0.09/pair) makes ' +
+    'completing all 16 files impossible within the $0.25 budget ceiling.';
+  adapter.setScript(ticket.id, { kind: 'budget_insufficient', summary: reasoning });
+
+  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const result = await tick(deps);
+  await Promise.all(result.started.map((s) => s.done));
+
+  const after = getTicket(db, ticket.id)!;
+  assert.equal(after.status, 'FAILED', 'a budget stop is final, not a retry');
+  assert.equal(after.attemptCount, 0, 'no attempt is consumed by the worker explaining a budget stop');
+  assert.equal(after.maxAttempts, 2, 'max_attempts is untouched until a manual retry raises it');
+
+  const run = getRun(db, result.started[0].runId)!;
+  assert.equal(run.status, 'failed');
+  assert.equal(run.failureClass, 'worker_budget_stop');
+
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  const finalEvent = events.find((e) => e.eventType === 'worker_failed_final')!;
+  assert.ok(finalEvent, 'must persist under the concrete worker_failed_final type');
+  assert.equal(finalEvent.visibility, 'inbox');
+  assert.equal(finalEvent.requiresUser, true);
+
+  const item = buildInbox(db, project.id).find((i) => i.ticketId === ticket.id);
+  assert.ok(item, 'must reach the inbox');
+  assert.equal(item!.message, reasoning, "the worker's own reasoning, not a generic failureClass line");
+
+  // The owner's actual remedy per the ruling: raise the ticket's budget,
+  // then retry. `cli.ts` has no `ticket set --budget` subcommand (only
+  // `ticket add --budget` at creation time; see this role's report) so the
+  // override is raised directly at the store layer that subcommand would
+  // write through, and `retry` is exercised through stateMachine.ts's own
+  // `manual_retry` transition (the same one `commands/retry.ts` calls).
+  setTicketBudgetOverride(db, ticket.id, 5);
+  const retried = recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'manual_retry',
+    idempotencyKey: 'manual-retry-after-budget-raise',
+  });
+  assert.equal(retried.ticket.status, 'READY');
+  assert.equal(retried.ticket.attemptCount, 0, 'attempt_count carried over unchanged from the budget stop');
+  assert.equal(retried.ticket.maxAttempts, 3);
 });
 
 test('a malformed result is treated as a retryable failure, not a crash', async () => {

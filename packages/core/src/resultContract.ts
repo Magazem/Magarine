@@ -11,6 +11,9 @@ export const WORKER_RESULT_STATUS_VALUES: WorkerResultStatus[] = [
   'needs_user_decision',
   'question',
   'failed',
+  // Batch 7 (Role L): the worker's own budget self-stop, see types.ts's
+  // WorkerResultStatus comment and stateMachine.ts's `worker_budget_stop`.
+  'budget_insufficient',
 ];
 
 export const WORKER_RESULT_JSON_SCHEMA = {

@@ -108,8 +108,8 @@ test('an old-vocabulary status (blocked) maps to needs_user_decision', () => {
   assert.equal((outcome as { result: { status: string } }).result.status, 'needs_user_decision');
 });
 
-test('the daemon vocabulary (done/review/needs_user_decision/failed) passes through unchanged', () => {
-  for (const status of ['done', 'review', 'needs_user_decision', 'failed']) {
+test('the daemon vocabulary (done/review/needs_user_decision/failed/budget_insufficient) passes through unchanged', () => {
+  for (const status of ['done', 'review', 'needs_user_decision', 'failed', 'budget_insufficient']) {
     const outcome = classifyOutcome({
       resultLine: undefined,
       fileResult: { status, summary: 's', artifacts: [], checks: [], blockers: [], questions: [] },
@@ -120,6 +120,42 @@ test('the daemon vocabulary (done/review/needs_user_decision/failed) passes thro
     assert.equal(outcome.kind, 'success', `status ${status} should classify as success`);
     assert.equal((outcome as { result: { status: string } }).result.status, status);
   }
+});
+
+// Batch 7 (Role L): a real worker's own budget self-stop, going through the
+// adapter's own classification (`classifyOutcome`/`mapWorkerStatus`), not
+// the fake adapter -- the fake adapter's `budget_insufficient` FakeScript
+// kind emits a `result_raw` event directly and never touches this file, so a
+// test suite that only drove the fake would not have caught
+// `mapWorkerStatus` missing this case (which is exactly what happened: it
+// was missing until this test was added). This is the real-shaped path: a
+// terminal `result` line reporting success (no is_error) with the worker's
+// own `.orchestrator/result.json` naming `budget_insufficient` and its own
+// reasoning as `summary`.
+test('a real worker result reporting status budget_insufficient classifies as success with that status, not a generic retryable failure', () => {
+  const outcome = classifyOutcome({
+    resultLine: { is_error: false },
+    fileResult: {
+      status: 'budget_insufficient',
+      summary:
+        'Stopped after creating file01.txt (verified via directory listing) because per-call cost ' +
+        '(~$0.08-0.09 per create+verify pair) makes completing all 16 files impossible within the $0.25 budget ceiling.',
+      artifacts: [{ kind: 'file', path: 'file01.txt' }],
+      checks: [],
+      blockers: [],
+      questions: [],
+    },
+    exitCode: 0,
+    stderr: '',
+    timedOut: false,
+  });
+  assert.equal(outcome.kind, 'success', 'must not fall through to the generic retryable default');
+  assert.equal((outcome as { result: { status: string } }).result.status, 'budget_insufficient');
+  assert.match(
+    (outcome as { result: { summary: string } }).result.summary,
+    /per-call cost/,
+    "the worker's own reasoning must survive classification intact"
+  );
 });
 
 test('an unrecognized status classifies retryable rather than crashing', () => {

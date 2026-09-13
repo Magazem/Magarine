@@ -97,6 +97,10 @@ test('spot checks against batch 4\'s failure split: retryable is quiet, final re
   assert.deepEqual(classify('worker_failed_final'), { visibility: 'inbox', requiresUser: true });
 });
 
+test('spot check for batch 7\'s worker_budget_stop: reaches the inbox, same as any other FAILED-final outcome', () => {
+  assert.deepEqual(classify('worker_budget_stop'), { visibility: 'inbox', requiresUser: true });
+});
+
 test('spot checks against batch 4\'s review flow', () => {
   assert.deepEqual(classify('review_approved'), { visibility: 'activity', requiresUser: false });
   assert.deepEqual(classify('review_rejected'), { visibility: 'activity', requiresUser: false });

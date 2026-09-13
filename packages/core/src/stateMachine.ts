@@ -32,6 +32,22 @@ export type TransitionEvent =
   // this union so the scheduler can ask for it, and the completeness test
   // (policy.test.ts) parses this union verbatim.
   | 'worker_failure'
+  // Batch 7 (Role L, docs/strategy/batch-7-spec.md section 1 ruling 1): the
+  // verb the scheduler asks for when a worker's own result carries
+  // `status: 'budget_insufficient'` -- it read its ceiling out of the
+  // envelope, measured its burn rate, and stopped rather than continue.
+  // Unlike `worker_failure`, this is never retryable and never consumes an
+  // attempt: retrying under the same ceiling would just reproduce the same
+  // stop, so the record must say "raise the budget", not "try again".
+  // Always persists as `worker_failed_final` (the concrete FAILED outcome
+  // type the inbox already keys on -- see inbox.ts's PENDING_TICKET_STATUS),
+  // with `payload.failureClass: 'worker_budget_stop'` distinguishing it from
+  // an ordinary exhausted/non-retryable `worker_failure`. See
+  // `computeNextState`'s 'worker_budget_stop' case for the live transition
+  // and its 'worker_failed_final' case for how replay tells the two apart
+  // from the persisted payload alone (there is no second concrete event type
+  // for this -- see that branch's comment for why one is not needed).
+  | 'worker_budget_stop'
   | 'worker_question'
   | 'worker_needs_user_decision'
   | 'cancel'
@@ -78,7 +94,10 @@ export class InvalidTransitionError extends Error {
 // data. `worker_failure`, `review_rejected` and `manual_retry` are handled
 // separately below: the first two's destination depends on `payload` and
 // attempt_count vs max_attempts, the last also mutates max_attempts itself.
-type StaticTransitionEvent = Exclude<TransitionEvent, 'worker_failure' | 'review_rejected' | 'manual_retry'>;
+type StaticTransitionEvent = Exclude<
+  TransitionEvent,
+  'worker_failure' | 'review_rejected' | 'manual_retry' | 'worker_budget_stop'
+>;
 
 const TRANSITIONS: Record<TicketStatus, Partial<Record<StaticTransitionEvent, TicketStatus>>> = {
   OPEN: {
@@ -140,7 +159,41 @@ function requireRetryableFlag(payload: unknown, event: string): boolean {
   return retryable;
 }
 
+// True when `payload` is the shape `worker_budget_stop`/its replayed
+// `worker_failed_final` row carries: `{ failureClass: 'worker_budget_stop',
+// ... }`. The only place either live branch below needs to tell a budget
+// stop apart from an ordinary failure.
+function isBudgetStopPayload(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    (payload as { failureClass?: unknown }).failureClass === 'worker_budget_stop'
+  );
+}
+
 function computeNextState(ticket: Ticket, event: ReplayableEvent, payload: unknown): NextState {
+  if (event === 'worker_budget_stop') {
+    if (ticket.status !== 'IN_PROGRESS') {
+      throw new InvalidTransitionError(ticket.status, event);
+    }
+    // No attempt consumed (docs/strategy/batch-7-spec.md section 1 ruling 1):
+    // this is the worker explaining that the ceiling, not its own work, is
+    // what stopped it, so retrying under the same ceiling would just
+    // reproduce the same stop and burn an attempt for nothing. The owner's
+    // remedy is `ticket set --budget` (raise the ceiling) then `retry`, not
+    // another automatic attempt. Persisted as `worker_failed_final` -- the
+    // same concrete outcome type any other FAILED-final failure uses, so the
+    // inbox (inbox.ts's PENDING_TICKET_STATUS, not this role's file) already
+    // knows how to surface it without a second event type or a second policy
+    // row keyed on this string alone.
+    return {
+      toStatus: 'FAILED',
+      attemptCount: ticket.attemptCount,
+      maxAttempts: ticket.maxAttempts,
+      persistedEventType: 'worker_failed_final',
+    };
+  }
+
   if (event === 'worker_failure') {
     if (ticket.status !== 'IN_PROGRESS') {
       throw new InvalidTransitionError(ticket.status, event);
@@ -164,12 +217,24 @@ function computeNextState(ticket: Ticket, event: ReplayableEvent, payload: unkno
     return { toStatus: 'READY', attemptCount: ticket.attemptCount + 1, maxAttempts: ticket.maxAttempts, persistedEventType: event };
   }
   if (event === 'worker_failed_final') {
-    // Reachable from IN_PROGRESS (a 'worker_failure' outcome) or REVIEW (an
-    // exhausted 'review_rejected' outcome) -- both persist under this name.
+    // Reachable from IN_PROGRESS (a 'worker_failure' or 'worker_budget_stop'
+    // outcome) or REVIEW (an exhausted 'review_rejected' outcome) -- all
+    // persist under this one concrete name (see the module header comment
+    // and 'worker_budget_stop' above for why a second event type is not
+    // used). This is replay's only way to see which of those it was: the
+    // live 'worker_budget_stop' branch above already knows not to consume an
+    // attempt because it computes its own NextState directly, but a stored
+    // row replayed by `computeStatusFromEvents` arrives here under the
+    // persisted type, not the verb, so this branch must re-derive the same
+    // answer from `payload.failureClass` alone -- otherwise the derived
+    // ticket row and a fold over its own event log would disagree on
+    // attempt_count for every budget-stopped ticket, which is exactly the
+    // invariant `replay.test.ts` exists to guard.
     if (ticket.status !== 'IN_PROGRESS' && ticket.status !== 'REVIEW') {
       throw new InvalidTransitionError(ticket.status, event);
     }
-    return { toStatus: 'FAILED', attemptCount: ticket.attemptCount + 1, maxAttempts: ticket.maxAttempts, persistedEventType: event };
+    const attemptCount = isBudgetStopPayload(payload) ? ticket.attemptCount : ticket.attemptCount + 1;
+    return { toStatus: 'FAILED', attemptCount, maxAttempts: ticket.maxAttempts, persistedEventType: event };
   }
 
   // Legacy: a database's event log written before this batch may still

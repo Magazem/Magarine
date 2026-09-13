@@ -29,6 +29,14 @@ export type FakeScript =
   // worker_failure handling). Distinct from 'retryable_failure', which the
   // fake could already produce.
   | { kind: 'final'; delayMs?: number; message?: string; usage?: unknown }
+  // Batch 7 (Role L): the worker's own budget self-stop -- a `result_raw`
+  // event whose status is `budget_insufficient`, `summary` carrying the
+  // worker's own reasoning (see cli.ts's `--fake-outcome budget_insufficient`
+  // and scheduler.ts's dedicated `worker_budget_stop` routing for this
+  // status). Distinct from `final`: that models an ordinary non-retryable
+  // failure event; this models a worker's own terminal *result*, same shape
+  // as `succeed`/`review`/`needs_user_decision` above.
+  | { kind: 'budget_insufficient'; delayMs?: number; summary?: string; usage?: unknown }
   // Never emits a terminal event on its own -- models a worker still
   // mid-flight (e.g. reporting a cumulative cost estimate), the way a real
   // run looks right up until the scheduler decides to stop it (see
@@ -184,6 +192,26 @@ export class FakeAdapter implements AgentAdapter {
       case 'final':
         schedule(
           { type: 'failure', message: script.message ?? 'fake final failure', retryable: false, usage: script.usage },
+          script.delayMs ?? 0
+        );
+        break;
+
+      case 'budget_insufficient':
+        schedule(
+          {
+            type: 'result_raw',
+            raw: {
+              status: 'budget_insufficient',
+              summary:
+                script.summary ??
+                'Stopped: per-turn cost observed makes finishing this ticket impossible within the budget ceiling.',
+              artifacts: [],
+              checks: [],
+              blockers: [],
+              questions: [],
+            },
+            usage: script.usage,
+          },
           script.delayMs ?? 0
         );
         break;

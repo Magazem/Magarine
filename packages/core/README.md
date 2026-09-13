@@ -143,6 +143,60 @@ cache-light run, which is exactly why it is not the enforcement layer.
 `board` shows the project's total spend against its cap at the top of its
 output, and each ticket's own spend on its row (see below).
 
+### How a run stops on cost
+
+Three independent mechanisms can end a run because of its budget, in the
+order they normally fire in practice:
+
+1. **The worker's own stop, with an explanation.** Every worker prompt
+   (`envelope.ts`'s `buildWorkerPrompt`) states the ticket's budget ceiling in
+   dollars. A worker that reads that line, tracks its own per-turn spend, and
+   concludes it cannot finish reports `status: 'budget_insufficient'` in its
+   result rather than continuing past the ceiling hoping it will fit — the
+   cheapest possible stop, since nothing further is spent once it decides,
+   and the only one of the three that explains *why* in the owner's own
+   words. It is not retryable and does not consume an attempt
+   (`stateMachine.ts`'s `worker_budget_stop` transition, persisted under the
+   same `worker_failed_final` concrete type any other FAILED-final failure
+   uses — see that transition's comment for why): retrying under the same
+   ceiling would just reproduce the identical stop, so the record must say
+   "raise the budget", not "try again". This was found, not designed —
+   `docs/strategy/batch-6-closeout.md` section 3 — when four straight paid
+   runs never reached either guard below because a worker always got there
+   first.
+2. **The tool's own `--max-budget-usd` flag**, checked between turns against
+   its own authoritative per-category accounting (layer 2 of "Budget and
+   spend caps" above). This is what stops a run whose worker never self-limits
+   — one that doesn't track its own spend, or one running with the budget
+   line deliberately hidden (see "Exercising the guards" below) — and it is
+   accurate where the daemon's own tally is not.
+3. **The daemon's own live tally** (layer 3 above), a running estimate that
+   is a known *lower bound* on true spend, not a second enforcement layer.
+   It rarely fires in practice — not because it is broken, but because
+   layers 1 and 2 almost always get there first, and being redundant with
+   a more accurate guard on every adapter that has one is the correct
+   outcome, not a defect. It is the ONLY guard for an adapter that reports no
+   budget flag of its own, and the only one that can stop a run that hangs
+   or times out rather than erroring, which is why it stays even though a
+   real budget-stopped run rarely needs it. See the known limitation
+   above (one turn's worth of overshoot is possible either way).
+
+**Exercising the guards.** A worker informed of its ceiling self-limits so
+reliably (mechanism 1) that four real paid runs never reached mechanisms 2 or
+3 at all (`docs/strategy/batch-6-closeout.md` section 3) — the Strategist
+ruled this stays true in production, so the fix is a way to *test* the other
+two guards, not to weaken mechanism 1. Lowering `store.ts`'s `MIN_BUDGET_USD`
+floor to force an early stop was also refused: the floor is a real safety
+property, and weakening it for test convenience is how safety properties
+die. Instead, `MAGARINE_TEST_OMIT_ENVELOPE_BUDGET=1` (read in exactly one
+place, `envelope.ts`'s `buildWorkerPrompt`) drops the budget line from the
+prompt entirely, so a blinded worker behaves exactly like one whose envelope
+never carried `maxBudgetUsd` — free to spend past the ceiling with no way to
+self-limit, so mechanisms 2 and 3 are what actually stop it. **Test-only**:
+`buildWorkerPrompt` refuses (throws) if this variable is set for a workspace
+that is not under the OS temp directory, so it can never be used, by
+accident or otherwise, to blind a real, non-throwaway run.
+
 ### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `approve`, `reject`, `resume`
 
 - **`board --project <id>`**: the project's total spend against its
@@ -299,9 +353,13 @@ silent, this implementation made the following calls:
   `"ready_for_review"`. To cover the full ticket lifecycle diagram (worker
   succeeds / passes auto-checks / retryable failure / question / user
   decision required), this implementation uses:
-  `'done' | 'review' | 'needs_user_decision' | 'failed'`. A result is
-  delivered as a terminal `WorkerEvent` of type `result_raw`; the scheduler
-  validates it and maps `status` to a ticket transition.
+  `'done' | 'review' | 'needs_user_decision' | 'failed' |
+  'budget_insufficient'`. A result is delivered as a terminal `WorkerEvent`
+  of type `result_raw`; the scheduler validates it and maps `status` to a
+  ticket transition. `budget_insufficient` (batch 7) is `'failed'`'s
+  budget-specific sibling: same terminal shape, but routed to its own
+  non-retryable, no-attempt-consumed transition instead of the generic
+  retryable one — see "How a run stops on cost" above.
 - **Internal questions are events, not result statuses.** "Worker asks an
   internal question" (self-loop, ticket stays `IN_PROGRESS`) is modeled as a
   non-terminal `WorkerEvent` of type `question`, separate from the terminal
@@ -489,3 +547,34 @@ has been confirmed against a live run yet; either way, an unpinned/mismatched
 model falls back to the loud unknown-model rate rather than mispricing
 silently, but this is a real gap, not a closed one, until a real run
 confirms them.
+
+Batch 7 (Role L, budget semantics and the blinding switch): the worker's own
+budget self-stop (`budget_insufficient`/`worker_budget_stop`, see "How a run
+stops on cost" above) is built and tested end to end through
+`scheduler.ts`/`stateMachine.ts`/the `FakeAdapter`, with a replay test
+proving the concrete `worker_failed_final` event a real database would hold
+folds back to the same unchanged attempt_count the live write path produces.
+**Two gaps outside this role's owned files, found while building this, are
+NOT closed:**
+
+- **`adapters/claudeCli.ts`'s `mapWorkerStatus` (not owned by this role) has
+  no case for `'budget_insufficient'`.** A real worker that follows this
+  batch's new prompt instruction and writes `status: 'budget_insufficient'`
+  to `.orchestrator/result.json` will have that status fall through
+  `mapWorkerStatus`'s `default: null`, and `classifyOutcome` will turn it
+  into a generic `{ kind: 'retryable', reason: 'unrecognized result status:
+  budget_insufficient' }` — the exact misclassification this role exists to
+  fix, reintroduced one layer down, in the one file this batch could not
+  touch. The fix is one line (`case 'budget_insufficient': return
+  'budget_insufficient';` alongside `mapWorkerStatus`'s existing cases). This
+  blocks the Orchestrator's paid run C (an informed worker exercising this
+  exact path) until it lands.
+- **There is no `ticket set --budget <usd>` CLI subcommand** — only `ticket
+  add --budget` sets an override, at creation time. The acceptance criterion
+  "`retry` after `ticket set --budget`" is exercised in
+  `scheduler.test.ts` directly against `store.ts`'s `setTicketBudgetOverride`
+  (the same layer `ticket add --budget` itself writes through) and
+  `stateMachine.ts`'s `manual_retry` transition (the same one
+  `commands/retry.ts`'s `retry` calls) instead of inventing a subcommand,
+  since `cli.ts`'s ticket flags are not this role's file to extend beyond
+  `--fake-outcome`.

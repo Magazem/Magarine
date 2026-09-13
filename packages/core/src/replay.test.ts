@@ -48,6 +48,37 @@ test('replaying a database\'s event log written before batch 4 (containing the r
   assert.deepEqual(replayed, { status: 'FAILED', attemptCount: 2 });
 });
 
+test('replaying a worker_budget_stop event log reproduces the same unchanged attempt_count as the live write path (batch 7)', () => {
+  // Guards exactly the class of bug the advisor flagged while reviewing this
+  // role's design: `worker_budget_stop` is persisted under the SAME concrete
+  // event type (`worker_failed_final`) that an ordinary exhausted failure
+  // uses, which does increment attempt_count. If replay's
+  // 'worker_failed_final' branch did not also inspect the stored payload's
+  // `failureClass`, a fold over this exact event log would silently
+  // recompute attempt_count one higher than the live row actually holds.
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 2 });
+
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: '1' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: '2' });
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_budget_stop',
+    idempotencyKey: '3',
+    payload: { status: 'budget_insufficient', summary: 'stopped', retryable: false, failureClass: 'worker_budget_stop' },
+  });
+
+  const persisted = getTicket(db, ticket.id)!;
+  const events = listEventsForEntity(db, 'ticket', ticket.id);
+  const replayed = computeStatusFromEvents(events, persisted.maxAttempts);
+
+  assert.equal(persisted.status, 'FAILED');
+  assert.equal(persisted.attemptCount, 0, 'no attempt consumed by the live write path');
+  assert.equal(events[2].eventType, 'worker_failed_final', 'persisted under the same concrete type an ordinary exhausted failure uses');
+  assert.deepEqual(replayed, { status: persisted.status, attemptCount: persisted.attemptCount });
+});
+
 test('replaying a database\'s event log written before batch 4, with attempts remaining, still reproduces READY', () => {
   const legacyLog = [
     { eventType: 'dependencies_resolved', payload: {} },

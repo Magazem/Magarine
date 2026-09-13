@@ -632,6 +632,27 @@ async function applyWorkerEventInner(
             payload: { ...result, retryable: true, failureClass: 'worker_reported_failure' },
           });
           break;
+
+        // Batch 7 (Role L, docs/strategy/batch-7-spec.md section 1 ruling
+        // 1): the worker read its own budget out of the envelope, measured
+        // its burn rate, and stopped -- the cheapest, best-explained stop
+        // the system has (batch-6-closeout.md section 3). Previously this
+        // status did not exist and such a worker had no way to report
+        // itself other than the generic 'failed' above, which the owner's
+        // remedy (raise the budget) can't act on because a retry just
+        // reproduces the same stop under the same ceiling. Routed through
+        // the dedicated `worker_budget_stop` transition (stateMachine.ts),
+        // not `worker_failure`, so no attempt is consumed and the ticket
+        // lands FAILED unconditionally rather than READY-with-attempts-left.
+        case 'budget_insufficient':
+          finishRun(db, run.id, { status: 'failed', failureClass: 'worker_budget_stop' });
+          recordTicketTransition(db, {
+            ticketId: ticket.id,
+            event: 'worker_budget_stop',
+            idempotencyKey: `worker_budget_stop:${run.id}`,
+            payload: { ...result, retryable: false, failureClass: 'worker_budget_stop' },
+          });
+          break;
       }
 
       return true;

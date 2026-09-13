@@ -87,6 +87,18 @@ test('final script emits a non-retryable failure (batch 5 item 5)', async () => 
   assert.equal((event as { message: string }).message, 'not coming back from this');
 });
 
+test('budget_insufficient script emits a result with that status and the worker\'s reasoning as summary (batch 7)', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'budget_insufficient', summary: 'per-turn cost makes this impossible within budget' });
+  const [event] = await collectEvents(adapter, 't1', 1);
+  assert.equal(event.type, 'result_raw');
+  assert.equal((event as { raw: { status: string } }).raw.status, 'budget_insufficient');
+  assert.equal(
+    (event as { raw: { summary: string } }).raw.summary,
+    'per-turn cost makes this impossible within budget'
+  );
+});
+
 test('hang script never emits any event', async () => {
   const adapter = new FakeAdapter();
   adapter.setScript('t1', { kind: 'hang' });
