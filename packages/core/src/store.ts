@@ -11,6 +11,7 @@ import type {
   RunStatus,
   Ticket,
   TicketDependency,
+  TicketKind,
   TicketStatus,
   WorkspaceType,
 } from './types.ts';
@@ -44,6 +45,7 @@ interface ProjectRow {
   brief: string | null;
   workspace_root: string | null;
   adapter_paused_at: string | null;
+  manager_model: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -61,6 +63,7 @@ function rowToProject(row: ProjectRow): Project {
     brief: row.brief,
     workspaceRoot: row.workspace_root,
     adapterPausedAt: row.adapter_paused_at,
+    managerModel: row.manager_model,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -78,6 +81,7 @@ export function createProject(
     defaultModel?: string;
     brief?: string | null;
     workspaceRoot?: string | null;
+    managerModel?: string | null;
   }
 ): Project {
   const maxBudgetUsd = input.maxBudgetUsd ?? 2.0;
@@ -96,8 +100,8 @@ export function createProject(
   const now = new Date().toISOString();
   const id = newId('proj');
   db.prepare(
-    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, default_model, brief, workspace_root, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, default_model, brief, workspace_root, manager_model, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.name,
@@ -109,10 +113,22 @@ export function createProject(
     defaultModel,
     input.brief ?? null,
     input.workspaceRoot ?? null,
+    input.managerModel ?? null,
     now,
     now
   );
   return getProject(db, id)!;
+}
+
+// Setter for a future `project set --manager-model` to call, matching
+// setProjectDefaultModel's shape exactly. `null` clears the override (falls
+// back to the project's own default_model -- see resolveManagerModel).
+export function setProjectManagerModel(db: Db, projectId: string, managerModel: string | null): void {
+  db.prepare('UPDATE projects SET manager_model = ?, updated_at = ? WHERE id = ?').run(
+    managerModel,
+    new Date().toISOString(),
+    projectId
+  );
 }
 
 // Setter for `ticket add --budget`/a future `project set --max-budget` to
@@ -189,6 +205,17 @@ export function resolveModel(project: Project, ticket: Ticket): string {
   return ticket.model ?? project.defaultModel;
 }
 
+// Batch 9: the model a Manager ticket runs on -- the project's own
+// `manager_model` override if set, else its `default_model` (batch-9-spec.md
+// section 2: "a project-level `manager_model` override defaulting to the
+// project's default model"). Deliberately reads the PROJECT's setting, not
+// `ticket.model`: unlike an ordinary work ticket, a Manager ticket's model
+// choice is not something an individual ticket should freeze -- see
+// types.ts's Project.managerModel doc comment.
+export function resolveManagerModel(project: Project): string {
+  return project.managerModel ?? project.defaultModel;
+}
+
 // Setter for a future `project set --model` to call instead of writing the
 // column directly, matching setProjectMaxBudgetUsd's shape. No floor to
 // enforce (any non-empty string is a project's own business; pricing.ts's
@@ -231,6 +258,7 @@ interface TicketRow {
   workspace_ref: string | null;
   max_budget_usd_override: number | null;
   model: string | null;
+  kind: string;
   result_json: string | null;
   created_at: string;
   updated_at: string;
@@ -252,6 +280,7 @@ function rowToTicket(row: TicketRow): Ticket {
     workspaceRef: row.workspace_ref,
     maxBudgetUsdOverride: row.max_budget_usd_override,
     model: row.model,
+    kind: row.kind as TicketKind,
     resultJson: row.result_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -271,6 +300,7 @@ export function createTicket(
     workspaceRef?: string | null;
     maxBudgetUsdOverride?: number | null;
     model?: string | null;
+    kind?: TicketKind;
   }
 ): Ticket {
   if (input.maxBudgetUsdOverride != null) {
@@ -283,8 +313,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, max_budget_usd_override, model, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, model, kind, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -297,6 +327,7 @@ export function createTicket(
     input.workspaceRef ?? null,
     input.maxBudgetUsdOverride ?? null,
     input.model ?? null,
+    input.kind ?? 'work',
     now,
     now
   );

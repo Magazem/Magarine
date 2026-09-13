@@ -419,6 +419,8 @@ export function computeStatusFromEvents(
       workspaceType: 'NONE',
       workspaceRef: null,
       maxBudgetUsdOverride: null,
+      model: null,
+      kind: 'work',
       resultJson: null,
       createdAt: '',
       updatedAt: '',

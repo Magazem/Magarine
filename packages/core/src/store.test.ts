@@ -17,9 +17,11 @@ import {
   listEventsForProject,
   pauseProjectAdapter,
   projectSpendUsd,
+  resolveManagerModel,
   resolveMaxBudgetUsd,
   resumeProject,
   resumeProjectAdapter,
+  setProjectManagerModel,
   setProjectMaxBudgetUsd,
   setProjectMaxSpendUsd,
   setRunUsage,
@@ -54,6 +56,50 @@ test('createTicket defaults maxBudgetUsdOverride to null and accepts an override
 
   const overridden = createTicket(db, { projectId: project.id, title: 't2', maxBudgetUsdOverride: 7.5 });
   assert.equal(overridden.maxBudgetUsdOverride, 7.5);
+});
+
+// Batch 9: 'work' is the default -- every ticket before this batch was one,
+// so a bare createTicket() (no kind given) must not silently start
+// producing manager tickets.
+test('createTicket defaults kind to \'work\' and accepts \'manager\'', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const workTicket = createTicket(db, { projectId: project.id, title: 't' });
+  assert.equal(workTicket.kind, 'work');
+
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'plan: do the thing', kind: 'manager' });
+  assert.equal(managerTicket.kind, 'manager');
+});
+
+test('createProject defaults managerModel to null and accepts an override', () => {
+  const db = openDb(':memory:');
+  const withDefault = createProject(db, { name: 'p1' });
+  assert.equal(withDefault.managerModel, null);
+
+  const withOverride = createProject(db, { name: 'p2', managerModel: 'claude-fable-5-1' });
+  assert.equal(withOverride.managerModel, 'claude-fable-5-1');
+});
+
+test('resolveManagerModel falls back to the project\'s defaultModel when no managerModel override is set', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', defaultModel: 'claude-sonnet-5' });
+  assert.equal(resolveManagerModel(project), 'claude-sonnet-5');
+});
+
+test('resolveManagerModel prefers managerModel over defaultModel when set', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', defaultModel: 'claude-sonnet-5', managerModel: 'claude-fable-5-1' });
+  assert.equal(resolveManagerModel(project), 'claude-fable-5-1');
+});
+
+test('setProjectManagerModel sets and clears (null) the override', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  setProjectManagerModel(db, project.id, 'claude-fable-5-1');
+  assert.equal(getProject(db, project.id)!.managerModel, 'claude-fable-5-1');
+
+  setProjectManagerModel(db, project.id, null);
+  assert.equal(getProject(db, project.id)!.managerModel, null);
 });
 
 test('resolveMaxBudgetUsd falls back to the project default when no ticket override is set', () => {

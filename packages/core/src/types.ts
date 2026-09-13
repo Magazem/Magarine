@@ -12,6 +12,13 @@ export type TicketStatus =
 
 export type EventVisibility = 'internal' | 'activity' | 'inbox' | 'urgent';
 
+// Batch 9: 'work' is every ticket kind that existed before this batch (the
+// default for existing rows, db/schema.ts's 0007_manager_kind migration).
+// 'manager' is a Manager run -- a ticket like any other (same adapter, same
+// budget/model/retry/inbox machinery), except its post-success handling
+// applies a proposal instead of just landing DONE (see scheduler.ts).
+export type TicketKind = 'work' | 'manager';
+
 export interface Project {
   id: string;
   name: string;
@@ -30,6 +37,8 @@ export interface Project {
   workspaceRoot: string | null;
   /** Set when an `adapter_unavailable` failure pauses this project's adapter; cleared by `resumeProjectAdapter`. Null means not paused. */
   adapterPausedAt: string | null;
+  /** Batch 9: overrides `defaultModel` for this project's Manager tickets specifically; null falls back to `defaultModel` (same shape as `Ticket.model`/`defaultModel`, but this is a project-level setting because a project can have many Manager tickets over its lifetime, each of which should see a later change here -- not something a single ticket's own `model` column would give). See store.ts's resolveManagerModel. */
+  managerModel: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -51,6 +60,8 @@ export interface Ticket {
   maxBudgetUsdOverride: number | null;
   /** Batch 6: overrides the project's default_model for this ticket alone; null falls back to the project default. See store.ts's resolveModel. */
   model: string | null;
+  /** Batch 9: 'work' (default) or 'manager' -- see TicketKind. */
+  kind: TicketKind;
   resultJson: string | null;
   createdAt: string;
   updatedAt: string;

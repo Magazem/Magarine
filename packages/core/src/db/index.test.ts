@@ -30,6 +30,7 @@ test('runMigrations is idempotent: applying twice does not error or duplicate ro
     '0004_batch3_scheduler_seam',
     '0005_project_spend_cap',
     '0006_model_pinning',
+    '0007_manager_kind',
   ]);
 });
 
@@ -93,6 +94,7 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     '0004_batch3_scheduler_seam',
     '0005_project_spend_cap',
     '0006_model_pinning',
+    '0007_manager_kind',
   ]);
   assert.equal(snapshot.usageJsonInputTokens, 1);
 });

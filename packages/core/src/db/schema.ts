@@ -172,4 +172,32 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE tickets ADD COLUMN model TEXT;
     `,
   },
+  {
+    // Batch 9: the Manager invocation (docs/strategy/batch-9-spec.md section
+    // 2). `tickets.kind` distinguishes a Manager run from an ordinary work
+    // ticket -- 'work' (the only kind before this batch, hence the default
+    // for existing rows) or 'manager'. Deliberately NOT a foreign key or an
+    // enum-like CHECK constraint: every other status-like column in this
+    // schema (workspace_type, runs.status, etc.) is a plain TEXT column
+    // validated in application code (proposal.ts / types.ts), not by
+    // sqlite -- consistent with that, not a new convention.
+    //
+    // `projects.manager_model` mirrors `default_model`/`model`'s existing
+    // project-default-with-per-ticket-override SHAPE, but is its own,
+    // separate override rather than reusing `tickets.model`: the Manager's
+    // model choice is a property of the PROJECT (batch-9-spec.md section 2:
+    // "a project-level `manager_model` override defaulting to the project's
+    // default model"), not of any one manager ticket, and a project can
+    // have many manager tickets over its lifetime, each of which should pick
+    // up a LATER change to this setting rather than freezing whatever
+    // `tickets.model` a long-gone earlier manager ticket happened to record.
+    // NULL (every existing project's value after this migration) means "use
+    // this project's own default_model", the same NULL-means-"fall back"
+    // shape `max_budget_usd_override`/`tickets.model` already use.
+    id: '0007_manager_kind',
+    sql: `
+      ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'work';
+      ALTER TABLE projects ADD COLUMN manager_model TEXT;
+    `,
+  },
 ];
