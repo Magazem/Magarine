@@ -3,9 +3,40 @@ import { MIGRATIONS } from './schema.ts';
 
 export type Db = DatabaseSync;
 
+// Batch 8: before daemon mode there was only ever one process holding this
+// file open at a time. Now the daemon holds it open continuously while the
+// CLI's own direct reads (`board`/`status`/`inbox`/`activity` -- reads stay
+// direct even while a daemon is running, per the single-writer rule) open a
+// second, independent connection to the same file at any moment. Neither
+// pragma below was ever needed before this batch:
+//
+// - `journal_mode = WAL`: the default rollback-journal mode serializes
+//   ALL access -- a reader can be blocked by a writer's in-flight
+//   transaction. WAL lets readers proceed concurrently with a writer
+//   (only writer-vs-writer contention is still serialized), which is the
+//   real fix for a `board`/`status` read racing the daemon's own write.
+// - `busy_timeout`: without it, node:sqlite's default is 0 -- a connection
+//   that DOES find the file locked (writer-vs-writer, or the brief moment
+//   around a WAL checkpoint) fails immediately (SQLITE_BUSY) instead of
+//   waiting. 5000ms comfortably outlasts any single transaction this
+//   codebase runs, which are all synchronous, in-process DB operations
+//   (low milliseconds at most) -- long enough to ride out real contention,
+//   short enough to fail loudly if something is actually stuck.
+//
+// HARD-verified on this Windows machine: `PRAGMA journal_mode = WAL`
+// succeeds and reports 'wal' back against a real file; against `:memory:`
+// (which every in-process test in this codebase uses) it is silently
+// ignored and journal_mode stays 'memory' -- no error either way, so this
+// is safe to set unconditionally on every connection, daemon and CLI alike.
+// `synchronous` is deliberately left at SQLite's default (FULL) -- WAL mode
+// is commonly paired with `synchronous = NORMAL` for less fsync overhead,
+// but that trades some durability on an OS crash for performance this
+// codebase was never asked to trade, so it is not bundled in here.
 export function openDb(path: string): Db {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA busy_timeout = 5000;');
   runMigrations(db);
   return db;
 }

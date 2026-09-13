@@ -2,8 +2,9 @@
 
 The Magarine orchestrator daemon core: SQLite-backed ticket state machine,
 dependency resolver, scheduler, worker result contract, restart recovery, a
-fake agent adapter, a real Claude Code CLI adapter, and a thin `magarine`
-CLI.
+fake agent adapter, a real Claude Code CLI adapter, a daemon mode
+(`magarine serve`) with its own token-authenticated HTTP API, and a thin
+`magarine` CLI.
 
 ## Requirements
 
@@ -45,7 +46,11 @@ node src/cli.ts retry --ticket <ticketId> --json
 node src/cli.ts approve --ticket <ticketId> --json
 node src/cli.ts reject --ticket <ticketId> --reason "missing test coverage" --json
 node src/cli.ts resume --project <projectId> --json
+node src/cli.ts cancel --ticket <ticketId> --json
+node src/cli.ts serve --state-dir <dir> --json
 ```
+
+`cancel` and `serve` are Batch 8 additions — see "Daemon mode" below.
 
 `ticket add` also takes `--workspace NONE|DIRECTORY` (default `NONE`), a
 per-ticket `--budget <usd>` override, a repeatable `--acceptance
@@ -105,6 +110,31 @@ means real worker output can land inside whatever project's repository
 happened to be checked out where the daemon was launched from — exactly what
 an earlier close-out on this project found had happened with the artefact
 store's old `<cwd>/.magarine/artifacts` default.
+
+**Concurrent access (Batch 8).** Before daemon mode, only one process ever
+held `magarine.db` open at a time. Now the daemon holds it open continuously
+while a `board`/`status`/`inbox`/`activity` read (or a mutating command
+falling back to a direct write — see "Daemon mode" below) opens a second,
+independent connection to the same file at any moment. `db/index.ts`'s
+`openDb` sets `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout = 5000`
+on every connection it opens (daemon and CLI alike) for exactly this reason:
+SQLite's default rollback-journal mode can block a reader on an in-flight
+writer, and node:sqlite's default `busy_timeout` is `0` — a connection that
+does find the file locked fails immediately (`SQLITE_BUSY`) instead of
+waiting. This was found, not designed: writing this batch's own tests
+surfaced a real occasional failure in a plain `status --json` read racing
+the daemon's own write, under heavy concurrent load. WAL lets readers
+proceed alongside an in-flight writer (only writer-vs-writer contention is
+still serialized); `busy_timeout` covers that remaining case, and the brief
+window around a WAL checkpoint, by waiting up to five seconds — comfortably
+longer than any single transaction this codebase runs — rather than failing
+instantly. `db/index.test.ts` proves each pragma's own effect against a
+real second process: many rapid reads with zero failures while a real
+writer commits continuously, and a blocked write that waits for a real
+lock-holding process to release rather than throwing right away. HARD-verified
+on Windows: `journal_mode = WAL` is silently ignored (stays `memory`, no
+error) against `:memory:`, which every in-process test in this codebase
+uses, so it is safe to set unconditionally with no branch on the path.
 
 ### Budget and spend caps
 
@@ -183,7 +213,7 @@ order they normally fire in practice:
 The tool informs the worker of its own budget and spend on its own, so the
 worker's self-stop (mechanism 1) is the expected first stop in production.
 
-### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `approve`, `reject`, `resume`
+### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `approve`, `reject`, `resume`, `cancel`
 
 - **`board --project <id>`**: the project's total spend against its
   `--max-spend` cap (or "no cap set" if none was given) on the first line,
@@ -214,9 +244,12 @@ worker's self-stop (mechanism 1) is the expected first stop in production.
   the state machine transition itself, not a separate notification; the
   question text is pulled from the ticket's most recent
   `worker_needs_user_decision` event.
-- **`retry --ticket <id>`**: manually retries a `FAILED` ticket via the
-  `manual_retry` transition, which moves it back to `READY` and raises its
-  `maxAttempts` by one. Refuses if the ticket isn't `FAILED`.
+- **`retry --ticket <id>`**: manually retries a `FAILED` **or (Batch 8)
+  `CANCELLED`** ticket via the `manual_retry` transition, which moves it
+  back to `READY` and raises its `maxAttempts` by one either way. This is
+  also the one, explicit way to reopen a ticket a person cancelled —
+  "cancel, then retry" is two commands, not a separate reopen command.
+  Refuses if the ticket isn't `FAILED` or `CANCELLED`.
 - **`approve --ticket <id>`**: moves a `REVIEW` ticket to `DONE` via
   `review_approved`, then resolves the project's dependents' readiness —
   the same as a worker-reported `worker_done` does — so a dependent blocked
@@ -232,8 +265,23 @@ worker's self-stop (mechanism 1) is the expected first stop in production.
   — an `adapter_unavailable` failure or a `project_spend_cap_reached`
   refusal both trip the same pause, so one command clears either. Refuses
   if the project isn't paused, or doesn't exist.
+- **`cancel --ticket <id>`** (Batch 8): **daemon-only** — refuses with a
+  clear message if no daemon is running for the current state directory (no
+  fallback writes the database directly; see "Daemon mode" below). Stops the
+  live worker through the adapter and moves the ticket to the terminal
+  `CANCELLED` via the `cancel` transition — not back to `READY` the way a
+  daemon-initiated stop (`run_cancelled`, a timeout or a shutdown) is. This
+  distinction is deliberate: a person who cancels has decided the ticket is
+  unwanted, so landing it in `READY` would let the daemon's own next tick
+  silently restart it. No attempt is consumed. Dependents of a cancelled
+  ticket stay `OPEN` — no cascade, since `CANCELLED` is simply not `DONE`,
+  the same test `isReady`/`resolveReadiness` already apply to any
+  non-`DONE` blocker. `activity` records the cancel; there is no inbox item,
+  because the owner did it themselves. `retry` is the one way back to
+  `READY`. There is no separate `cancel-run`/reopen-in-place command: a
+  restart moments after a cancel is exactly the surprise this design avoids.
 
-All eight accept `--json`.
+All nine accept `--json`.
 
 ### Notification policy (`policy.ts`)
 
@@ -306,11 +354,210 @@ trying `decide`/`inbox` by hand:
 node src/cli.ts tick --project <projectId> --fake-script <ticketId>=needs_user_decision --json
 ```
 
+## Daemon mode (Batch 8)
+
+Every remaining item on this project's route needs a process that outlives a
+single command — `cancel` from another shell, a board that reads while runs
+are in flight, an eventual AionUi pull shape needing something to pull from.
+`magarine serve` is that process. It is also where the owner's constraint is
+met literally: the daemon generates its own bearer token, on its own
+loopback port, and never touches anyone's AionUi (or other) account.
+
+### Running it
+
+```sh
+node src/cli.ts serve --state-dir <dir> --json
+```
+
+Prints one JSON line (or a human line without `--json`) once listening:
+`{"pid": <n>, "port": <n>, "stateDir": "<dir>"}` — **never the token**. The
+token lives only in `<state dir>/daemon.json`; find it there, not in any
+command's output or any log line.
+
+`serve` accepts everything `tick`/`run --until-idle` do (`--adapter
+fake|claude`, `--claude-exe`, `--fake-script`, `--fake-outcome`,
+`--max-parallel`, `--run-timeout`) plus:
+
+- `--port <n>` — defaults to `0` (any free loopback port).
+- `--tick-interval <seconds>` — how often the daemon ticks every project in
+  its database on its own, with no LLM involvement between ticks. An
+  immediate first pass happens at startup regardless of this value.
+
+Stop it with `Ctrl+C` (or `SIGTERM`) in its own terminal: it stops every live
+worker (adapter `stop()` + the run/ticket forced to a settled DB state — see
+"Two cancellation transitions" below), closes the listener, and removes
+`daemon.json`, in that order. **Platform note, HARD-verified on Windows**:
+there is no way to deliver a catchable `SIGINT`/`SIGTERM`/`SIGBREAK` to a
+*separate* `serve` process without a native helper (`taskkill /PID <pid> /T`
+without `/F` errors outright on a plain console process; `child.kill()` from
+another Node process — with any signal name, `detached` or not — hard-terminates
+unconditionally on Windows; see `commands/serve.test.ts`'s header comment for
+the three experiments). Real Ctrl+C in the daemon's own attached console
+works normally; a script on Windows that needs to stop a daemon it did not
+launch interactively has no graceful option today short of a hard kill,
+which is safe (see "Crash recovery" below) but skips the tidy shutdown.
+POSIX signal delivery should work normally there (untested — no POSIX
+machine available this batch, the same gap `process.ts`'s own tree-kill
+carries for the same reason).
+
+### `daemon.json`
+
+`<state dir>/daemon.json`:
+
+```json
+{
+  "pid": 12345,
+  "port": 47311,
+  "token": "<64 hex chars, fresh every start>",
+  "startedAt": "2026-09-13T12:00:00.000Z",
+  "dbPath": "/abs/path/to/magarine.db"
+}
+```
+
+- **A fresh token every start**, generated from 32 random bytes
+  (`node:crypto`'s `randomBytes`), never persisted anywhere else, never
+  logged, never echoed back in an error body or a health response. A token
+  that outlives its daemon is a token something else can use.
+- Written with mode `0600`. **On Windows this mode is not honoured** —
+  HARD-verified: a file written with `0600` reports `666` back from `stat`
+  on this platform, since Windows has no POSIX permission bits. The token is
+  actually protected by the parent directory's ACL (the user's own profile
+  directory, for the default state dir) rather than the file's own mode on
+  that platform. The mode is set regardless, because it is correct and
+  effective on the POSIX systems this project is heading toward, and costs
+  nothing where it's ignored.
+- Removed on a clean exit; left behind (still naming the now-dead pid) after
+  a hard kill or a crash.
+- `dbPath` records the *exact* database file this daemon opened, not just
+  its state directory — `--db` is a separate override from
+  `--state-dir`/`MAGARINE_HOME` and the two can diverge. Anything deciding
+  whether a live daemon.json is actually *this* invocation's daemon (the
+  CLI's own routing, below) must compare `dbPath`, not just "does this state
+  directory have a daemon.json".
+
+**Stale-file detection.** Starting `serve` checks any existing `daemon.json`
+two ways, either one enough to call it stale and overwrite it: the recorded
+pid is dead (`process.kill(pid, 0)` throwing `ESRCH`), or a live-looking pid's
+own `/health` doesn't answer for it (wrong pid in the body, or unreachable —
+see `daemonClient.ts`'s `probeDaemonHealth`, which also guards against a
+*different*, unrelated process having been reassigned that same port after a
+crash). A second `serve` against a genuinely live daemon refuses to start,
+naming the pid and port, and never printing the token.
+
+### The HTTP API
+
+Loopback-only (`127.0.0.1`, never `0.0.0.0`/`::`) — checked with `netstat`,
+not asserted from a comment. All JSON, all behind the token
+(`Authorization: Bearer <token>`, constant-time compared via
+`node:crypto`'s `timingSafeEqual`): a wrong or missing token gets a fixed
+`{"error": "unauthorized"}`, `401`, on every route including `/health`,
+before any other work happens. Node's built-in `http`/`fetch` only — no
+dependency was added for this.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/health` | `{pid, startedAt, uptimeMs}` — never the token. |
+| `GET` | `/board?project=<id>` | Same shape as `board --json`. |
+| `GET` | `/inbox?project=<id>` | Same shape as `inbox --json`. |
+| `GET` | `/activity?project=<id>\|ticket=<id>&all=true` | Same shape as `activity --json`. |
+| `POST` | `/tickets` | Body mirrors `ticket add`'s flags (`project`, `title`, `description`, `maxAttempts`, `priority`, `workspaceType`, `acceptanceCriteria`, `model`, `budget`, `dependsOn`). Attaches every `dependsOn` before resolving readiness, never before — same ordering guarantee as the CLI. |
+| `POST` | `/deps` | `{project, ticket, dependsOn, type?}`. |
+| `POST` | `/tickets/{id}/decide` | `{answer}`. |
+| `POST` | `/tickets/{id}/retry` | No body. |
+| `POST` | `/tickets/{id}/approve` | No body. |
+| `POST` | `/tickets/{id}/reject` | `{reason}`. |
+| `POST` | `/tickets/{id}/cancel` | No body. `409` if this daemon holds no live run for that ticket. |
+| `POST` | `/projects/{id}/resume` | No body. |
+| `POST` | `/projects/{id}/set` | `{maxSpend?, model?}`. |
+| `POST` | `/tick` | `{project}` — forces one scheduling pass for that project right now, outside the regular interval. |
+
+Nothing else — no websocket, no push, per spec. **There is no
+`POST /projects` (create)**: `project create` is not in this list, and stays
+a direct write even while a daemon is running (see "The single-writer rule"
+below) — a deliberate exception, not an oversight.
+
+Every route calls the exact same functions the CLI's direct-write path
+already calls (`store.ts`, `commands/*.ts`, `dependencies.ts`) — the API is
+a second *surface* onto the single write path, never a second one. Nothing
+in `daemonApi.ts`/`daemonClient.ts` ever writes `tickets.status` directly;
+`architecture.test.ts`'s grep for `UPDATE tickets SET ... status =` still
+finds exactly one file, `stateMachine.ts`.
+
+### The single-writer rule
+
+**When a daemon is running (matching this invocation's `--db`, per the
+`dbPath` check above), every mutating CLI command routes through its API
+instead of writing the database file directly — every one, *except*
+`project create`, which stays a direct write always.** There is no
+`POST /projects` route to send it to; the Strategist's ruling is that this
+narrow, one-shot write is not worth inventing a route for, given the batch's
+own instruction was "exactly the spec's list and nothing else." Reads
+(`status`/`board`/`inbox`/`activity`) are never routed — they stay direct
+either way, daemon or no daemon.
+
+`run --until-idle` refuses outright against a live, matching daemon (clear
+message, exit 1): there is no "wait for idle" route to poll, and running its
+own scheduler loop locally while a daemon is also ticking is exactly the
+two-writer situation this whole feature exists to prevent. Use `tick`
+(routes through `POST /tick`) for a single forced pass instead, or
+`board`/`status` to watch progress. `tick` itself, when routed, ignores (with
+a stderr note, not silently) any `--adapter`/`--claude-exe`/`--fake-script`/
+`--fake-outcome` flags also given — the daemon owns its adapter, fixed at
+`serve` startup, not a flag on a later command.
+
+The detection itself (`cli.ts`'s `liveDaemonFor`) always goes through
+`daemon.ts`'s real `checkDaemonFile` + `daemonClient.ts`'s real
+`probeDaemonHealth` — the same health probe `serve`'s own stale-file
+detection uses — never a second, simpler liveness check invented beside it.
+
+### Two cancellation transitions
+
+`stateMachine.ts` has carried a `cancel` transition (any of
+`OPEN`/`READY`/`IN_PROGRESS`/`REVIEW` → the terminal `CANCELLED`) since
+Batch 1, unused by any command until this batch wired `cancel --ticket`/
+`POST /tickets/{id}/cancel` to it. It is deliberately distinct from
+`run_cancelled` (`IN_PROGRESS` → `READY`, no attempt consumed), which
+predates this batch and backs every *daemon*-initiated stop
+(`adapter_unavailable`, a per-run timeout, `SIGINT`/`SIGTERM`, or the
+daemon's own shutdown):
+
+- `run_cancelled` — the daemon's own decision. The ticket isn't at fault, so
+  returning it to `READY` for another attempt is correct.
+- `cancel` — a *person's* decision, via `cancel --ticket`. Landing back in
+  `READY` would let the daemon's own next tick silently restart the run
+  moments later — measured by hand during this batch's close-out: the
+  original design (routed through `run_cancelled`) produced two runs, the
+  second starting under a second after the first was cancelled. `CANCELLED`
+  is terminal, so `tick()` (which only ever looks at `READY` tickets) simply
+  cannot pick it back up. `retry` is the one explicit way back to `READY`
+  ("cancel, then retry" — two commands, not a separate reopen); no
+  `cancel-run`/reopen-in-place command exists, on purpose. `scheduler.ts`'s
+  `cancelRun`/`cancelTicketRun` take an explicit `transitionEvent` parameter
+  with no default — every call site must say which of the two it means,
+  the same device `stateMachine.ts`'s `requireRetryableFlag` uses for the
+  same reason: a silent default is how this project has shipped the wrong
+  branch before.
+
+### Crash recovery
+
+`recoverOrphanedRuns` (`recovery.ts`, unchanged from Batch 1) runs once at
+every `serve` startup, before the first tick: any run still recorded
+`running` is by definition orphaned from a previous process that crashed or
+was killed, and is marked `failed`/`orphaned_on_restart`, returning its
+ticket to `READY` (or `FAILED` if attempts are exhausted) to be picked back
+up normally. This is what makes a hard kill — the only reliable stop on
+Windows, see above — safe to leave running rather than something that
+silently loses work: `commands/serve.test.ts` and `daemonApi.test.ts` both
+kill a real daemon mid-run and confirm a second, freshly-started daemon
+re-queues the orphaned run and drives it to completion, the second reading
+the recovery event back through its own authenticated API rather than
+accepting a coincidental fresh success as proof.
+
 ## Layout
 
 ```
 src/
-  db/           schema + migration runner, transaction helper
+  db/           schema + migration runner, transaction helper, WAL/busy_timeout pragmas
   store.ts      plain CRUD (not the ticket-status writer)
   stateMachine.ts   the ONE function that writes tickets.status
   dependencies.ts   promotes OPEN -> READY when blocking deps are DONE
@@ -320,11 +567,14 @@ src/
   workspace.ts  NONE/DIRECTORY/GIT_WORKTREE workspace provider
   adapters/fakeAdapter.ts  scriptable AgentAdapter test double
   adapters/claudeCli.ts    real Claude Code CLI adapter
-  scheduler.ts  tick() / runUntilIdle()
+  scheduler.ts  tick() / runUntilIdle() / cancelRun (daemon-decision vs person-decision)
   recovery.ts   restart recovery for orphaned "running" runs
   policy.ts     notification policy table: classify(eventType) -> visibility/requiresUser
-  commands/     board, inbox, activity, decide, retry, approve, reject, resume (cli.ts stays thin)
-  cli.ts        the `magarine` CLI
+  daemon.ts     daemon.json lifecycle, stale-file detection, the tick loop (startDaemonLoop)
+  daemonApi.ts  the HTTP API: token auth, routing onto the same functions the CLI calls
+  daemonClient.ts  the one client module (fetch-based) the CLI and daemon.ts's own health probe use
+  commands/     board, inbox, activity, decide, retry, approve, reject, resume, serve (cli.ts stays thin)
+  cli.ts        the `magarine` CLI, including daemon detection/routing and `cancel`
   *.test.ts     tests, colocated with the module they cover
 ```
 
@@ -564,3 +814,47 @@ NOT closed:**
   `commands/retry.ts`'s `retry` calls) instead of inventing a subcommand,
   since `cli.ts`'s ticket flags are not this role's file to extend beyond
   `--fake-outcome`.
+
+Batch 8 (Role M, daemon mode, single writer, its own token): `magarine
+serve`, the HTTP API, the CLI's daemon detection/routing, and `cancel` are
+all built and tested — see "Daemon mode" above for the full shape. What was
+found rather than built cleanly the first time, or is out of scope on
+purpose:
+
+- **`project create` has no route and stays a direct write even when a
+  daemon is running** — the spec's route list has no `POST /projects`, and
+  the Strategist ruled this narrow exception rather than asking for one to
+  be invented. Documented in "The single-writer rule" above, not left
+  implicit.
+- **No catchable cross-process `SIGINT`/`SIGTERM` delivery to a separate
+  `serve` process on Windows without a native helper** — HARD-verified
+  three ways (see "Running it" above and `commands/serve.test.ts`'s header
+  comment). The daemon's graceful-shutdown code is real and exercised
+  in-process (`daemon.test.ts`'s `DaemonLoop.stop()` tests, the same
+  substitution `scheduler.test.ts`'s own `runUntilIdle` SIGINT test already
+  makes); what cannot be tested on this platform is an *external* process
+  triggering it. A hard kill is the safety net (see "Crash recovery"), and
+  is what this batch's own kill-and-restart tests exercise instead. POSIX
+  delivery is expected to work normally but is untested here — no POSIX
+  machine was available this batch, the same gap `process.ts`'s own
+  tree-kill has carried since Batch 2.
+- **The daemon ticks every project in its database on a fixed interval,
+  with a single `--max-parallel` concurrency cap applied independently
+  *per project*** — N projects each get up to that many concurrent workers,
+  not a shared global cap across all of them. This matches the CLI's own
+  `tick`/`run --until-idle`, which never had a cross-project cap either;
+  nothing in the spec asked for one.
+- **A real production concurrency bug, found by this batch's own tests, is
+  fixed but the counterfactual isn't cleanly reproducible on demand.**
+  `openDb` now sets `journal_mode = WAL` and `busy_timeout = 5000` (see
+  "State directory" above) after a plain `status --json` read occasionally
+  raced the daemon's own write and failed outright. Two real-process tests
+  (`db/index.test.ts`) prove the fix positively (many reads, zero failures,
+  against a real continuously-writing process; a blocked write that waits
+  rather than fails, against a real lock-holding process). An isolated
+  two-process attempt to force the *pre-fix* config to fail the same way on
+  demand did not reproduce reliably — the original failure only ever showed
+  up under the full test suite's system-wide concurrent load, not a single
+  writer/reader pair in a dedicated harness. The fix is correct and
+  independently verified either way; the clean "before" reproduction just
+  isn't available to hand over.

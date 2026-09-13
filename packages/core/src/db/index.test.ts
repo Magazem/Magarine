@@ -2,10 +2,12 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb, runMigrations } from './index.ts';
 import { rmSyncResilient } from './testSupport.ts';
 import { testTempRoot } from '../testSupport.ts';
+import { spawnManaged } from '../process.ts';
 
 // Batch 6 item 5: this file's own private root under the OS temp directory
 // (testSupport.ts's testTempRoot), rather than creating a prefixed directory
@@ -93,4 +95,117 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     '0006_model_pinning',
   ]);
   assert.equal(snapshot.usageJsonInputTokens, 1);
+});
+
+// Batch 8: before daemon mode there was only ever one process holding this
+// file open. Now the daemon holds it open continuously while the CLI's own
+// direct reads (board/status/inbox/activity -- reads stay direct even while
+// a daemon is running) open a second, independent connection to the same
+// file at any moment. This is exactly the shape that produced a real
+// concurrency bug found while writing this batch's own tests (cliRouting.
+// test.ts's polling loops occasionally got an empty/errored `status --json`
+// read under the full suite's heavier concurrent load) -- openDb now sets
+// `journal_mode = WAL` and a non-zero `busy_timeout` (see that function's
+// own header comment for the full reasoning); these two tests prove each
+// pragma does real, separately-attributable work, against a REAL second
+// process, not a mocked one.
+
+test('openDb sets WAL journal mode and a non-zero busy_timeout on every connection', () => {
+  const dir = mkdtempSync(join(testRoot.root, 'pragmas-'));
+  const file = join(dir, 'db.sqlite');
+  const db = openDb(file);
+  assert.equal((db.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode, 'wal');
+  assert.equal((db.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout, 5000);
+  db.close();
+});
+
+test('many rapid reads succeed with zero failures while a real second process continuously commits writes to the same file (WAL)', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'wal-reads-'));
+  const file = join(dir, 'db.sqlite');
+  try {
+    // Seed the schema before the writer and reader both open it.
+    openDb(file).close();
+
+    const fixturePath = fileURLToPath(new URL('./writeHammerFixture.ts', import.meta.url));
+    const writer = spawnManaged({ executable: process.execPath, args: [fixturePath, file, '500'] });
+    let writerDone = false;
+    void writer.wait().then(() => {
+      writerDone = true;
+    });
+
+    const reader = openDb(file);
+    let reads = 0;
+    let failures = 0;
+    let lastFailure: unknown;
+    while (!writerDone) {
+      for (let i = 0; i < 20 && !writerDone; i++) {
+        try {
+          reader.prepare('SELECT COUNT(*) AS c FROM tickets').get();
+          reads++;
+        } catch (err) {
+          failures++;
+          lastFailure = err;
+        }
+      }
+      // Yield to the event loop so the writer's own exit event (and this
+      // loop's own writerDone flip) can actually be delivered -- a tight
+      // synchronous loop with no yield point starves libuv and the child's
+      // 'exit' event never arrives.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    reader.close();
+
+    assert.ok(reads > 50, `sanity: the read loop should have attempted many reads (got ${reads})`);
+    assert.equal(
+      failures,
+      0,
+      `expected zero failures with WAL + busy_timeout while a real writer process committed continuously, got ${failures} (last: ${lastFailure instanceof Error ? lastFailure.message : String(lastFailure)})`
+    );
+  } finally {
+    await rmSyncResilient(dir);
+  }
+});
+
+test('busy_timeout makes a blocked write WAIT for a real second process to release the lock, rather than failing immediately', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'busy-timeout-'));
+  const file = join(dir, 'db.sqlite');
+  try {
+    openDb(file).close();
+
+    const holdMs = 800;
+    const fixturePath = fileURLToPath(new URL('./lockHolderFixture.ts', import.meta.url));
+    const holder = spawnManaged({ executable: process.execPath, args: [fixturePath, file, String(holdMs)] });
+
+    let stdout = '';
+    holder.onStdout((c) => (stdout += c));
+    const deadline = Date.now() + 5000;
+    while (!stdout.includes('LOCK_HELD') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(stdout.includes('LOCK_HELD'), 'the holder process should have signalled it took the write lock');
+
+    // This connection's own write attempt below must contend with the
+    // holder's -- writer-vs-writer contention, which WAL does NOT resolve
+    // on its own (only busy_timeout does). It should block for roughly
+    // `holdMs`, then succeed once the holder commits, rather than throwing
+    // SQLITE_BUSY immediately.
+    const contender = openDb(file);
+    const before = Date.now();
+    assert.doesNotThrow(() => {
+      contender.exec('BEGIN IMMEDIATE');
+    });
+    const elapsedMs = Date.now() - before;
+    contender.exec('COMMIT');
+    contender.close();
+
+    assert.ok(
+      elapsedMs >= holdMs - 200,
+      `expected the contending write to wait for roughly the holder's ${holdMs}ms, only waited ${elapsedMs}ms -- ` +
+        'with busy_timeout=0 (the pre-batch-8 default) this would have thrown SQLITE_BUSY almost instantly instead'
+    );
+
+    await holder.wait();
+  } finally {
+    await rmSyncResilient(dir);
+  }
 });
