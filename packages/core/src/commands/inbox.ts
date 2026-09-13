@@ -67,8 +67,17 @@ function reasonFor(eventType: string, payload: unknown): string {
   if (typeof p.reason === 'string' && p.reason.length > 0) return `rejected: ${p.reason}`;
 
   if (typeof p.failureClass === 'string') {
+    // `tally`/`overshoot` only ever appear on the scheduler's own
+    // estimate-driven stop (scheduler.ts's progress-event ceiling branch,
+    // `stoppedBy: 'scheduler_estimate'`) -- the tool's own stop
+    // (`stoppedBy: 'tool_max_budget_usd'`) never sets these fields, so it
+    // falls through to the generic `failureClass` line below unchanged.
+    // Batch 6, per the Strategist's ruling: this number is the daemon's own
+    // live tally, a known lower bound (see claudeCli.ts's
+    // messageModel/priceUsage header), not the tool's exact figure -- say so
+    // rather than showing a number that looks as precise as one.
     if (p.failureClass === 'budget_exceeded' && typeof p.tally === 'number' && typeof p.overshoot === 'number') {
-      return `budget exceeded: spent $${p.tally.toFixed(2)}, over its ceiling by $${p.overshoot.toFixed(2)}`;
+      return `budget exceeded: spent at least $${p.tally.toFixed(2)} (live estimate), over its ceiling by at least $${p.overshoot.toFixed(2)}`;
     }
     return `failed: ${p.failureClass}`;
   }

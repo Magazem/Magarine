@@ -12,12 +12,16 @@ export interface BoardTicket {
   attemptCount: number;
   maxAttempts: number;
   costUsd: number;
+  /** Batch 6: true if any run contributing to costUsd carries `usage_json.source === 'scheduler_budget_estimate'` -- the daemon's own live tally (pricing.ts/claudeCli.ts), a known lower bound, not the tool's exact figure. The Strategist's ruling: label it "at least $x, live estimate" rather than showing a number that looks as exact as a completed run's. */
+  costIsEstimate: boolean;
   blockedBy: string[];
 }
 
 export interface BoardResult {
   /** Sum of `costUsd` over every ticket in the project. */
   projectSpendUsd: number;
+  /** True if any ticket's costIsEstimate is true -- see BoardTicket.costIsEstimate. A sum with even one estimated component is itself only a lower bound. */
+  projectSpendIsEstimate: boolean;
   /** `projects.max_spend_usd`, or null when no cap is set. */
   projectMaxSpendUsd: number | null;
   tickets: BoardTicket[];
@@ -43,22 +47,35 @@ const STATUS_ORDER: TicketStatus[] = [
 // blob that this codebase never validates (see store.ts's `setRunUsage`);
 // a run with no usage recorded, or a shape without `total_cost_usd`,
 // contributes nothing rather than throwing.
-function ticketCostUsd(db: Db, ticketId: string): number {
+//
+// Batch 6: a run stopped by the daemon's own estimate (scheduler.ts's
+// budget-stop branch) stores `source: 'scheduler_budget_estimate'` on that
+// same usage_json -- the one marker that distinguishes "the tool's own
+// authoritative total" from "our known-low mid-run tally, frozen at the
+// moment we stopped the worker" (see claudeCli.ts's messageModel/priceUsage
+// header for why it's known-low). One estimated run in the sum makes the
+// whole sum a lower bound, so `isEstimate` is true if ANY contributing run
+// is estimate-sourced, not just the most recent one.
+function ticketCostUsd(db: Db, ticketId: string): { costUsd: number; isEstimate: boolean } {
   const rows = db.prepare('SELECT usage_json FROM runs WHERE ticket_id = ?').all(ticketId) as Array<{
     usage_json: string | null;
   }>;
   let total = 0;
+  let isEstimate = false;
   for (const row of rows) {
     if (!row.usage_json) continue;
     try {
-      const usage = JSON.parse(row.usage_json) as { total_cost_usd?: unknown };
-      if (typeof usage.total_cost_usd === 'number') total += usage.total_cost_usd;
+      const usage = JSON.parse(row.usage_json) as { total_cost_usd?: unknown; source?: unknown };
+      if (typeof usage.total_cost_usd === 'number') {
+        total += usage.total_cost_usd;
+        if (usage.source === 'scheduler_budget_estimate') isEstimate = true;
+      }
     } catch {
       // Malformed adapter-defined JSON contributes nothing rather than
       // crashing the board.
     }
   }
-  return total;
+  return { costUsd: total, isEstimate };
 }
 
 function blockingDependencies(db: Db, ticket: Ticket): string[] {
@@ -71,8 +88,15 @@ function blockingDependencies(db: Db, ticket: Ticket): string[] {
 // Project spend is the sum of ticket spend over every ticket in the
 // project (batch-4-spec.md section 2's "Contracts" note), computed here
 // from the tickets `buildBoard` already loaded rather than re-querying.
-function projectSpendUsd(db: Db, tickets: Ticket[]): number {
-  return tickets.reduce((total, t) => total + ticketCostUsd(db, t.id), 0);
+function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; isEstimate: boolean } {
+  let total = 0;
+  let isEstimate = false;
+  for (const t of tickets) {
+    const c = ticketCostUsd(db, t.id);
+    total += c.costUsd;
+    if (c.isEstimate) isEstimate = true;
+  }
+  return { costUsd: total, isEstimate };
 }
 
 export function buildBoard(db: Db, projectId: string): BoardResult {
@@ -80,19 +104,35 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
     .slice()
     .sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status));
 
+  const projectSpend = projectSpendUsd(db, tickets);
+
   return {
-    projectSpendUsd: projectSpendUsd(db, tickets),
+    projectSpendUsd: projectSpend.costUsd,
+    projectSpendIsEstimate: projectSpend.isEstimate,
     projectMaxSpendUsd: getProject(db, projectId)?.maxSpendUsd ?? null,
-    tickets: tickets.map((t) => ({
-      id: t.id,
-      title: t.title,
-      status: t.status,
-      attemptCount: t.attemptCount,
-      maxAttempts: t.maxAttempts,
-      costUsd: ticketCostUsd(db, t.id),
-      blockedBy: blockingDependencies(db, t),
-    })),
+    tickets: tickets.map((t) => {
+      const c = ticketCostUsd(db, t.id);
+      return {
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        attemptCount: t.attemptCount,
+        maxAttempts: t.maxAttempts,
+        costUsd: c.costUsd,
+        costIsEstimate: c.isEstimate,
+        blockedBy: blockingDependencies(db, t),
+      };
+    }),
   };
+}
+
+// Batch 6, per the Strategist's ruling: a number sourced from the daemon's
+// own live tally reads "at least $x, live estimate" rather than looking as
+// exact as a completed run's tool-reported figure. Shared by the project
+// header and every ticket row so the two can never drift into different
+// phrasings.
+function formatSpend(costUsd: number, isEstimate: boolean): string {
+  return isEstimate ? `at least $${costUsd.toFixed(2)}, live estimate` : `$${costUsd.toFixed(2)}`;
 }
 
 // Project spend against its cap comes first, since it is the one number
@@ -100,7 +140,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
 // they read a single ticket row. Ticket id first on every ticket line, per
 // this role's brief: it's the next thing a person copies.
 export function formatBoard(result: BoardResult): string {
-  const spend = `$${result.projectSpendUsd.toFixed(2)}`;
+  const spend = formatSpend(result.projectSpendUsd, result.projectSpendIsEstimate);
   const cap = result.projectMaxSpendUsd === null ? 'no cap set' : `cap $${result.projectMaxSpendUsd.toFixed(2)}`;
   const header = `Project spend: ${spend} (${cap})`;
 
@@ -109,7 +149,7 @@ export function formatBoard(result: BoardResult): string {
   const rows = result.tickets
     .map((t) => {
       const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
-      const cost = `cost $${t.costUsd.toFixed(2)}`;
+      const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate)}`;
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
       const parts = [t.id, t.status, t.title, attempts, cost, blocked].filter((p) => p.length > 0);
       return parts.join('\t');

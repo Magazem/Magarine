@@ -157,6 +157,94 @@ test('board shows project spend against its cap at the top, above the ticket row
   });
 });
 
+// Batch 6, per the Strategist's ruling: a number sourced from the daemon's
+// own live tally (usage_json.source === 'scheduler_budget_estimate') must
+// read "at least $x, live estimate" on the board, not look as exact as a
+// completed run's tool-reported figure. There is no CLI path to make
+// FakeAdapter report a scheduler-estimate-sourced run (--fake-script has no
+// 'progress' kind), so the run row is seeded directly against the store --
+// same pattern as `seedTicketInReview` above -- and `board` itself is
+// exercised through the real CLI.
+test("board labels a ticket's cost 'at least $x, live estimate' when its usage came from the daemon's own tally, and shows a plain figure when it came from the tool", async () => {
+  const { openDb } = await import('../db/index.ts');
+  const { createRun, setRunUsage } = await import('../store.ts');
+
+  await withTempDb('magarine-board-estimate-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+    const estimated = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'estimated', '--json', '--db', dbFile])).stdout
+    );
+    const exact = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'exact', '--json', '--db', dbFile])).stdout
+    );
+
+    const db = openDb(dbFile);
+    const estimatedRun = createRun(db, { ticketId: estimated.id, attempt: 1, adapter: 'test' });
+    setRunUsage(db, estimatedRun.id, { total_cost_usd: 0.42, source: 'scheduler_budget_estimate' });
+    const exactRun = createRun(db, { ticketId: exact.id, attempt: 1, adapter: 'test' });
+    setRunUsage(db, exactRun.id, { total_cost_usd: 0.5 });
+    db.close();
+
+    const boardRes = await run(['board', '--project', project.id, '--db', dbFile]);
+    assert.equal(boardRes.code, 0, boardRes.stderr);
+    assert.match(
+      boardRes.stdout,
+      new RegExp(`^${estimated.id}\\t.*cost at least \\$0\\.42, live estimate`, 'm'),
+      'an estimate-sourced run must be labelled, not shown as a plain figure'
+    );
+    assert.match(
+      boardRes.stdout,
+      new RegExp(`^${exact.id}\\t.*cost \\$0\\.50(?!,)`, 'm'),
+      "a tool-sourced run must show a plain figure, not labelled 'live estimate'"
+    );
+    assert.match(boardRes.stdout.split('\n')[0], /^Project spend: at least \$0\.92, live estimate/,
+      'one estimated ticket makes the whole project total a lower bound too');
+
+    const jsonRes = JSON.parse((await run(['board', '--project', project.id, '--json', '--db', dbFile])).stdout) as {
+      projectSpendIsEstimate: boolean;
+      tickets: Array<{ id: string; costIsEstimate: boolean }>;
+    };
+    assert.equal(jsonRes.projectSpendIsEstimate, true);
+    assert.equal(jsonRes.tickets.find((t) => t.id === estimated.id)!.costIsEstimate, true);
+    assert.equal(jsonRes.tickets.find((t) => t.id === exact.id)!.costIsEstimate, false);
+  });
+});
+
+test("inbox labels a scheduler budget-stop's spend 'live estimate' since tally/overshoot never appear on the tool's own stop", async () => {
+  const { openDb } = await import('../db/index.ts');
+  const { getTicket } = await import('../store.ts');
+  const { resolveReadiness } = await import('../dependencies.ts');
+  const { recordTicketTransition } = await import('../stateMachine.ts');
+  const { newId } = await import('../id.ts');
+
+  await withTempDb('magarine-inbox-budgetstop-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'went over', '--json', '--db', dbFile])).stdout
+    );
+
+    const db = openDb(dbFile);
+    resolveReadiness(db, project.id);
+    recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: newId('evt'), payload: {} });
+    recordTicketTransition(db, {
+      ticketId: ticket.id,
+      event: 'worker_failure',
+      idempotencyKey: newId('evt'),
+      payload: { retryable: false, failureClass: 'budget_exceeded', stoppedBy: 'scheduler_estimate', tally: 0.42, ceiling: 0.4, overshoot: 0.02 },
+    });
+    assert.equal(getTicket(db, ticket.id)!.status, 'FAILED');
+    db.close();
+
+    const inboxJson = JSON.parse(
+      (await run(['inbox', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ ticketId?: string; eventType: string; message: string }>;
+    const item = inboxJson.find((i) => i.eventType === 'worker_failed_final');
+    assert.ok(item, 'the exhausted budget-stop failure must reach the inbox');
+    assert.match(item!.message, /spent at least \$0\.42 \(live estimate\)/);
+    assert.match(item!.message, /over its ceiling by at least \$0\.02/);
+  });
+});
+
 test('project create --max-spend and project set --max-spend both take effect end-to-end, visible on the board', async () => {
   await withTempDb('magarine-maxspend-', async (dbFile) => {
     const createRes = await run(['project', 'create', '--name', 'Capped', '--max-spend', '5', '--json', '--db', dbFile]);
