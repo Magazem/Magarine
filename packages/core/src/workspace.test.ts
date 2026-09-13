@@ -82,6 +82,55 @@ test('DIRECTORY without a workspaceRoot throws instead of silently falling back 
   assert.throws(() => prepareWorkspace('DIRECTORY', 'tkt_dir_2'), /workspaceRoot/);
 });
 
+// Batch 9 housekeeping item 1: on Windows, a just-exited child process's cwd
+// can hold its directory handle open a few milliseconds past the child's own
+// `close` event (the same class of native-handle release delay
+// db/testSupport.ts's rmSyncResilient already works around for node:sqlite,
+// HARD-verified there) -- an immediate, un-retried `rmSync` of a NONE
+// workspace can observe a transient EPERM/EBUSY from this. `removeFn` is a
+// test-only seam (mirrors WorkspaceOptions.baseDir) so this is proven with a
+// deterministic injected failure instead of racing the real OS.
+test('NONE cleanup retries past a transient failure from the underlying remove and still succeeds', async () => {
+  let calls = 0;
+  const ws = prepareWorkspace('NONE', 'tkt_none_retry_1', {
+    removeFn: (path) => {
+      calls += 1;
+      if (calls < 3) {
+        const err = new Error('EPERM: operation not permitted, rmdir') as NodeJS.ErrnoException;
+        err.code = 'EPERM';
+        throw err;
+      }
+      rmSync(path, { recursive: true, force: true });
+    },
+    retryDelayMs: 1,
+  });
+  assert.ok(existsSync(ws.path));
+
+  await ws.cleanup();
+
+  assert.equal(calls, 3, 'expected two failed attempts before the third succeeded');
+  assert.equal(existsSync(ws.path), false, 'workspace must be removed once the retry succeeds');
+});
+
+test('NONE cleanup gives up and rejects once the underlying remove exhausts every retry, rather than retrying forever', async () => {
+  let calls = 0;
+  const ws = prepareWorkspace('NONE', 'tkt_none_retry_2', {
+    removeFn: () => {
+      calls += 1;
+      const err = new Error('EPERM: operation not permitted, rmdir') as NodeJS.ErrnoException;
+      err.code = 'EPERM';
+      throw err;
+    },
+    retryAttempts: 3,
+    retryDelayMs: 1,
+  });
+
+  await assert.rejects(() => ws.cleanup(), /EPERM/);
+  assert.equal(calls, 3, 'expected exactly retryAttempts calls, not an unbounded retry loop');
+
+  rmSync(ws.path, { recursive: true, force: true });
+});
+
 test('GIT_WORKTREE is refused, not silently degraded', () => {
   assert.throws(() => prepareWorkspace('GIT_WORKTREE', 'tkt_gw_1'), /not supported yet/);
 });

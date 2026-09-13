@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaudeCliAdapter } from './claudeCli.ts';
 import { testTempRoot } from '../testSupport.ts';
+import { rmSyncResilient } from '../db/testSupport.ts';
 import type { TicketEnvelope, WorkerEvent } from '../types.ts';
 
 // All real API-calling runs happened in the batch-1 spike
@@ -89,7 +90,7 @@ test('happy path: reads .orchestrator/result.json in preference to the stream re
     assert.equal((terminal as { raw: { summary: string } }).raw.summary, 'FROM FILE, not stream');
     assert.ok((terminal as { usage?: unknown }).usage, 'expected usage (cost/tokens/session_id) to be recorded');
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -122,7 +123,7 @@ test('a real worker result reporting status budget_insufficient reaches observer
       'per-call cost makes finishing this ticket impossible within the ceiling'
     );
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -141,7 +142,7 @@ test('happy path: falls back to the stream structured_output when no .orchestrat
       'expected at least one progress event decoded from the stream-json lines'
     );
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -191,7 +192,7 @@ for (const fixture of [
         `expected the deduped per-category tally (${finalTally}) to match the independently-computed value (${fixture.expectedTally}) -- a mismatch means dedup or the per-message model lookup broke`
       );
     } finally {
-      rmSync(workspaceRoot, { recursive: true, force: true });
+      await rmSyncResilient(workspaceRoot);
     }
   });
 }
@@ -251,7 +252,7 @@ test('batch 6 item 3: an assistant line naming a model outside pricing.ts\'s rat
         'expected the message to still be tallied (at the fallback rate), not dropped, once flagged'
       );
     } finally {
-      rmSync(workspaceRoot, { recursive: true, force: true });
+      await rmSyncResilient(workspaceRoot);
     }
   } finally {
     rmSync(synthDir, { recursive: true, force: true });
@@ -295,7 +296,7 @@ test("batch 6 item 4: a completed run whose terminal result line's modelUsage na
       assert.equal(terminal.type, 'result_raw');
       assert.equal(terminal.unknownModel, 'claude-nonexistent-model');
     } finally {
-      rmSync(workspaceRoot, { recursive: true, force: true });
+      await rmSyncResilient(workspaceRoot);
     }
   } finally {
     rmSync(synthDir, { recursive: true, force: true });
@@ -340,7 +341,7 @@ test('artefact verification: a schema-valid result claiming an artefact that was
     assert.equal((terminal as { retryable: boolean }).retryable, true);
     assert.match((terminal as { message: string }).message, /artefact not found/);
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -355,7 +356,7 @@ test('not-logged-in: is_error true with an auth message is classified adapter-un
     assert.equal((terminal as { retryable: boolean }).retryable, false);
     assert.match((terminal as { message: string }).message, /ADAPTER_UNAVAILABLE/);
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -370,7 +371,7 @@ test('invalid schema: no JSON on stdout at all is classified retryable, not cras
     assert.equal((terminal as { retryable: boolean }).retryable, true);
     assert.match((terminal as { message: string }).message, /json-schema/);
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -382,7 +383,7 @@ test('timeout: a hung worker is killed by the wall-clock timeout and classified 
     assert.equal((terminal as { retryable: boolean }).retryable, true);
     assert.match((terminal as { message: string }).message, /timed out/);
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -411,7 +412,7 @@ test('budget exceeded (HARD: the exact shape docs/strategy/batch-4-spec.md secti
     assert.equal(terminal.failureClass, 'budget_exceeded');
     assert.equal(terminal.stoppedBy, 'tool_max_budget_usd');
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
     rmSync(syntheticDir, { recursive: true, force: true });
   }
 });
@@ -457,7 +458,7 @@ test('two tickets with different envelope.maxBudgetUsd overrides produce two dif
     assert.equal(expensive, '9.5');
     assert.notEqual(cheap, expensive);
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
     rmSync(argvDir, { recursive: true, force: true });
   }
 });
@@ -531,7 +532,7 @@ test("two tickets with different envelope.model values produce two different --m
     assert.equal(sonnet.recordedModel, 'claude-sonnet-5');
     assert.equal(haiku.recordedModel, 'claude-haiku-4-5-20251001');
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
     rmSync(argvDir, { recursive: true, force: true });
   }
 });
@@ -554,16 +555,34 @@ test('observe() attached after the run already finished still receives the termi
     });
     const handle = await adapter.startWorker({ ticket: envelope(), systemPolicy: 'default' });
 
-    // Give the fast-exiting fake process time to finish before we ever call observe().
+    // Give the fast-exiting fake process time to finish before we ever call
+    // observe(), so the common case actually exercises replay (eventLog
+    // already has the terminal event by the time observe() registers).
+    // Not load-bearing for correctness below: under the full suite's
+    // concurrent process load this 200ms can occasionally not be enough
+    // (measured HARD: reproduces on the pre-existing code too, unrelated to
+    // the EPERM cleanup race -- a plain `events.length` of 0 immediately
+    // after `observe()` resolves, not an exception), which is exactly the
+    // race this test's own name says does not exist. observe() always
+    // registers a live listener regardless of whether replay already had
+    // something (see claudeCli.ts's observe()), so waiting for the terminal
+    // event here -- the same pattern `runOnce()` above already uses --
+    // proves "no race" for real instead of merely asserting after a sleep
+    // that usually, but not always, outlasted the child process.
     await new Promise((resolve) => setTimeout(resolve, 200));
 
     const events: WorkerEvent[] = [];
-    await adapter.observe(handle, (event) => events.push(event));
+    await new Promise<void>((resolve) => {
+      void adapter.observe(handle, (event) => {
+        events.push(event);
+        if (event.type === 'result_raw' || event.type === 'failure') resolve();
+      });
+    });
 
     assert.equal(events.length, 1);
     assert.equal(events[0].type, 'failure');
   } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
+    await rmSyncResilient(workspaceRoot);
   }
 });
 
@@ -600,6 +619,56 @@ test('NONE workspace directories are removed after the run completes (checked ag
 
     const remaining = readdirSync(root).filter((name) => name.startsWith('magarine-run-'));
     assert.deepEqual(remaining, [], 'the NONE workspace directory created for this run must not remain on disk');
+  } finally {
+    cleanup();
+  }
+});
+
+// Batch 9 housekeeping item 1: a persistent NONE-mode cleanup failure (every
+// retry in workspace.ts's removeDirectoryResilient exhausted) used to throw
+// out of startWorker's internal `.then()` callback before `this.publish` was
+// ever reached -- an unhandled rejection that silently discarded the run's
+// real terminal event. Proven here with a deterministic injected failure
+// (workspaceRemoveFn) rather than racing the real, timing-dependent OS
+// condition -- see claudeCli.ts's try/catch around `ws.cleanup()`.
+test('a NONE-mode cleanup failure (every retry exhausted) still publishes the run\'s real terminal event, not silence', async () => {
+  const { root, cleanup } = testTempRoot('claudecli-cleanup-failure');
+  try {
+    const adapter = new ClaudeCliAdapter({
+      claudeExe: process.execPath,
+      argsPrefix: [fakeExePath],
+      maxBudgetUsd: 2,
+      workspaceType: 'NONE',
+      baseDir: root,
+      workspaceRemoveFn: () => {
+        throw new Error('simulated persistent EPERM');
+      },
+      workspaceRetryAttempts: 2,
+      workspaceRetryDelayMs: 1,
+      env: {
+        MAGARINE_FAKE_SPEC: JSON.stringify({
+          stdoutFile: fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'),
+          exitCode: 0,
+          createFiles: { 'hello.txt': 'hello from magarine worker' },
+        }),
+      },
+    });
+    const handle = await adapter.startWorker({ ticket: envelope(), systemPolicy: 'default' });
+
+    const events: WorkerEvent[] = [];
+    await new Promise<void>((resolve) => {
+      void adapter.observe(handle, (event) => {
+        events.push(event);
+        if (event.type === 'result_raw' || event.type === 'failure') resolve();
+      });
+    });
+
+    const terminal = events.at(-1)!;
+    assert.equal(terminal.type, 'result_raw', 'the real outcome must still be published despite cleanup failing');
+    assert.equal((terminal as { raw: { status: string } }).raw.status, 'review');
+
+    const remaining = readdirSync(root).filter((name) => name.startsWith('magarine-run-'));
+    assert.equal(remaining.length, 1, 'a persistently-failed cleanup leaves the directory behind -- cosmetic, not silent');
   } finally {
     cleanup();
   }

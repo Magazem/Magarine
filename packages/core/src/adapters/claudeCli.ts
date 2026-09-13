@@ -51,6 +51,12 @@ export interface ClaudeCliAdapterOptions {
   env?: NodeJS.ProcessEnv;
   /** Passed straight through to `prepareWorkspace`'s `baseDir` for NONE-mode runs. Test-only; production default (the OS temp directory) is unchanged. See workspace.ts's WorkspaceOptions.baseDir. */
   baseDir?: string;
+  /** Test-only seam, forwarded to `prepareWorkspace`'s WorkspaceOptions.removeFn -- lets a test force a NONE-mode cleanup failure deterministically. See "cleanup failure must not swallow the terminal event" in claudeCli.test.ts. */
+  workspaceRemoveFn?: (path: string) => void;
+  /** Test-only seam, forwarded to `prepareWorkspace`'s WorkspaceOptions.retryAttempts. */
+  workspaceRetryAttempts?: number;
+  /** Test-only seam, forwarded to `prepareWorkspace`'s WorkspaceOptions.retryDelayMs. */
+  workspaceRetryDelayMs?: number;
   /**
    * Test seam only, always empty in production. Args spawned before the
    * real `claude` CLI flags, so a test can set `claudeExe: process.execPath`
@@ -414,6 +420,9 @@ export class ClaudeCliAdapter implements AgentAdapter {
       : prepareWorkspace(workspaceType, input.ticket.ticketId, {
           workspaceRoot: this.options.workspaceRoot,
           baseDir: this.options.baseDir,
+          removeFn: this.options.workspaceRemoveFn,
+          retryAttempts: this.options.workspaceRetryAttempts,
+          retryDelayMs: this.options.workspaceRetryDelayMs,
         });
 
     const prompt = buildWorkerPrompt(input.ticket, ws.path);
@@ -567,8 +576,24 @@ export class ClaudeCliAdapter implements AgentAdapter {
       // not introduced by batch 4 -- caught here because it occasionally
       // flaked the full suite under load: "NONE workspace directories are
       // removed after the run completes" in claudeCli.test.ts.)
+      //
+      // Batch 9 housekeeping item 1: cleanup failing must never cost the
+      // caller the run's own terminal event. Before this try/catch, an
+      // exhausted retry (see workspace.ts's removeDirectoryResilient) threw
+      // out of this `.then()` callback -- an unhandled rejection that never
+      // reached `this.publish` below, so a real run's actual result (done,
+      // failed, whatever it was) was silently lost and the ticket stayed
+      // IN_PROGRESS forever. A leftover temp directory is cosmetic; losing
+      // the terminal event is not -- cleanup is best-effort bookkeeping, not
+      // a precondition for reporting what the worker actually did.
       if (workspaceType === 'NONE') {
-        await ws.cleanup();
+        try {
+          await ws.cleanup();
+        } catch (err) {
+          process.stderr.write(
+            `claude-cli adapter: failed to remove workspace ${ws.path}: ${err instanceof Error ? err.message : String(err)}\n`
+          );
+        }
       }
 
       this.publish(state, outcomeToEvent(outcome, usage, unknownModel));

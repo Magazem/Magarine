@@ -25,6 +25,57 @@ export interface WorkspaceOptions {
    * batch-4-closeout.md section 5 item 2).
    */
   baseDir?: string;
+  /**
+   * Test-only seam: replaces the underlying directory removal NONE-mode
+   * cleanup retries on failure. Defaults to `rmSync`, which is the
+   * production behaviour. Lets a test inject a deterministic failure
+   * instead of racing the real, timing-dependent OS condition below.
+   */
+  removeFn?: (path: string) => void;
+  /** Test-only seam: overrides the default retry count for NONE-mode cleanup (see `removeFn`). */
+  retryAttempts?: number;
+  /** Test-only seam: overrides the default retry backoff, in ms, for NONE-mode cleanup (see `removeFn`). */
+  retryDelayMs?: number;
+}
+
+// Batch 9 housekeeping item 1 (docs/strategy/batch-9-spec.md section 1
+// ruling 1): root cause of the `adapters/claudeCli.test.ts` EPERM flake
+// (measured at about one run in twenty). ClaudeCliAdapter calls this
+// cleanup() the instant the spawned worker's `close` event fires (see
+// claudeCli.ts's comment on why cleanup runs before publish). On Windows, a
+// process's current working directory is held open by the OS for the
+// process's lifetime, and the handle is not always guaranteed released the
+// same instant the `close` event observes the process gone -- the identical
+// class of native-handle release delay db/testSupport.ts's rmSyncResilient
+// already works around for node:sqlite (HARD-verified there: "a short retry
+// loop clears it every time"). An un-retried `rmSync` right after that event
+// can observe a transient EPERM/EBUSY from the OS still finishing that
+// release. This is production code (NONE-mode cleanup runs on every real
+// worker run, not only in tests), so the fix is a bounded retry with linear
+// backoff, not a swallowed error -- a persistent failure still surfaces
+// (see the "gives up" test in workspace.test.ts), it just is not mistaken
+// for one on its first transient EPERM.
+async function removeDirectoryResilient(path: string, options: WorkspaceOptions): Promise<void> {
+  const removeFn = options.removeFn ?? ((p: string) => rmSync(p, { recursive: true, force: true }));
+  const attempts = options.retryAttempts ?? 10;
+  const delayMs = options.retryDelayMs ?? 100;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      removeFn(path);
+      // Deliberately observable, not silent: this line firing at all is the
+      // actual evidence the transient-EPERM diagnosis is real (a first
+      // attempt failed and a later one didn't touch the same path
+      // differently) -- see workspace.test.ts and the Orchestrator's
+      // 20-cold-run acceptance check for how this is counted.
+      if (attempt > 1) {
+        process.stderr.write(`workspace cleanup: removed ${path} after ${attempt} attempt(s)\n`);
+      }
+      return;
+    } catch (err) {
+      if (attempt === attempts) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
 }
 
 // NONE: a fresh, disposable temp directory per run, never shared with any
@@ -45,9 +96,7 @@ export function prepareWorkspace(type: WorkspaceType, ticketId: string, options:
     const path = mkdtempSync(join(options.baseDir ?? tmpdir(), 'magarine-run-'));
     return {
       path,
-      cleanup: async () => {
-        rmSync(path, { recursive: true, force: true });
-      },
+      cleanup: () => removeDirectoryResilient(path, options),
     };
   }
 

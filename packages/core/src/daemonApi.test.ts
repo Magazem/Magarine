@@ -209,7 +209,16 @@ test('POST /tickets creates a ticket (with the same attach-deps-before-resolving
 test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /tickets/{id}/cancel lands a hanging run in CANCELLED (not READY) without consuming an attempt, reopenable only via retry', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'tick-cancel-'));
   try {
-    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    // --max-parallel 2 here (batch 9 housekeeping item 1 ruling 1): a
+    // project's own `max_parallel_workers` is now consulted at the daemon
+    // (see daemon.ts's computeProjectCap) as the smaller-of-two alongside
+    // `serve`'s machine-wide ceiling, so the project's own default of 1
+    // would otherwise cap this single project at one concurrent worker
+    // regardless of `serve --max-parallel` below -- exactly the two
+    // concurrent tickets (hangTicket + fresh) this test needs.
+    const projectRes = await runCli([
+      'project', 'create', '--name', 'p', '--max-parallel', '2', '--state-dir', stateDir, '--json',
+    ]);
     const project = JSON.parse(projectRes.stdout);
     // Fake-scripted BEFORE the daemon starts, since --fake-script names a
     // ticket id at daemon startup -- which means this ticket is inevitably

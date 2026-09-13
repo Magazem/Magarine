@@ -104,6 +104,30 @@ test('a crashed NONE-mode run\'s disposable temp workspace is removed from the r
   assert.ok(!existsSync(ws.path), 'the orphaned run\'s NONE workspace must be reclaimed, not left behind');
 });
 
+// Batch 9 housekeeping item 1: a persistent workspace-removal failure (e.g.
+// the transient Windows EPERM this batch root-caused elsewhere -- see
+// workspace.ts's removeDirectoryResilient) must not stop recovery from
+// settling the run/ticket rows, and must not crash the `serve` startup this
+// function runs synchronously inside of. Proven with a deterministic
+// injected failure (removeWorkspace), not by racing the real OS condition.
+test('a workspace that cannot be removed still lets recovery settle the run and ticket rows, not throw', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'r1' });
+  const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake', workspaceRef: '/does/not/matter' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: `run_started:${run.id}` });
+
+  assert.doesNotThrow(() =>
+    recoverOrphanedRuns(db, () => {
+      throw new Error('simulated persistent EPERM');
+    })
+  );
+
+  assert.equal(getRun(db, run.id)!.status, 'failed');
+  assert.equal(getTicket(db, ticket.id)!.status, 'READY');
+});
+
 // The DIRECTORY-mode counterpart: a shared project directory is real,
 // user-owned storage, not disposable -- recovery must never delete it, the
 // same guard cancelTicketRun (scheduler.ts) already applies for every other

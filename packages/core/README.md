@@ -383,6 +383,22 @@ fake|claude`, `--claude-exe`, `--fake-script`, `--fake-outcome`,
   its database on its own, with no LLM involvement between ticks. An
   immediate first pass happens at startup regardless of this value.
 
+**`--max-parallel` is machine-wide as of Batch 9**, not per-project: it is
+the total number of workers `serve` will ever run at once, summed across
+every project in its database. A project's own effective cap for a given
+tick is `min(<the project's own max_parallel_workers, from "project create
+--max-parallel">, <however much of the machine-wide ceiling is not already
+spent by every project's current in-flight workers>)` — see `daemon.ts`'s
+`computeProjectCap`. Before this batch `projects.max_parallel_workers` was
+written at `project create` time but never actually consulted anywhere in
+scheduling, so N projects under one daemon could together run N times
+`--max-parallel` workers; a default-created project (`max_parallel_workers`
+defaults to 1) now runs one worker at a time under `serve` regardless of
+`--max-parallel`, unless given its own `--max-parallel` at `project create`.
+`tick`/`run --until-idle` are unchanged — they each run one project at a
+time, so there is no "other projects" for a machine-wide ceiling to mean
+anything against.
+
 Stop it with `Ctrl+C` (or `SIGTERM`) in its own terminal: it stops every live
 worker (adapter `stop()` + the run/ticket forced to a settled DB state — see
 "Two cancellation transitions" below), closes the listener, and removes
@@ -398,7 +414,12 @@ launch interactively has no graceful option today short of a hard kill,
 which is safe (see "Crash recovery" below) but skips the tidy shutdown.
 POSIX signal delivery should work normally there (untested — no POSIX
 machine available this batch, the same gap `process.ts`'s own tree-kill
-carries for the same reason).
+carries for the same reason). **This is a real, permanent platform
+limitation, not something a future batch is expected to lift** (Batch 9
+ruling: "document the Windows behaviour; do not refuse to start" — a daemon
+that refuses to run because of an honest limitation is worse than one that
+states it); `daemon.json`'s `shutdownMode` field, below, records which of
+the two a given `serve` process can actually be asked to do.
 
 ### `daemon.json`
 
@@ -410,7 +431,8 @@ carries for the same reason).
   "port": 47311,
   "token": "<64 hex chars, fresh every start>",
   "startedAt": "2026-09-13T12:00:00.000Z",
-  "dbPath": "/abs/path/to/magarine.db"
+  "dbPath": "/abs/path/to/magarine.db",
+  "shutdownMode": "signal"
 }
 ```
 
@@ -428,6 +450,16 @@ carries for the same reason).
   nothing where it's ignored.
 - Removed on a clean exit; left behind (still naming the now-dead pid) after
   a hard kill or a crash.
+- **`shutdownMode`** (Batch 9): `"signal"` or `"hard-kill-only"`, decided
+  once at startup from `process.platform` (`daemon.ts`'s
+  `detectShutdownMode`) — `"hard-kill-only"` on Windows, `"signal"`
+  everywhere else, matching the platform note above about what a *separate*
+  process can actually deliver to this one. Optional on read: a
+  `daemon.json` written by a pre-Batch-9 build has no such field, and must
+  still parse as a valid, live daemon rather than come back `undefined` (a
+  live older daemon must never look "absent" to a second `serve`'s own
+  staleness check, which is exactly the double-start this file exists to
+  prevent).
 - `dbPath` records the *exact* database file this daemon opened, not just
   its state directory — `--db` is a separate override from
   `--state-dir`/`MAGARINE_HOME` and the two can diverge. Anything deciding
@@ -540,18 +572,29 @@ daemon's own shutdown):
 
 ### Crash recovery
 
-`recoverOrphanedRuns` (`recovery.ts`, unchanged from Batch 1) runs once at
-every `serve` startup, before the first tick: any run still recorded
-`running` is by definition orphaned from a previous process that crashed or
-was killed, and is marked `failed`/`orphaned_on_restart`, returning its
-ticket to `READY` (or `FAILED` if attempts are exhausted) to be picked back
-up normally. This is what makes a hard kill — the only reliable stop on
-Windows, see above — safe to leave running rather than something that
-silently loses work: `commands/serve.test.ts` and `daemonApi.test.ts` both
-kill a real daemon mid-run and confirm a second, freshly-started daemon
-re-queues the orphaned run and drives it to completion, the second reading
-the recovery event back through its own authenticated API rather than
-accepting a coincidental fresh success as proof.
+`recoverOrphanedRuns` (`recovery.ts`) runs once at every `serve` startup,
+before the first tick: any run still recorded `running` is by definition
+orphaned from a previous process that crashed or was killed, and is marked
+`failed`/`orphaned_on_restart`, returning its ticket to `READY` (or `FAILED`
+if attempts are exhausted) to be picked back up normally. This is what makes
+a hard kill — the only reliable stop on Windows, see above — safe to leave
+running rather than something that silently loses work: `commands/serve.test.ts`
+and `daemonApi.test.ts` both kill a real daemon mid-run and confirm a
+second, freshly-started daemon re-queues the orphaned run and drives it to
+completion, the second reading the recovery event back through its own
+authenticated API rather than accepting a coincidental fresh success as
+proof.
+
+**This now includes the workspace, not just the run/ticket rows.** A
+crashed or hard-killed NONE-mode run's disposable temp workspace is reclaimed
+here too (Batch 8), and Batch 9 made that reclaim itself resilient to the
+same transient Windows filesystem race the rest of this batch's housekeeping
+fixed (see "Two cancellation transitions" and workspace.ts's
+`removeDirectoryResilient`): a workspace that genuinely can't be removed is
+logged and skipped rather than thrown, since recovery runs synchronously
+before the daemon starts listening and a workspace-removal failure must
+never be able to take down `serve` itself, or undo the run/ticket recovery
+that already succeeded.
 
 ## Layout
 

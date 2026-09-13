@@ -4,13 +4,32 @@ import { join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { cancelRun, tick, type StartedRun } from './scheduler.ts';
-import { listProjects } from './store.ts';
+import { countTicketsByStatus, getProject, listProjects, listTicketsByStatus } from './store.ts';
 import type { AgentAdapter } from './types.ts';
 
 // `<state>/daemon.json` lifecycle: the file that lets a second process find
 // a running daemon, per docs/strategy/batch-8-spec.md section 2's "Shape".
 // Batch 8 Role M owns this file and everything in it; step 3 (the HTTP API)
 // layers token auth on top of the same shape rather than changing it.
+
+// Batch 9 housekeeping item 1 ruling 2: "document the Windows behaviour; do
+// not refuse to start." HARD-verified on this Windows machine (see README's
+// "Running it"): a SEPARATE process cannot deliver a catchable
+// SIGINT/SIGTERM/SIGBREAK to a `serve` it did not launch interactively --
+// only a hard kill (`taskkill /F`, or this OS killing the process some other
+// way) is available cross-process. A real Ctrl+C in the daemon's OWN
+// attached console still works normally on every platform; this field
+// describes what a *different* process can do to this one, which is what a
+// caller deciding how to stop a daemon it does not hold the console for
+// actually needs to know before it tries.
+export type ShutdownMode = 'signal' | 'hard-kill-only';
+
+// `platform` defaults to the real `process.platform`; overridable so a test
+// can exercise both branches deterministically without touching global
+// process state.
+export function detectShutdownMode(platform: NodeJS.Platform = process.platform): ShutdownMode {
+  return platform === 'win32' ? 'hard-kill-only' : 'signal';
+}
 
 export interface DaemonFileInfo {
   pid: number;
@@ -20,6 +39,17 @@ export interface DaemonFileInfo {
   startedAt: string;
   /** The exact database path this daemon opened, not just the state directory -- a caller deciding whether to route a `--db`-scoped mutation through this daemon must compare against this field, not assume "a state dir has a daemon.json" implies "this db file is served by it" (they can differ: `--db` is a separate override from `--state-dir`/`MAGARINE_HOME`). */
   dbPath: string;
+  /**
+   * Batch 9: what a DIFFERENT process can actually do to stop this one --
+   * see `ShutdownMode`. Optional (not in `isDaemonFileInfo`'s required
+   * fields below) so a daemon.json written by a pre-batch-9 build still
+   * parses: requiring it would make an old file fail `isDaemonFileInfo` and
+   * come back `undefined`, which every caller treats as "no daemon.json at
+   * all" -- a live daemon would become invisible to a second `serve`'s own
+   * staleness check, which is exactly the double-start this file exists to
+   * prevent, not something an unrelated field's absence should ever cause.
+   */
+  shutdownMode?: ShutdownMode;
 }
 
 export function daemonFilePath(stateDir: string): string {
@@ -46,7 +76,8 @@ function isDaemonFileInfo(value: unknown): value is DaemonFileInfo {
     typeof v.port === 'number' &&
     typeof v.token === 'string' &&
     typeof v.startedAt === 'string' &&
-    typeof v.dbPath === 'string'
+    typeof v.dbPath === 'string' &&
+    (v.shutdownMode === undefined || v.shutdownMode === 'signal' || v.shutdownMode === 'hard-kill-only')
   );
 }
 
@@ -122,11 +153,47 @@ export async function checkDaemonFile(
 export interface DaemonLoopDeps {
   db: Db;
   adapter: AgentAdapter;
-  /** Concurrency cap, applied independently inside tick() for EACH project -- N projects each get up to this many concurrent workers, not a single global cap across all of them. Matches the CLI's `tick`/`run --until-idle`, which have never had a cross-project cap either. */
+  /**
+   * Batch 9 housekeeping item 1 ruling 1: as of this batch, this is the
+   * MACHINE-WIDE ceiling -- the daemon never runs more than this many
+   * workers in total, summed across every project it ticks. A project's own
+   * effective cap for a given tick is `min(projects.max_parallel_workers,
+   * <machine-wide slots still free>)` -- see `computeProjectCap` below.
+   * Before this batch, `projects.max_parallel_workers` was written at
+   * `project create` time but never actually read anywhere in scheduling;
+   * every project got this same number independently (N projects could
+   * together run N times this many workers). `run --until-idle`/`tick`
+   * still work the old way (unchanged): they run one project at a time, so
+   * there is no "other projects" for a machine-wide ceiling to mean
+   * anything against, and the Strategist's ruling only asks for the change
+   * at the daemon (`serve`).
+   */
   maxParallelWorkers: number;
   runTimeoutMs?: number;
   artifactsDir: string;
   tickIntervalMs: number;
+}
+
+// The smaller of the project's own `max_parallel_workers` and however much
+// of the machine-wide ceiling (`deps.maxParallelWorkers`) is not already
+// spent by every project's current IN_PROGRESS count -- re-queried fresh
+// from the DB on every call (never a cached running tally) so that within
+// one `runOneTick` pass, a project ticked earlier and given some of the
+// machine-wide budget is already reflected (via its newly-IN_PROGRESS rows)
+// by the time the next project's cap is computed; `recordTicketTransition`
+// writes `tickets.status` synchronously, so `tick()` returning is enough of
+// a barrier for this to be correct without a second, parallel tally to keep
+// in sync. A project row that has vanished between listing and ticking
+// (deleted mid-pass -- not possible today, but not assumed away either)
+// falls back to the machine-wide cap itself, same as `tick()` already does
+// when `getProject` returns undefined.
+function computeProjectCap(db: Db, projectId: string, machineCap: number): number {
+  const project = getProject(db, projectId);
+  const projectCap = project?.maxParallelWorkers ?? machineCap;
+  const machineInProgress = countTicketsByStatus(db, 'IN_PROGRESS');
+  const remaining = Math.max(0, machineCap - machineInProgress);
+  const projectInProgress = listTicketsByStatus(db, projectId, 'IN_PROGRESS').length;
+  return Math.min(projectCap, projectInProgress + remaining);
 }
 
 export interface DaemonLoop {
@@ -164,7 +231,7 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
       db: deps.db,
       adapter: deps.adapter,
       projectId,
-      maxParallelWorkers: deps.maxParallelWorkers,
+      maxParallelWorkers: computeProjectCap(deps.db, projectId, deps.maxParallelWorkers),
       runTimeoutMs: deps.runTimeoutMs,
       artifactsDir: deps.artifactsDir,
     });

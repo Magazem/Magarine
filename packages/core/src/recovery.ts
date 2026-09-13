@@ -25,7 +25,14 @@ export interface RecoveryResult {
 // path), not by trusting a green suite. DIRECTORY mode is a real,
 // user-owned shared directory and is never touched here, matching every
 // other cleanup path in this codebase.
-export function recoverOrphanedRuns(db: Db): RecoveryResult {
+// `removeWorkspace` is a test-only seam (defaults to the real, retrying
+// `rmSync` below) so a test can force the removal to fail deterministically
+// and prove recovery still settles the run/ticket rows rather than throwing.
+export function recoverOrphanedRuns(
+  db: Db,
+  removeWorkspace: (path: string) => void = (path) =>
+    rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+): RecoveryResult {
   const orphaned = listRunsByStatus(db, 'running');
   const recovered: string[] = [];
 
@@ -42,7 +49,32 @@ export function recoverOrphanedRuns(db: Db): RecoveryResult {
       recovered.push(run.id);
     }
     if (ticket?.workspaceType === 'NONE' && run.workspaceRef) {
-      rmSync(run.workspaceRef, { recursive: true, force: true });
+      try {
+        // Batch 9 housekeeping item 1: this runs synchronously at every
+        // `serve` startup, before the daemon starts listening. On Windows,
+        // a crashed or hard-killed process's cwd handle is not always
+        // guaranteed released the instant the OS reports it gone (the same
+        // class of native-handle release delay db/testSupport.ts's
+        // rmSyncResilient already works around for node:sqlite, and
+        // workspace.ts's removeDirectoryResilient now works around for a
+        // run's OWN cleanup path) -- the default `removeWorkspace` above
+        // uses `rmSync`'s own built-in synchronous backoff for exactly this,
+        // chosen over a manual async retry loop here because recovery must
+        // stay synchronous (every caller, including `daemon.ts`'s
+        // startDaemonLoop, calls it unawaited before the first tick). A
+        // persistent failure is caught, not swallowed: recovering the
+        // run/ticket rows above must never be undone by a workspace this
+        // process can't remove, so it's logged and recovery proceeds --
+        // exactly the "crash recovery now handles [a hard kill] including
+        // the workspace" ruling, which would otherwise mean "handles it,
+        // unless the OS is still cleaning up," i.e. not actually handling
+        // it.
+        removeWorkspace(run.workspaceRef);
+      } catch (err) {
+        process.stderr.write(
+          `recovery: failed to remove orphaned workspace ${run.workspaceRef}: ${err instanceof Error ? err.message : String(err)}\n`
+        );
+      }
     }
   }
 

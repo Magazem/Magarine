@@ -337,6 +337,16 @@ export function listTicketsByStatus(db: Db, projectId: string, status: TicketSta
   return rows.map(rowToTicket);
 }
 
+// Batch 9 housekeeping item 1 ruling 2: DB-wide (no project scoping), unlike
+// every other ticket query in this file -- daemon.ts's `serve --max-parallel`
+// machine-wide cap needs to know how many workers are in flight across EVERY
+// project, not one, before deciding how much of a project's own
+// max_parallel_workers cap it can actually use this tick.
+export function countTicketsByStatus(db: Db, status: TicketStatus): number {
+  const row = db.prepare('SELECT COUNT(*) AS n FROM tickets WHERE status = ?').get(status) as { n: number };
+  return row.n;
+}
+
 export function addDependency(
   db: Db,
   input: { ticketId: string; dependsOnTicketId: string; dependencyType?: DependencyType }

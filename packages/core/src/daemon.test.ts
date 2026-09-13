@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import {
   checkDaemonFile,
   daemonFilePath,
+  detectShutdownMode,
   generateDaemonToken,
   isPidAlive,
   readDaemonFile,
@@ -77,6 +78,42 @@ test('readDaemonFile returns undefined (not a throw) for a corrupted file', () =
 test('readDaemonFile returns undefined for well-formed JSON missing a required field', () => {
   const dir = mkdtempSync(join(testRoot.root, 'partial-'));
   writeFileSync(daemonFilePath(dir), JSON.stringify({ pid: 1, port: 2 }));
+  assert.equal(readDaemonFile(dir), undefined);
+});
+
+// Batch 9 housekeeping item 1 ruling 2.
+test('detectShutdownMode: hard-kill-only on win32, signal everywhere else', () => {
+  assert.equal(detectShutdownMode('win32'), 'hard-kill-only');
+  assert.equal(detectShutdownMode('linux'), 'signal');
+  assert.equal(detectShutdownMode('darwin'), 'signal');
+});
+
+test('writeDaemonFile then readDaemonFile round-trips shutdownMode', () => {
+  const dir = mkdtempSync(join(testRoot.root, 'shutdown-mode-'));
+  const info = sampleInfo({ shutdownMode: 'hard-kill-only' });
+  writeDaemonFile(dir, info);
+  assert.deepEqual(readDaemonFile(dir), info);
+});
+
+// A daemon.json written by a pre-batch-9 build never had this field. Without
+// tolerating its absence, this file would fail isDaemonFileInfo and come
+// back `undefined` -- every caller treats that identically to "no
+// daemon.json at all" (checkDaemonFile reports 'absent'), which would make a
+// genuinely live older daemon invisible to a second `serve`'s staleness
+// check and risk two daemons racing the same database.
+test('readDaemonFile still parses a daemon.json with no shutdownMode field at all (pre-batch-9 file)', () => {
+  const dir = mkdtempSync(join(testRoot.root, 'legacy-'));
+  const legacy = sampleInfo();
+  delete (legacy as { shutdownMode?: unknown }).shutdownMode;
+  writeFileSync(daemonFilePath(dir), JSON.stringify(legacy));
+  const readBack = readDaemonFile(dir);
+  assert.ok(readBack, 'a legacy file missing shutdownMode must still be recognized as a valid daemon.json');
+  assert.equal(readBack!.pid, legacy.pid);
+});
+
+test('readDaemonFile rejects a shutdownMode value that is neither known literal', () => {
+  const dir = mkdtempSync(join(testRoot.root, 'bad-mode-'));
+  writeFileSync(daemonFilePath(dir), JSON.stringify({ ...sampleInfo(), shutdownMode: 'nonsense' }));
   assert.equal(readDaemonFile(dir), undefined);
 });
 
@@ -305,10 +342,19 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
   // A very long interval: nothing in this test should be explained by the
   // periodic pass firing on its own -- every state change here comes from
   // an explicit forceTick call.
+  //
+  // maxParallelWorkers: 2 here is the MACHINE-WIDE ceiling (batch 9
+  // housekeeping item 1 ruling 1), deliberately looser than either
+  // project's own cap of 1 set above -- this test's whole point is proving
+  // forceTick respects a project's OWN concurrency cap, not the
+  // machine-wide one. A machine-wide cap of 1 would let only one of the two
+  // projects' hang-scripted tickets start at all, which would make it
+  // impossible to tell "blocked by its own cap" apart from "blocked by the
+  // machine-wide ceiling" below.
   const loop = startDaemonLoop({
     db,
     adapter,
-    maxParallelWorkers: 1,
+    maxParallelWorkers: 2,
     artifactsDir: join(testRoot.root, 'artifacts-4'),
     tickIntervalMs: 60_000,
   });
@@ -356,6 +402,76 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
     'the run forceTick started must be registered in the shared live map'
   );
   assert.equal(getTicket(db, ticketB.id)!.status, 'IN_PROGRESS', "project B must be untouched by project A's forceTick");
+});
+
+// Batch 9 housekeeping item 1 ruling 1: `serve --max-parallel` is now the
+// MACHINE-WIDE ceiling, summed across every project the daemon ticks -- see
+// daemon.ts's `computeProjectCap`. Each project here has its own cap (5)
+// generous enough that, before this batch, the two of them together could
+// run up to 10 workers at once; this test's whole point is proving the
+// daemon never actually lets that happen.
+test('the daemon never runs more workers than its machine-wide --max-parallel, even across multiple projects each with room to spare', async (t) => {
+  const db = openDb(':memory:');
+  const projectA = createProject(db, { name: 'a', maxParallelWorkers: 5 });
+  const projectB = createProject(db, { name: 'b', maxParallelWorkers: 5 });
+  const ticketsA = [
+    createTicket(db, { projectId: projectA.id, title: 'a1' }),
+    createTicket(db, { projectId: projectA.id, title: 'a2' }),
+    createTicket(db, { projectId: projectA.id, title: 'a3' }),
+  ];
+  const ticketsB = [
+    createTicket(db, { projectId: projectB.id, title: 'b1' }),
+    createTicket(db, { projectId: projectB.id, title: 'b2' }),
+    createTicket(db, { projectId: projectB.id, title: 'b3' }),
+  ];
+  const adapter = new FakeAdapter();
+  for (const t of [...ticketsA, ...ticketsB]) adapter.setScript(t.id, { kind: 'hang' });
+
+  const loop = startDaemonLoop({
+    db,
+    adapter,
+    maxParallelWorkers: 2,
+    artifactsDir: join(testRoot.root, 'artifacts-machine-cap'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const totalInProgress = (): number =>
+    listTicketsByStatus(db, projectA.id, 'IN_PROGRESS').length + listTicketsByStatus(db, projectB.id, 'IN_PROGRESS').length;
+
+  // Several ticks' worth of time: with six hang-scripted, otherwise-eligible
+  // tickets across two projects each capped at 5, the OLD per-project-only
+  // enforcement would have let this settle at 2 (one per project, since
+  // each tick() call only ever starts up to its own remaining slots and
+  // both projects are ticked every pass) -- the real discriminator is the
+  // next block, cancelling one of the two running tickets and confirming a
+  // THIRD one is allowed to start only up to the machine-wide ceiling, from
+  // either project, not held back by a stale per-project-only view.
+  const deadline1 = Date.now() + 2000;
+  while (loop.live.size < 2 && Date.now() < deadline1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.live.size, 2, 'exactly two workers should be running, the machine-wide ceiling');
+  assert.equal(totalInProgress(), 2);
+
+  // Give it several more ticks with nothing cancelled: the ceiling must
+  // hold steady, not creep upward as later passes reconsider the same
+  // still-eligible READY tickets.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(loop.live.size, 2, 'the machine-wide ceiling must not creep upward on later ticks');
+  assert.equal(totalInProgress(), 2);
+
+  // Free one slot. A third ticket (from either project -- whichever tick()
+  // reaches first) must start, and the total must still never exceed 2.
+  const [someLiveRun] = loop.live.values();
+  await loop.cancelTicket(someLiveRun.ticketId);
+
+  const deadline2 = Date.now() + 2000;
+  while (loop.live.size < 2 && Date.now() < deadline2) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.live.size, 2, 'a freed machine-wide slot must be reused, not left idle');
+  assert.equal(totalInProgress(), 2, 'the total across both projects must never exceed the machine-wide ceiling');
 });
 
 test('DaemonLoop.cancelTicket cancels a live run for the given ticket, and reports \'not_running\' for one it holds no live run for', async (t) => {

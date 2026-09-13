@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Db } from '../db/index.ts';
-import { checkDaemonFile, removeDaemonFile, startDaemonLoop, writeDaemonFile, generateDaemonToken } from '../daemon.ts';
+import { checkDaemonFile, detectShutdownMode, removeDaemonFile, startDaemonLoop, writeDaemonFile, generateDaemonToken } from '../daemon.ts';
 import { createRequestHandler } from '../daemonApi.ts';
 import { probeDaemonHealth } from '../daemonClient.ts';
 import type { AgentAdapter } from '../types.ts';
@@ -83,7 +83,14 @@ export async function serve(opts: ServeOptions): Promise<void> {
     throw new ServeError('failed to bind a loopback TCP port');
   }
 
-  writeDaemonFile(opts.stateDir, { pid, port: address.port, token, startedAt, dbPath: opts.dbPath });
+  writeDaemonFile(opts.stateDir, {
+    pid,
+    port: address.port,
+    token,
+    startedAt,
+    dbPath: opts.dbPath,
+    shutdownMode: detectShutdownMode(),
+  });
 
   opts.onListening?.({ pid, port: address.port, stateDir: opts.stateDir });
 
