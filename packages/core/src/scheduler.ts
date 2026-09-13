@@ -25,6 +25,7 @@ import {
   pauseProjectAdapter,
   projectSpendUsd,
   resolveMaxBudgetUsd,
+  resolveModel,
   setRunUsage,
   setRunWorkerSessionRef,
 } from './store.ts';
@@ -118,6 +119,7 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
     allowedTools: [],
     expectedOutputFormat: 'Write .orchestrator/result.json matching the WorkerResult schema.',
     maxBudgetUsd: resolveMaxBudgetUsd(project, ticket),
+    model: resolveModel(project, ticket),
   };
 }
 
@@ -319,6 +321,8 @@ interface ApplyEventContext {
   workspaceCleanup: () => Promise<void>;
   /** This run's resolved ceiling (ticket override, else project default). Batch 4 item 3. */
   ceilingUsd: number;
+  /** This run's resolved model (ticket override, else project default). Batch 6 item 4 ruling 2: an already-recorded estimate stays as it was, but from this batch every estimate must carry the model it was computed for. */
+  model: string;
   /** Asks the adapter to stop the worker. Kept as a closure so this module never needs the adapter/handle types directly. */
   stopWorker: () => Promise<void>;
 }
@@ -418,6 +422,29 @@ async function applyWorkerEvent(db: Db, ticket: Ticket, run: Run, event: WorkerE
   return terminal;
 }
 
+// Batch 6 item 4: shared by every WorkerEvent variant that can carry
+// `unknownModel` -- `progress` (mid-run, per pricing.ts's per-message
+// fallback) and `result_raw`/`failure` (a completed run whose terminal
+// `result` line's `modelUsage` names an unrecognized model, so an
+// unpinned/unrecognized model doesn't go silent just because the run
+// finished instead of getting stopped mid-flight). One row per run: the
+// idempotency key has no counter, so a run flagged from both a mid-run
+// progress event AND its own terminal event still inserts exactly once.
+function raiseUnknownModelRateIfFlagged(db: Db, ticket: Ticket, run: Run, unknownModel: string | undefined): void {
+  if (!unknownModel) return;
+  const policy = classify('unknown_model_rate');
+  insertEvent(db, {
+    projectId: ticket.projectId,
+    eventType: 'unknown_model_rate',
+    entityType: 'run',
+    entityId: run.id,
+    payload: { model: unknownModel },
+    visibility: policy.visibility,
+    requiresUser: policy.requiresUser,
+    idempotencyKey: `unknown_model_rate:${run.id}`,
+  });
+}
+
 // This is the only place that turns an adapter event into a ticket
 // transition; it always goes through `recordTicketTransition`, never writes
 // status itself. Non-transition bookkeeping events (worker_progress,
@@ -436,23 +463,10 @@ async function applyWorkerEventInner(
       // most-expensive-known rate rather than crashing or guessing low
       // (docs/strategy/batch-6-spec.md section 1 ruling 1 -- over-estimating
       // stops work early and visibly, which is the point). That pricing
-      // choice is silent on its own, so the adapter flags it on the
-      // progress event and this raises the visible record of it. One row
-      // per run: the idempotency key has no counter, so a run with many
-      // messages on an unrecognized model still inserts exactly once.
-      if (event.unknownModel) {
-        const policy = classify('unknown_model_rate');
-        insertEvent(db, {
-          projectId: ticket.projectId,
-          eventType: 'unknown_model_rate',
-          entityType: 'run',
-          entityId: run.id,
-          payload: { model: event.unknownModel },
-          visibility: policy.visibility,
-          requiresUser: policy.requiresUser,
-          idempotencyKey: `unknown_model_rate:${run.id}`,
-        });
-      }
+      // choice is silent on its own, so the adapter flags it (on this event
+      // or, item 4, on a completed run's terminal event) and this raises the
+      // visible record of it.
+      raiseUnknownModelRateIfFlagged(db, ticket, run, event.unknownModel);
 
       // Batch 4 item 3 (docs/strategy/batch-4-spec.md section 1 ruling 1,
       // layer 2): the daemon keeps its own running account of spend rather
@@ -479,7 +493,7 @@ async function applyWorkerEventInner(
         // labelled as an estimate rather than the tool's own authoritative
         // total (see claudeCli.ts's messageModel/priceUsage header, which also
         // records this estimate's known undercount on output tokens).
-        setRunUsage(db, run.id, { total_cost_usd: tally, source: 'scheduler_budget_estimate' });
+        setRunUsage(db, run.id, { total_cost_usd: tally, source: 'scheduler_budget_estimate', model: ctx.model });
         recordTicketTransition(db, {
           ticketId: ticket.id,
           event: 'worker_failure',
@@ -516,6 +530,7 @@ async function applyWorkerEventInner(
     }
 
     case 'failure': {
+      raiseUnknownModelRateIfFlagged(db, ticket, run, event.unknownModel);
       if (event.usage !== undefined) setRunUsage(db, run.id, event.usage);
 
       if (event.retryable === false && event.failureClass === 'adapter_unavailable') {
@@ -550,6 +565,7 @@ async function applyWorkerEventInner(
     }
 
     case 'result_raw': {
+      raiseUnknownModelRateIfFlagged(db, ticket, run, event.unknownModel);
       if (event.usage !== undefined) setRunUsage(db, run.id, event.usage);
       const validated = validateWorkerResult(event.raw);
       if (!validated.valid) {
@@ -764,6 +780,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       artifactsDir,
       workspaceCleanup: ws.cleanup,
       ceilingUsd: envelope.maxBudgetUsd,
+      model: envelope.model,
       stopWorker: () => deps.adapter.stop(handle),
     };
 

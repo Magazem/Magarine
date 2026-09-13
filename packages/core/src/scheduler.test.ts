@@ -713,6 +713,30 @@ test('a progress event with no unknownModel flag never raises unknown_model_rate
   assert.equal(events.filter((e) => e.eventType === 'unknown_model_rate').length, 0);
 });
 
+test("batch 6 item 4: a completed run's terminal result_raw event flagging unknownModel (no mid-run progress flag at all) still raises unknown_model_rate -- an unpinned/unrecognized model must not go silent just because the run finished cleanly", async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 5 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'completes on an unrecognized model' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+    unknownModel: 'claude-mystery-9',
+  });
+  await s.done;
+
+  const events = listEventsForEntity(db, 'run', s.runId);
+  const unknownModelEvents = events.filter((e) => e.eventType === 'unknown_model_rate');
+  assert.equal(unknownModelEvents.length, 1);
+  assert.equal(unknownModelEvents[0].visibility, 'inbox');
+  assert.deepEqual(unknownModelEvents[0].payload, { model: 'claude-mystery-9' });
+});
+
 test('a project spend cap that admits one run refuses the second at spawn time, pauses the project, and emits project_spend_cap_reached exactly once', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 0.6, maxSpendUsd: 1.0 });

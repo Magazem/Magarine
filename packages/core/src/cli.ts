@@ -14,6 +14,7 @@ import {
   getProject,
   getTicket,
   listTickets,
+  setProjectDefaultModel,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
 } from './store.ts';
@@ -125,8 +126,12 @@ const FLAG_SPECS: Record<string, string[]> = {
   // ruling 1's project-level spend cap, layer 1 of three: refuses to spawn a
   // run once the project's total recorded spend plus the run's ceiling
   // would exceed it). That column is Role H's to add; see `hasMaxSpendColumn`.
-  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root', 'max-spend'],
-  'project set': ['project', 'max-spend'],
+  // `--model` (batch 6 item 4) sets `projects.default_model` /
+  // `tickets.model` -- the project-default-with-per-ticket-override shape
+  // `resolveModel` reads (store.ts), same as `--max-spend`/`--budget`
+  // above it for the budget columns.
+  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root', 'max-spend', 'model'],
+  'project set': ['project', 'max-spend', 'model'],
   'ticket add': [
     'project',
     'title',
@@ -135,6 +140,7 @@ const FLAG_SPECS: Record<string, string[]> = {
     'priority',
     'workspace',
     'budget',
+    'model',
     'acceptance',
     'depends-on',
   ],
@@ -319,6 +325,7 @@ async function main(): Promise<void> {
       description: typeof flags.description === 'string' ? flags.description : null,
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
       maxSpendUsd: typeof flags['max-spend'] === 'string' ? Number(flags['max-spend']) : null,
+      defaultModel: typeof flags.model === 'string' ? flags.model : undefined,
       brief: typeof flags.brief === 'string' ? flags.brief : null,
       workspaceRoot: typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : null,
     });
@@ -338,6 +345,9 @@ async function main(): Promise<void> {
     if (typeof flags['max-spend'] === 'string') {
       setProjectMaxSpendUsd(db, projectId, Number(flags['max-spend']));
     }
+    if (typeof flags.model === 'string') {
+      setProjectDefaultModel(db, projectId, flags.model);
+    }
     output(flags, getProject(db, projectId), `Updated project ${projectId}`);
     return;
   }
@@ -353,6 +363,7 @@ async function main(): Promise<void> {
       priority: flags.priority ? Number(flags.priority) : 0,
       workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
       acceptanceCriteria: flagList(flags, 'acceptance'),
+      model: typeof flags.model === 'string' ? flags.model : null,
     });
 
     // `setTicketBudgetOverride` enforces `MIN_BUDGET_USD` (store.ts) with a

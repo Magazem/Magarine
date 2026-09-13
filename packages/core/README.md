@@ -73,6 +73,16 @@ Both default to `null`/unset if omitted.
 `project set` also refuses (clean message, no stack trace) if the project id
 doesn't exist.
 
+`project create --model <model>` sets `projects.default_model` (default
+`claude-sonnet-5` if omitted); `project set --project <id> --model <model>`
+changes it later. `ticket add --model <model>` overrides the project default
+for one ticket alone (`null`/unset falls back to the project's). The adapter
+passes whichever value resolves (ticket override, else project default) to
+the tool via `--model` on every spawn — nothing about a worker's cost or
+capability depends on the owner's desktop default. See "Budget and spend
+caps" above for why this exists: a per-model rate table (`pricing.ts`) is
+meaningless if the daemon doesn't control which model actually ran.
+
 ### State directory
 
 Nothing is written under the current working directory unless the user asked
@@ -458,9 +468,24 @@ enforcement; the daemon's tally is a labelled lower-bound display. A real
 tool-side budget stop was found to be silently mis-recorded as the generic
 `adapter_failure` (never had a `failureClass` at all); fixed, and a
 `stoppedBy` field now distinguishes the tool's stop from the daemon's own.
-Not built: `claude-opus-5` and `claude-haiku-4-5-20251001`'s exact model-id
-strings are not verified against any real stream line (no fixture uses
-either model) — `pricing.ts`'s rate-table keys for them are the spec's
-literal names, and an unpinned/mismatched model falls back to the loud
-unknown-model rate rather than mispricing silently, but this is a real gap,
-not a closed one, until a real run confirms them.
+Model pinning is built: `projects.default_model`/`tickets.model`
+(migration `0006_model_pinning`), `resolveModel` (ticket override, else
+project default, mirroring `resolveMaxBudgetUsd`), the adapter passes
+`--model` on every spawn, and `usage_json` records the model each estimate
+or completed total was computed for. `--model` as the flag's exact spelling
+is HARD-confirmed against this machine's installed `claude --help`, but no
+fixture in this repo's `spikes/claude-cli/runs/` was ever recorded with the
+flag set, so end-to-end behaviour under a real pinned worker is unverified
+until the Orchestrator's close-out run. The terminal `result` line's
+`modelUsage` field (found this batch, present on every real fixture's
+terminal line, keyed by the exact canonical model string) is what both the
+completed-run unknown-model check and `usage_json.model` prefer over the
+requested model, since it's what the run actually billed under rather than
+what was merely asked for. Not built: `claude-opus-5`'s rate-table key is
+still unverified against any real stream line (no fixture uses it) —
+`claude-haiku-4-5-20251001`'s `modelUsage` key does match `pricing.ts`'s
+table today in the sense that both are the spec's literal name, but neither
+has been confirmed against a live run yet; either way, an unpinned/mismatched
+model falls back to the loud unknown-model rate rather than mispricing
+silently, but this is a real gap, not a closed one, until a real run
+confirms them.

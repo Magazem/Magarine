@@ -172,6 +172,63 @@ test('project create --max-spend and project set --max-spend both take effect en
   });
 });
 
+test('batch 6 item 4: project create --model defaults every ticket to that model, project set --model changes the default, and ticket add --model overrides one ticket', async () => {
+  await withTempDb('magarine-model-pinning-', async (dbFile) => {
+    const createRes = await run([
+      'project',
+      'create',
+      '--name',
+      'Pinned',
+      '--model',
+      'claude-opus-5',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(createRes.code, 0, createRes.stderr);
+    const project = JSON.parse(createRes.stdout);
+    assert.equal(project.defaultModel, 'claude-opus-5');
+
+    const noOverrideTicket = JSON.parse(
+      (
+        await run(['ticket', 'add', '--project', project.id, '--title', 'uses project default', '--json', '--db', dbFile])
+      ).stdout
+    );
+    assert.equal(noOverrideTicket.model, null, "a ticket with no --model must store NULL, not a copy of the project's default");
+
+    const overrideTicket = JSON.parse(
+      (
+        await run([
+          'ticket',
+          'add',
+          '--project',
+          project.id,
+          '--title',
+          'overrides the project default',
+          '--model',
+          'claude-haiku-4-5-20251001',
+          '--json',
+          '--db',
+          dbFile,
+        ])
+      ).stdout
+    );
+    assert.equal(overrideTicket.model, 'claude-haiku-4-5-20251001');
+
+    const setRes = await run(['project', 'set', '--project', project.id, '--model', 'claude-sonnet-5', '--json', '--db', dbFile]);
+    assert.equal(setRes.code, 0, setRes.stderr);
+    assert.equal(JSON.parse(setRes.stdout).defaultModel, 'claude-sonnet-5');
+  });
+});
+
+test("a project created without --model defaults defaultModel to 'claude-sonnet-5'", async () => {
+  await withTempDb('magarine-model-default-', async (dbFile) => {
+    const res = await run(['project', 'create', '--name', 'Unpinned', '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).defaultModel, 'claude-sonnet-5');
+  });
+});
+
 test('project create --max-spend below the floor is refused with a message naming the floor, not silently accepted', async () => {
   await withTempDb('magarine-maxspend-floor-', async (dbFile) => {
     const res = await run(['project', 'create', '--name', 'TooCheap', '--max-spend', '0.01', '--json', '--db', dbFile]);

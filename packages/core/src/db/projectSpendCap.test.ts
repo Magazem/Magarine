@@ -80,6 +80,7 @@ test('a database migrated only to 0001-0004 picks up 0005 (project spend cap) on
     '0003_budget_fields',
     '0004_batch3_scheduler_seam',
     '0005_project_spend_cap',
+    '0006_model_pinning',
   ]);
   assert.equal(snapshot.maxSpendUsdBeforeUpdate, null, 'existing project rows must get NULL (no cap), not a numeric default');
   assert.equal(snapshot.maxSpendUsdAfterUpdate, 10);

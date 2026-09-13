@@ -40,6 +40,7 @@ interface ProjectRow {
   max_parallel_workers: number;
   max_budget_usd: number;
   max_spend_usd: number | null;
+  default_model: string;
   brief: string | null;
   workspace_root: string | null;
   adapter_paused_at: string | null;
@@ -56,6 +57,7 @@ function rowToProject(row: ProjectRow): Project {
     maxParallelWorkers: row.max_parallel_workers,
     maxBudgetUsd: row.max_budget_usd,
     maxSpendUsd: row.max_spend_usd,
+    defaultModel: row.default_model,
     brief: row.brief,
     workspaceRoot: row.workspace_root,
     adapterPausedAt: row.adapter_paused_at,
@@ -73,6 +75,7 @@ export function createProject(
     maxParallelWorkers?: number;
     maxBudgetUsd?: number;
     maxSpendUsd?: number | null;
+    defaultModel?: string;
     brief?: string | null;
     workspaceRoot?: string | null;
   }
@@ -82,12 +85,19 @@ export function createProject(
   if (input.maxSpendUsd != null) {
     assertAboveFloor(input.maxSpendUsd, 'a project\'s max_spend_usd');
   }
+  // Same default as db/schema.ts's 0006_model_pinning migration default for
+  // existing rows -- kept explicit here (rather than relying on the column
+  // DEFAULT and omitting it from the INSERT) so a caller reading `Project`
+  // back never has to guess which value a bare `createProject` produced,
+  // matching how maxBudgetUsd's `?? 2.0` above is explicit despite 0003 also
+  // giving that column its own SQL-level default.
+  const defaultModel = input.defaultModel ?? 'claude-sonnet-5';
 
   const now = new Date().toISOString();
   const id = newId('proj');
   db.prepare(
-    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, brief, workspace_root, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, default_model, brief, workspace_root, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.name,
@@ -96,6 +106,7 @@ export function createProject(
     input.maxParallelWorkers ?? 1,
     maxBudgetUsd,
     input.maxSpendUsd ?? null,
+    defaultModel,
     input.brief ?? null,
     input.workspaceRoot ?? null,
     now,
@@ -173,6 +184,24 @@ export function resolveMaxBudgetUsd(project: Project, ticket: Ticket): number {
   return ticket.maxBudgetUsdOverride ?? project.maxBudgetUsd;
 }
 
+// Same shape as resolveMaxBudgetUsd above, for the model to pin this run to.
+export function resolveModel(project: Project, ticket: Ticket): string {
+  return ticket.model ?? project.defaultModel;
+}
+
+// Setter for a future `project set --model` to call instead of writing the
+// column directly, matching setProjectMaxBudgetUsd's shape. No floor to
+// enforce (any non-empty string is a project's own business; pricing.ts's
+// unknown-model fallback is what protects the daemon from a typo'd or
+// unrecognized value, not a check here).
+export function setProjectDefaultModel(db: Db, projectId: string, defaultModel: string): void {
+  db.prepare('UPDATE projects SET default_model = ?, updated_at = ? WHERE id = ?').run(
+    defaultModel,
+    new Date().toISOString(),
+    projectId
+  );
+}
+
 export function getProject(db: Db, id: string): Project | undefined {
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
   return row ? rowToProject(row) : undefined;
@@ -192,6 +221,7 @@ interface TicketRow {
   workspace_type: string;
   workspace_ref: string | null;
   max_budget_usd_override: number | null;
+  model: string | null;
   result_json: string | null;
   created_at: string;
   updated_at: string;
@@ -212,6 +242,7 @@ function rowToTicket(row: TicketRow): Ticket {
     workspaceType: row.workspace_type as WorkspaceType,
     workspaceRef: row.workspace_ref,
     maxBudgetUsdOverride: row.max_budget_usd_override,
+    model: row.model,
     resultJson: row.result_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -230,6 +261,7 @@ export function createTicket(
     workspaceType?: WorkspaceType;
     workspaceRef?: string | null;
     maxBudgetUsdOverride?: number | null;
+    model?: string | null;
   }
 ): Ticket {
   if (input.maxBudgetUsdOverride != null) {
@@ -242,8 +274,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, max_budget_usd_override, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, model, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -255,6 +287,7 @@ export function createTicket(
     input.workspaceType ?? 'NONE',
     input.workspaceRef ?? null,
     input.maxBudgetUsdOverride ?? null,
+    input.model ?? null,
     now,
     now
   );

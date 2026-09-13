@@ -22,6 +22,8 @@ export interface Project {
   maxBudgetUsd: number;
   /** Optional CUMULATIVE cap across every run the project will ever spend (batch 4). Null means no cap. Enforced at spawn time -- see scheduler.ts's `tick()`. NOT the same thing as `maxBudgetUsd` above. */
   maxSpendUsd: number | null;
+  /** Batch 6: the model the adapter passes via `--model` for every ticket in this project, unless a ticket overrides it (see Ticket.model below). Non-null -- every run needs a model to pin to. Same project-default-with-per-ticket-override shape as `maxBudgetUsd`/`Ticket.maxBudgetUsdOverride`. See store.ts's resolveModel. */
+  defaultModel: string;
   /** Project brief handed to every worker via TicketEnvelope.projectBrief. */
   brief: string | null;
   /** Required when any ticket in the project uses the DIRECTORY workspace type: one shared directory for the whole project. */
@@ -47,6 +49,8 @@ export interface Ticket {
   workspaceRef: string | null;
   /** Overrides the project's max_budget_usd for this ticket alone; null falls back to the project default. */
   maxBudgetUsdOverride: number | null;
+  /** Batch 6: overrides the project's default_model for this ticket alone; null falls back to the project default. See store.ts's resolveModel. */
+  model: string | null;
   resultJson: string | null;
   createdAt: string;
   updatedAt: string;
@@ -136,6 +140,8 @@ export interface TicketEnvelope {
   expectedOutputFormat: string;
   /** Ticket override if set, else the project default (see store.ts resolveMaxBudgetUsd). */
   maxBudgetUsd: number;
+  /** Batch 6: ticket override if set, else the project default (see store.ts's resolveModel). The adapter passes this via `--model` and records it in usage_json -- nothing about a worker's cost or capability may depend on the owner's desktop default. */
+  model: string;
 }
 
 export interface WorkerHandle {
@@ -184,7 +190,13 @@ export type WorkerEvent =
       unknownModel?: string;
     }
   | { type: 'question'; message: string }
-  | { type: 'result_raw'; raw: unknown; usage?: unknown }
+  | {
+      type: 'result_raw';
+      raw: unknown;
+      usage?: unknown;
+      /** Batch 6 item 4: set on a completed run whose terminal `result` line's `modelUsage` names a model outside pricing.ts's rate table -- the same "tell someone" signal as the mid-run `progress` field above, so an unpinned/unrecognized model doesn't go silent just because the run finished cleanly. */
+      unknownModel?: string;
+    }
   | {
       type: 'failure';
       message: string;
@@ -194,6 +206,8 @@ export type WorkerEvent =
       /** Batch 6: for a `budget_exceeded` failureClass specifically, which guard actually stopped the run -- 'tool_max_budget_usd' (the tool's own `--max-budget-usd` flag, accurate, checked between turns) or 'scheduler_estimate' (the daemon's live tally, a known lower bound -- see pricing.ts/claudeCli.ts). Absent for every other failureClass. */
       stoppedBy?: string;
       usage?: unknown;
+      /** Batch 6 item 4: same signal as result_raw's field above, for a terminal failure that still landed a `result` line with `modelUsage` (e.g. a malformed-output retry) naming an unrecognized model. */
+      unknownModel?: string;
     };
 
 export interface AgentAdapterCapabilities {

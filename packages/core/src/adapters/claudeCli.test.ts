@@ -32,6 +32,7 @@ function envelope(overrides: Partial<TicketEnvelope> = {}): TicketEnvelope {
     completedDependencies: [],
     allowedTools: [],
     expectedOutputFormat: 'Write .orchestrator/result.json.',
+    model: 'claude-sonnet-5',
     ...overrides,
   };
 }
@@ -224,6 +225,50 @@ test('batch 6 item 3: an assistant line naming a model outside pricing.ts\'s rat
   }
 });
 
+test("batch 6 item 4: a completed run whose terminal result line's modelUsage names a model outside pricing.ts's rate table flags unknownModel on the terminal event too, not only mid-run", async () => {
+  // Synthetic: modelUsage is a real field (verified HARD against every
+  // fixture this repo has a terminal result line for -- see
+  // claudeCli.ts's ResultLine.modelUsage comment), but no real fixture
+  // names an unrecognized model in it, by construction.
+  const synthDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-unknown-model-completed-'));
+  const stdoutFile = join(synthDir, 'stdout.txt');
+  writeFileSync(
+    stdoutFile,
+    JSON.stringify({
+      type: 'result',
+      total_cost_usd: 0.5,
+      usage: { input_tokens: 10, output_tokens: 5 },
+      modelUsage: { 'claude-nonexistent-model': { costUSD: 0.5 } },
+    }) + '\n'
+  );
+
+  try {
+    const { events, workspaceRoot } = await runOnce({
+      stdoutFile,
+      exitCode: 0,
+      createFiles: {
+        '.orchestrator/result.json': JSON.stringify({
+          status: 'ready_for_review',
+          summary: 'ok',
+          artifacts: [],
+          checks: [],
+          blockers: [],
+          questions: [],
+        }),
+      },
+    });
+    try {
+      const terminal = events.at(-1)! as { type: string; unknownModel?: string };
+      assert.equal(terminal.type, 'result_raw');
+      assert.equal(terminal.unknownModel, 'claude-nonexistent-model');
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(synthDir, { recursive: true, force: true });
+  }
+});
+
 test('batch 5 item 4: the calibration fixture\'s stream carries no per-message cost field, only the terminal result\'s total_cost_usd', () => {
   // Locks in the finding recorded in claudeCli.ts's messageModel/priceUsage
   // header: a per-message cost field would make per-category rate lookup
@@ -378,6 +423,80 @@ test('two tickets with different envelope.maxBudgetUsd overrides produce two dif
     assert.equal(cheap, '0.5');
     assert.equal(expensive, '9.5');
     assert.notEqual(cheap, expensive);
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(argvDir, { recursive: true, force: true });
+  }
+});
+
+test("two tickets with different envelope.model values produce two different --model arguments to the fake executable, and each run's usage records its own model", async () => {
+  // Batch 6 item 4: before this, the adapter never passed --model at all
+  // (docs/strategy/batch-6-spec.md section 0) -- every worker ran on
+  // whatever the owner's desktop default happened to be, which is the root
+  // cause behind batch 5's 405%-wrong cost estimate. Same proof shape as
+  // the --max-budget-usd test above: read back the real argv, not the
+  // adapter's internals.
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-claudecli-model-argv-'));
+  const argvDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-model-argv-out-'));
+  try {
+    async function modelArgFor(model: string, ticketId: string): Promise<{ arg: string; recordedModel: unknown }> {
+      const argvFile = join(argvDir, `${ticketId}.json`);
+      // A minimal synthetic `result` line with no `modelUsage` on it, so
+      // extractUsage has nothing to prefer and must fall back to the
+      // requested model -- proving that fallback specifically. The
+      // modelUsage-preferred path is already proven by pricing.test.ts's
+      // real fixtures.
+      const stdoutFile = join(argvDir, `${ticketId}-stdout.txt`);
+      writeFileSync(stdoutFile, JSON.stringify({ type: 'result', total_cost_usd: 0.001 }) + '\n');
+      const adapter = new ClaudeCliAdapter({
+        claudeExe: process.execPath,
+        argsPrefix: [fakeExePath],
+        maxBudgetUsd: 2,
+        workspaceType: 'DIRECTORY',
+        workspaceRoot,
+        env: {
+          MAGARINE_FAKE_SPEC: JSON.stringify({
+            exitCode: 0,
+            argvFile,
+            stdoutFile,
+            createFiles: {
+              '.orchestrator/result.json': JSON.stringify({
+                status: 'done',
+                summary: 'ok',
+                artifacts: [],
+                checks: [],
+                blockers: [],
+                questions: [],
+              }),
+            },
+          }),
+        },
+      });
+      const handle = await adapter.startWorker({ ticket: envelope({ ticketId, model }), systemPolicy: 'default' });
+      const events: WorkerEvent[] = [];
+      await new Promise<void>((resolve) => {
+        void adapter.observe(handle, (event) => {
+          events.push(event);
+          if (event.type === 'result_raw' || event.type === 'failure') resolve();
+        });
+      });
+      const argv: string[] = JSON.parse(readFileSync(argvFile, 'utf8'));
+      const flagIndex = argv.indexOf('--model');
+      assert.ok(flagIndex >= 0, '--model must be on the command line');
+      const terminal = events.at(-1)! as { usage?: { model?: unknown } };
+      return { arg: argv[flagIndex + 1], recordedModel: terminal.usage?.model };
+    }
+
+    const [sonnet, haiku] = await Promise.all([
+      modelArgFor('claude-sonnet-5', 'tkt_sonnet'),
+      modelArgFor('claude-haiku-4-5-20251001', 'tkt_haiku'),
+    ]);
+
+    assert.equal(sonnet.arg, 'claude-sonnet-5');
+    assert.equal(haiku.arg, 'claude-haiku-4-5-20251001');
+    assert.notEqual(sonnet.arg, haiku.arg);
+    assert.equal(sonnet.recordedModel, 'claude-sonnet-5');
+    assert.equal(haiku.recordedModel, 'claude-haiku-4-5-20251001');
   } finally {
     rmSync(workspaceRoot, { recursive: true, force: true });
     rmSync(argvDir, { recursive: true, force: true });

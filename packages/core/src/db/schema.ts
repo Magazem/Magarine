@@ -154,4 +154,22 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN max_spend_usd REAL;
     `,
   },
+  {
+    // Batch 6 (docs/strategy/batch-6-spec.md section 2 Role K item 4): the
+    // daemon never passed `--model` to the tool at all before this, so every
+    // worker ran on whatever the owner's desktop default happened to be at
+    // spawn time -- the root cause behind batch 5's 405%-wrong cost estimate
+    // (two runs, two different models, one blended rate). Pinning closes
+    // that: `projects.default_model` (non-null, defaults existing rows to
+    // 'claude-sonnet-5' per the architecture doc's tier logic -- sonnet for
+    // implementation/normal work) and a nullable `tickets.model` override,
+    // mirroring `max_budget_usd`/`max_budget_usd_override`'s existing
+    // project-default-with-per-ticket-override shape from 0003_budget_fields
+    // exactly. See store.ts's resolveModel.
+    id: '0006_model_pinning',
+    sql: `
+      ALTER TABLE projects ADD COLUMN default_model TEXT NOT NULL DEFAULT 'claude-sonnet-5';
+      ALTER TABLE tickets ADD COLUMN model TEXT;
+    `,
+  },
 ];

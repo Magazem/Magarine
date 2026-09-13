@@ -112,6 +112,16 @@ interface ResultLine {
   result?: unknown;
   structured_output?: unknown;
   subtype?: string;
+  // Batch 6 item 4, HARD (read directly off every real recorded fixture
+  // this repo has a terminal result line for -- both calibration fixtures
+  // and every "happy"/"restrict-write"/"disallow-write" spike run):
+  // per-model, per-run totals keyed by the exact canonical model string
+  // (verified identical to the `message.model` assistant lines print, and
+  // to pricing.ts's rate-table keys, on both calibration fixtures). This is
+  // the authoritative "which model(s) actually ran" signal for a completed
+  // run -- more reliable than trusting the `--model` flag was honoured,
+  // since it's what actually billed.
+  modelUsage?: Record<string, unknown>;
 }
 
 function extractResultText(line: ResultLine | undefined): string {
@@ -210,24 +220,47 @@ export function verifyArtifacts(result: WorkerResult, workspacePath: string): Cl
   return { kind: 'success', result };
 }
 
-function extractUsage(line: ResultLine | undefined): unknown {
+// Batch 6 item 4: `resolvedModel` is what the envelope asked `--model` for;
+// `line.modelUsage`'s key(s), when present, are what the run actually
+// billed under (see ResultLine's field comment) and are preferred when
+// there is exactly one -- the more-than-one case has zero evidence behind
+// it in any fixture this repo has, so it falls back to the requested model
+// rather than inventing a multi-model shape for usage_json.
+function extractUsage(line: ResultLine | undefined, resolvedModel: string): unknown {
   if (!line) return undefined;
   const l = line as Record<string, unknown>;
+  const observedModels = line.modelUsage ? Object.keys(line.modelUsage) : [];
+  const model = observedModels.length === 1 ? observedModels[0] : resolvedModel;
   return {
     usage: l.usage,
     total_cost_usd: l.total_cost_usd,
     duration_ms: l.duration_ms,
     num_turns: l.num_turns,
     session_id: l.session_id,
+    model,
   };
 }
 
-function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown): WorkerEvent {
+// Batch 6 item 4: `resultLine.modelUsage`'s keys are the authoritative
+// model(s) this run actually billed under (see ResultLine's field comment),
+// available only once a terminal `result` line arrives -- so a run this
+// daemon killed itself (budget-stopped mid-flight) never has one to check,
+// same limitation the mid-run per-message check exists to cover instead.
+// Returns the first unrecognized model name found, or undefined if every
+// model named is in pricing.ts's rate table (including the case where no
+// result line, or no modelUsage on it, ever arrived).
+function unknownModelFromResultLine(resultLine: ResultLine | undefined): string | undefined {
+  const modelUsage = resultLine?.modelUsage;
+  if (!modelUsage) return undefined;
+  return Object.keys(modelUsage).find((model) => !isKnownModel(model));
+}
+
+function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown, unknownModel: string | undefined): WorkerEvent {
   switch (outcome.kind) {
     case 'success':
-      return { type: 'result_raw', raw: outcome.result, usage };
+      return { type: 'result_raw', raw: outcome.result, usage, unknownModel };
     case 'retryable':
-      return { type: 'failure', message: outcome.reason, retryable: true, usage };
+      return { type: 'failure', message: outcome.reason, retryable: true, usage, unknownModel };
     case 'budget_exceeded':
       // Batch 6: this outcome previously carried no failureClass at all, so
       // scheduler.ts's `event.failureClass ?? 'adapter_failure'` fallback
@@ -244,6 +277,7 @@ function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown): WorkerEvent 
         failureClass: 'budget_exceeded',
         stoppedBy: 'tool_max_budget_usd',
         usage,
+        unknownModel,
       };
     case 'adapter_unavailable':
       return {
@@ -251,6 +285,7 @@ function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown): WorkerEvent 
         message: `ADAPTER_UNAVAILABLE: ${outcome.reason}`,
         retryable: false,
         usage,
+        unknownModel,
       };
   }
 }
@@ -389,6 +424,21 @@ export class ClaudeCliAdapter implements AgentAdapter {
       // constructor value was always used, so the CLI's `ticket add
       // --budget` had no effect on what the tool itself enforced.
       String(input.ticket.maxBudgetUsd ?? this.options.maxBudgetUsd),
+      // Batch 6 item 4: the daemon never passed this flag at all before now
+      // (docs/strategy/batch-6-spec.md section 0), so every worker ran on
+      // whatever the owner's desktop default happened to be -- the root
+      // cause behind batch 5's 405%-wrong cost estimate (two runs, two
+      // different models). `input.ticket.model` is the envelope's resolved
+      // model (ticket override, else project default -- store.ts's
+      // resolveModel); nothing about a worker's cost or capability may
+      // depend on the owner's desktop settings from here on. SOFT: `--model`
+      // as the flag name is confirmed HARD against this machine's installed
+      // `claude --help` (accepts either a short alias or a model's full
+      // name), but no fixture in this repo's spikes/claude-cli/runs/ was
+      // ever recorded with this flag set, so end-to-end behaviour under a
+      // real pinned run is unverified until the Orchestrator's close-out.
+      '--model',
+      input.ticket.model,
     ];
 
     const managed = spawnManaged({
@@ -493,7 +543,8 @@ export class ClaudeCliAdapter implements AgentAdapter {
         outcome = verifyArtifacts(outcome.result, ws.path);
       }
 
-      const usage = extractUsage(resultLine);
+      const usage = extractUsage(resultLine, input.ticket.model);
+      const unknownModel = unknownModelFromResultLine(resultLine);
 
       // Cleanup before publish, not after: publish() calls every observer
       // synchronously, and a test (or a real caller) awaiting the terminal
@@ -506,7 +557,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
         await ws.cleanup();
       }
 
-      this.publish(state, outcomeToEvent(outcome, usage));
+      this.publish(state, outcomeToEvent(outcome, usage, unknownModel));
     });
 
     return { id: handleId, ticketId: input.ticket.ticketId, runId };
