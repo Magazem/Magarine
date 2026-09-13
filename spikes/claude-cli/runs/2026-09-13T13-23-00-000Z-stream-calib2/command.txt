@@ -1,0 +1,2 @@
+cwd=C:\Users\yazan\AppData\Local\Temp\magarine-fixture-nHHgNT
+claude "-p" "Create a file named hello.txt containing exactly: hello. Then confirm it exists with a shell command. Do nothing else." "--output-format" "stream-json" "--verbose" "--permission-mode" "bypassPermissions" "--max-budget-usd" "2.00"
