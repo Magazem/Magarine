@@ -41,6 +41,7 @@ class TestAdapter implements AgentAdapter {
   readonly id = 'test-adapter';
   private readonly listeners = new Map<string, Array<(event: WorkerEvent) => void>>();
   private readonly stopped = new Set<string>();
+  private readonly postStopTimers = new Map<string, NodeJS.Timeout>();
   readonly startedWith = new Map<string, { ticket: TicketEnvelope; workspace?: Workspace }>();
 
   async capabilities(): Promise<AgentAdapterCapabilities> {
@@ -71,10 +72,29 @@ class TestAdapter implements AgentAdapter {
   }
 
   async stop(handle: WorkerHandle): Promise<void> {
+    if (this.stopped.has(handle.id)) return;
     this.stopped.add(handle.id);
+    // Standing fidelity rule (batch-5-spec.md section 1 ruling 1): this is
+    // also a test double standing in for a real adapter, so it mirrors the
+    // same behaviour fakeAdapter.ts's stop() does -- a killed process's
+    // wait() promise still resolves and publishes its own terminal outcome,
+    // independent of why it was stopped. Deferred to a later macrotask, not
+    // published inline, for the same ordering reason as fakeAdapter.ts.
+    const timer = setTimeout(() => {
+      this.postStopTimers.delete(handle.id);
+      for (const listener of this.listeners.get(handle.id) ?? []) {
+        listener({ type: 'failure', message: 'worker process was stopped after being killed', retryable: true });
+      }
+    }, 0);
+    this.postStopTimers.set(handle.id, timer);
   }
 
   async destroy(handle: WorkerHandle): Promise<void> {
+    const timer = this.postStopTimers.get(handle.id);
+    if (timer) {
+      clearTimeout(timer);
+      this.postStopTimers.delete(handle.id);
+    }
     await this.stop(handle);
     this.listeners.delete(handle.id);
   }
@@ -694,8 +714,8 @@ test('a post-stop terminal event from a budget stop must not crash the daemon (b
   const rejections: unknown[] = [];
   const onRejection = (err: unknown) => rejections.push(err);
   process.on('unhandledRejection', onRejection);
+  const { started } = await tick(deps);
   try {
-    const { started } = await tick(deps);
     await started[0].done;
     // fakeAdapter.ts's post-stop event is deferred to a later macrotask;
     // give it a turn to fire (and, pre-fix, its rejection to surface)
@@ -720,9 +740,133 @@ test('a post-stop terminal event from a budget stop must not crash the daemon (b
   assert.equal(run.status, 'failed');
   assert.equal(run.failureClass, 'budget_exceeded', 'the first outcome is never overwritten by the late event');
 
+  assert.ok(run.usageJson, 'a budget stop must record usage on the run row, not leave it null');
+  assert.equal(
+    (JSON.parse(run.usageJson!) as { total_cost_usd: number }).total_cost_usd,
+    999,
+    "the scheduler's own tally is recorded since the killed adapter's own event carries no usage to merge"
+  );
+
   const runEvents = listEventsForEntity(db, 'run', started[0].runId);
   const lateEvents = runEvents.filter((e) => e.eventType === 'late_worker_event');
   assert.equal(lateEvents.length, 1, 'the post-stop event must be recorded, not silently dropped');
+});
+
+test('a late terminal event after settlement merges its usage into the run row only if the row has none (batch 5 guard 1)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, no usage yet' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'first and only real outcome', artifacts: [], checks: [], blockers: [], questions: [] },
+  });
+  await s.done;
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+  assert.equal(getRun(db, s.runId)!.usageJson, null, 'no usage recorded yet');
+
+  const lateUsage = { total_cost_usd: 0.42 };
+  adapter.emit(s.handle.id, {
+    type: 'failure',
+    message: 'late failure from a killed process',
+    retryable: true,
+    failureClass: 'adapter_failure',
+    usage: lateUsage,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE', 'the settled outcome is never overwritten by a late event');
+  const run = getRun(db, s.runId)!;
+  assert.equal(run.status, 'succeeded', 'the run row keeps its first recorded status');
+  assert.deepEqual(JSON.parse(run.usageJson!), lateUsage, 'usage is merged in because the settled row had none');
+
+  const lateEvents = listEventsForEntity(db, 'run', s.runId).filter((e) => e.eventType === 'late_worker_event');
+  assert.equal(lateEvents.length, 1);
+  assert.equal((lateEvents[0].payload as { failureClass?: string }).failureClass, 'adapter_failure');
+});
+
+test('a late terminal event never overwrites usage the settled run already recorded (batch 5 guard 1)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, with usage' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+    usage: { total_cost_usd: 1 },
+  });
+  await s.done;
+  assert.deepEqual(JSON.parse(getRun(db, s.runId)!.usageJson!), { total_cost_usd: 1 });
+
+  adapter.emit(s.handle.id, {
+    type: 'failure',
+    message: 'late',
+    retryable: true,
+    usage: { total_cost_usd: 99 },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.deepEqual(
+    JSON.parse(getRun(db, s.runId)!.usageJson!),
+    { total_cost_usd: 1 },
+    'the first-recorded usage must never be replaced by a later event\'s usage'
+  );
+});
+
+test('a throwing transition inside the observe callback is caught, recorded, and does not affect other runs (batch 5 guard 3)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 2 });
+  const adapter = new TestAdapter();
+  const bad = createTicket(db, { projectId: project.id, title: 'malformed event' });
+  const good = createTicket(db, { projectId: project.id, title: 'well-behaved' });
+
+  const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id };
+  const { started } = await tick(deps);
+  const badStarted = started.find((s) => s.ticketId === bad.id)!;
+  const goodStarted = started.find((s) => s.ticketId === good.id)!;
+
+  // A malformed 'failure' event -- missing the required boolean `retryable`
+  // flag -- throws deep inside recordTicketTransition (see
+  // stateMachine.ts's requireRetryableFlag), independent of guards 1/2:
+  // this is the ticket's FIRST event, so nothing has settled yet. Cast
+  // through `unknown` to bypass the type system the way a genuinely
+  // malformed adapter would at runtime.
+  adapter.emit(badStarted.handle.id, {
+    type: 'failure',
+    message: 'oops',
+  } as unknown as WorkerEvent);
+
+  adapter.emit(goodStarted.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'fine', artifacts: [], checks: [], blockers: [], questions: [] },
+  });
+  await goodStarted.done;
+
+  // Give the bad run's caught-and-recorded rejection a turn to land.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal(getTicket(db, good.id)!.status, 'DONE', 'the well-behaved run is unaffected by the other run throwing');
+  assert.equal(
+    getTicket(db, bad.id)!.status,
+    'IN_PROGRESS',
+    'the malformed transition never applied; the ticket is simply stuck, not corrupted'
+  );
+
+  const events = listEventsForEntity(db, 'run', badStarted.runId);
+  const schedulerError = events.find((e) => e.eventType === 'scheduler_error');
+  assert.ok(schedulerError, 'the throw must be recorded as an internal scheduler_error event');
+  assert.match((schedulerError!.payload as { message: string }).message, /requires an explicit boolean "retryable"/);
 });
 
 test('a progress event at or under the ceiling never stops the worker', async () => {

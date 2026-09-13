@@ -418,17 +418,20 @@ export function setRunUsage(db: Db, runId: string, usage: unknown): void {
   db.prepare('UPDATE runs SET usage_json = ? WHERE id = ?').run(JSON.stringify(usage), runId);
 }
 
-export function finishRun(
-  db: Db,
-  runId: string,
-  input: { status: RunStatus; failureClass?: string | null }
-): void {
-  db.prepare('UPDATE runs SET status = ?, finished_at = ?, failure_class = ? WHERE id = ?').run(
-    input.status,
-    new Date().toISOString(),
-    input.failureClass ?? null,
-    runId
-  );
+// Batch 5 section 1 ruling 1's store guard: only a run still recorded as
+// 'running' can be finished. A run that already settled (whether via this
+// function or was never 'running' to begin with) is left untouched, and the
+// caller is told nothing happened via the return value -- this is what
+// protects the run row from a late/duplicate terminal event overwriting the
+// first real outcome, independent of whatever guard scheduler.ts itself has
+// (or lacks) at the call site. See batch-4-closeout.md section 2: the run
+// row used to read the wrong failure_class because a second finishRun call
+// silently won.
+export function finishRun(db: Db, runId: string, input: { status: RunStatus; failureClass?: string | null }): boolean {
+  const info = db
+    .prepare("UPDATE runs SET status = ?, finished_at = ?, failure_class = ? WHERE id = ? AND status = 'running'")
+    .run(input.status, new Date().toISOString(), input.failureClass ?? null, runId);
+  return info.changes > 0;
 }
 
 export function insertEvent(

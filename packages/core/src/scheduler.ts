@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
+import { classify } from './policy.ts';
 import { validateWorkerResult } from './resultContract.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import { prepareWorkspace } from './workspace.ts';
@@ -308,6 +309,8 @@ async function cancelRun(
 interface ApplyEventContext {
   questionSeq: { n: number };
   progressSeq: { n: number };
+  /** Batch 5 section 1 ruling 1: counts late_worker_event rows for this run, for a deterministic idempotency key (the house pattern, per questionSeq/progressSeq -- not randomUUID, so the count is exact and inspectable). */
+  lateEventSeq: { n: number };
   workspacePath: string;
   workspaceType: WorkspaceType;
   artifactsDir: string;
@@ -316,6 +319,48 @@ interface ApplyEventContext {
   ceilingUsd: number;
   /** Asks the adapter to stop the worker. Kept as a closure so this module never needs the adapter/handle types directly. */
   stopWorker: () => Promise<void>;
+}
+
+// Batch 5 section 1 ruling 1: "first terminal outcome wins." A run's live
+// status in the store (not an in-memory flag) is the single source of
+// truth for whether it already settled -- every path that settles a run
+// (this module's own applyWorkerEventInner terminal branches, and
+// cancelTicketRun's finishRun call for adapter_unavailable/run_timeout/
+// SIGINT) writes through `finishRun`, which only succeeds while the row is
+// still 'running'. Reading it fresh here, rather than threading a settled
+// flag through every one of those call sites (some of which, like the
+// runTimeoutMs/SIGINT paths, never see this run's `ctx` at all), is what
+// makes the check total regardless of which path settled the run first.
+function extractLateEventDetails(event: WorkerEvent): { failureClass?: string; usage?: unknown } {
+  if (event.type === 'failure') return { failureClass: event.failureClass, usage: event.usage };
+  if (event.type === 'result_raw') return { usage: event.usage };
+  return {};
+}
+
+function recordLateWorkerEvent(db: Db, ticket: Ticket, run: Run, event: WorkerEvent, ctx: ApplyEventContext): void {
+  const { failureClass, usage } = extractLateEventDetails(event);
+  ctx.lateEventSeq.n += 1;
+  const policy = classify('late_worker_event');
+  insertEvent(db, {
+    projectId: ticket.projectId,
+    eventType: 'late_worker_event',
+    entityType: 'run',
+    entityId: run.id,
+    payload: { eventType: event.type, failureClass, usage },
+    visibility: policy.visibility,
+    requiresUser: policy.requiresUser,
+    idempotencyKey: `late_worker_event:${run.id}:${ctx.lateEventSeq.n}`,
+  });
+
+  // "Cost must never be lost": the settled run row keeps its own first
+  // outcome, but if it recorded no usage at all, a late event's usage is
+  // merged in rather than discarded.
+  if (usage !== undefined) {
+    const current = getRun(db, run.id);
+    if (current && current.usageJson == null) {
+      setRunUsage(db, run.id, usage);
+    }
+  }
 }
 
 // Applies one WorkerEvent for a single run and, if it was terminal, cleans
@@ -331,6 +376,19 @@ interface ApplyEventContext {
 // failure), which is the caller's cue to resolve the run's `done` promise —
 // progress/question return false and the run continues.
 async function applyWorkerEvent(db: Db, ticket: Ticket, run: Run, event: WorkerEvent, ctx: ApplyEventContext): Promise<boolean> {
+  // Batch 5 guard 1: read this run's live status before doing anything
+  // else. If it is no longer 'running', some path already settled it (the
+  // scheduler's own stop-initiated failure, a cancellation, or an earlier
+  // call to this very function for the same run) and this event arrived
+  // after the fact -- e.g. the real (or, per the fidelity rule, fake)
+  // adapter's own post-stop publish racing the scheduler's own accounting.
+  // Recorded, never applied: no transition, no run-row write.
+  const currentRun = getRun(db, run.id);
+  if (!currentRun || currentRun.status !== 'running') {
+    recordLateWorkerEvent(db, ticket, run, event, ctx);
+    return false;
+  }
+
   const terminal = await applyWorkerEventInner(db, ticket, run, event, ctx);
   if (terminal && ctx.workspaceType === 'NONE') {
     await ctx.workspaceCleanup();
@@ -365,6 +423,18 @@ async function applyWorkerEventInner(
         const tally = event.costUsd;
         const overshoot = tally - ctx.ceilingUsd;
         finishRun(db, run.id, { status: 'failed', failureClass: 'budget_exceeded' });
+        // Batch 5: without this, usage_json stays null on a budget-stopped
+        // run -- the `progress` event that triggered the stop carries no
+        // `usage` field (see types.ts), and the killed adapter's own
+        // post-stop event (guard 1 above) is now recorded as a
+        // late_worker_event rather than applied, so it can no longer
+        // overwrite the run row (batch-4-closeout.md section 2 defect 2),
+        // but it also never gets the chance to *supply* usage either. The
+        // daemon's own running cost estimate is the only figure available
+        // at the moment of the stop, so it is recorded here, explicitly
+        // labelled as an estimate rather than the tool's own authoritative
+        // total (see claudeCli.ts's BLENDED_USD_PER_RAW_TOKEN header).
+        setRunUsage(db, run.id, { total_cost_usd: tally, source: 'scheduler_budget_estimate' });
         recordTicketTransition(db, {
           ticketId: ticket.id,
           event: 'worker_failure',
@@ -640,6 +710,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     const ctx: ApplyEventContext = {
       questionSeq: { n: 0 },
       progressSeq: { n: 0 },
+      lateEventSeq: { n: 0 },
       workspacePath: ws.path,
       workspaceType: ticket.workspaceType,
       artifactsDir,
@@ -659,12 +730,45 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       }, deps.runTimeoutMs);
     }
 
+    const schedulerErrorSeq = { n: 0 };
     // Fire-and-forget: the callback applies transitions as events arrive.
+    // Batch 5 guard 3: the whole body is one try/catch, not just the
+    // applyWorkerEvent call -- `ticket` (this loop's own stable snapshot,
+    // not `current`, which might not exist if the throw happens before or
+    // during the lookup) supplies projectId for the recorded event. This is
+    // the last line of defense: guard 1 (live run-status check) and guard 2
+    // (finishRun's WHERE status='running') are expected to prevent a
+    // throwing transition in the first place, but the daemon must survive
+    // even a throw neither of them anticipated -- the whole reason
+    // batch-4-closeout.md section 2 happened is that nothing here caught
+    // anything at all.
     void deps.adapter.observe(handle, (event) => {
-      const current = getTicket(deps.db, ticket.id)!;
-      void applyWorkerEvent(deps.db, current, run, event, ctx).then((terminal) => {
-        if (terminal) finishNormally();
-      });
+      void (async () => {
+        try {
+          const current = getTicket(deps.db, ticket.id)!;
+          const terminal = await applyWorkerEvent(deps.db, current, run, event, ctx);
+          if (terminal) finishNormally();
+        } catch (err) {
+          try {
+            schedulerErrorSeq.n += 1;
+            const policy = classify('scheduler_error');
+            insertEvent(deps.db, {
+              projectId: ticket.projectId,
+              eventType: 'scheduler_error',
+              entityType: 'run',
+              entityId: run.id,
+              payload: { message: err instanceof Error ? err.message : String(err) },
+              visibility: policy.visibility,
+              requiresUser: policy.requiresUser,
+              idempotencyKey: `scheduler_error:${run.id}:${schedulerErrorSeq.n}`,
+            });
+          } catch {
+            // Recording the failure must never itself become a second,
+            // unguarded throw -- the daemon staying alive does not depend
+            // on this insertEvent call succeeding.
+          }
+        }
+      })();
     });
 
     started.push({ ticketId: ticket.id, runId: run.id, handle, done });

@@ -9,6 +9,7 @@ import {
   findConflictingArtifact,
   finishRun,
   getProject,
+  getRun,
   getTicket,
   isProjectAdapterPaused,
   listArtifactsForTicket,
@@ -254,4 +255,35 @@ test('projectSpendUsd sums ticketSpendUsd across every ticket in the project', (
   setRunUsage(db, runB.id, { total_cost_usd: 0.15 });
 
   assert.equal(projectSpendUsd(db, project.id), 0.55);
+});
+
+// --- Batch 5: the store guard from section 1 ruling 1 ---
+
+test('finishRun only updates a run that is still "running", and reports whether it applied', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+  const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
+
+  assert.equal(finishRun(db, run.id, { status: 'succeeded' }), true, 'the first call, against a running row, applies');
+  assert.equal(getRun(db, run.id)!.status, 'succeeded');
+
+  const secondApplied = finishRun(db, run.id, { status: 'failed', failureClass: 'late' });
+  assert.equal(secondApplied, false, 'a second call, against a no-longer-running row, must be a no-op');
+
+  const after = getRun(db, run.id)!;
+  assert.equal(after.status, 'succeeded', 'the first outcome is never overwritten');
+  assert.equal(after.failureClass, null);
+});
+
+test('finishRun refuses to touch a run that was never "running" in the first place', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+  const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
+  finishRun(db, run.id, { status: 'cancelled', failureClass: 'run_timeout' });
+
+  assert.equal(finishRun(db, run.id, { status: 'failed', failureClass: 'adapter_failure' }), false);
+  assert.equal(getRun(db, run.id)!.status, 'cancelled');
+  assert.equal(getRun(db, run.id)!.failureClass, 'run_timeout');
 });

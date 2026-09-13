@@ -189,6 +189,18 @@ const POLICY: Record<string, EventPolicy> = {
   // refused to spawn and paused the project, so this needs the owner's
   // attention the same way an adapter pause does.
   project_spend_cap_reached: { visibility: 'inbox', requiresUser: true },
+
+  // --- Batch 5: the supervisor must survive its own decisions ---
+  // docs/strategy/batch-5-spec.md section 1 ruling 1's three guards. Neither
+  // goes through recordTicketTransition (neither changes tickets.status),
+  // so neither is a TransitionEvent member and neither is exercised by the
+  // completeness test below -- same shape as adapter_unavailable /
+  // workspace_preparation_failed above. Pure internal diagnostics: a worker
+  // or an adapter produced a second terminal event, or a transition threw,
+  // and the daemon recorded it and kept going rather than dying. Nothing
+  // here is actionable by a user.
+  late_worker_event: { visibility: 'internal', requiresUser: false },
+  scheduler_error: { visibility: 'internal', requiresUser: false },
 };
 
 export function classify(eventType: string): EventPolicy {
