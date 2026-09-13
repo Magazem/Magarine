@@ -4,6 +4,8 @@ import { dirname } from 'node:path';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
 import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
+import { checkDaemonFile, type DaemonFileInfo } from './daemon.ts';
+import { daemonRequest, probeDaemonHealth } from './daemonClient.ts';
 import { resolveExecutable } from './process.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { runUntilIdle, tick } from './scheduler.ts';
@@ -109,6 +111,67 @@ function artifactsDir(flags: Flags): string {
   return resolveArtifactsDir(stateDir(flags));
 }
 
+// Batch 8 (Role M), step 4: the single-writer rule. When a daemon is
+// running, every mutating command below routes through its API instead of
+// writing the sqlite file directly; when none is, it writes exactly as it
+// always has. `project create` is the one documented exception (no
+// `POST /projects` route exists -- see the daemon's route list -- and the
+// Orchestrator ruled it stays a direct write rather than inventing one).
+// Reads (status/board/inbox/activity) are never routed, per the same
+// ruling: "reads stay direct either way".
+//
+// A live daemon.json for this STATE DIRECTORY is only actually this
+// invocation's daemon if it serves the same database file: `--db` is a
+// separate override from `--state-dir`/`MAGARINE_HOME` (see paths.ts) and
+// the two can diverge, e.g. a test or a script pointing `--db` at a
+// specific file while a daemon happens to be running against that state
+// directory's default db. Routing a mutation there would silently write
+// the wrong file. Uses `checkDaemonFile`'s real `probeDaemonHealth` (the
+// same one daemon.ts's own stale-file detection uses), not a second,
+// simpler liveness check invented here.
+async function liveDaemonFor(flags: Flags): Promise<DaemonFileInfo | undefined> {
+  const check = await checkDaemonFile(stateDir(flags), probeDaemonHealth);
+  if (check.status !== 'live') return undefined;
+  if (check.info!.dbPath !== dbPath(flags)) return undefined;
+  return check.info;
+}
+
+// Sends a mutating request to a live daemon and prints its result the same
+// way the direct-write path would: `--json` gets the raw response body, a
+// human line otherwise (built from that same body, so the two paths report
+// identically). A non-2xx response is reported the same way every direct
+// command's own typed Error already is -- the message on stderr, exit 1, no
+// stack -- since daemonApi.ts's error bodies carry the exact same message
+// text those Error classes throw. A transport failure this late (the daemon
+// answered live a moment ago but is unreachable now) is reported the same
+// way rather than silently falling back to a direct write, which risks
+// double-writing if the daemon is simply mid-restart rather than gone.
+async function routeMutation(
+  flags: Flags,
+  daemon: DaemonFileInfo,
+  method: 'GET' | 'POST',
+  path: string,
+  body: unknown,
+  humanLine: (body: unknown) => string
+): Promise<void> {
+  let res;
+  try {
+    res = await daemonRequest(daemon, method, path, body);
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  if (res.status >= 400) {
+    const message =
+      (res.body as { error?: string } | undefined)?.error ?? `daemon request failed with status ${res.status}`;
+    process.stderr.write(`${message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  output(flags, res.body, humanLine(res.body));
+}
+
 const COMMON_FLAGS = ['db', 'json', 'state-dir'];
 
 // Every flag each subcommand accepts, beyond `--db`/`--json`. An unknown
@@ -185,6 +248,10 @@ const FLAG_SPECS: Record<string, string[]> = {
   approve: ['ticket'],
   reject: ['ticket', 'reason'],
   resume: ['project'],
+  // Batch 8 (Role M): daemon-only, per the spec's "cancel is daemon-only and
+  // says so when no daemon is up" -- no direct-write fallback exists for
+  // this one, unlike every other mutating command above.
+  cancel: ['ticket'],
 };
 
 // Builds the AgentAdapter for `tick`/`run --until-idle` from `--adapter`
@@ -345,8 +412,17 @@ async function main(): Promise<void> {
   }
 
   if (command === 'project' && subcommand === 'set') {
-    const db = openDb(dbPath(flags));
     const projectId = String(flags.project ?? positionals[1] ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      const body: { maxSpend?: number; model?: string } = {};
+      if (typeof flags['max-spend'] === 'string') body.maxSpend = Number(flags['max-spend']);
+      if (typeof flags.model === 'string') body.model = flags.model;
+      await routeMutation(flags, live, 'POST', `/projects/${projectId}/set`, body, () => `Updated project ${projectId}`);
+      return;
+    }
+
+    const db = openDb(dbPath(flags));
     const project = getProject(db, projectId);
     if (!project) {
       process.stderr.write(`No such project: ${projectId}\n`);
@@ -364,8 +440,29 @@ async function main(): Promise<void> {
   }
 
   if (command === 'ticket' && subcommand === 'add') {
-    const db = openDb(dbPath(flags));
     const dependsOn = flagList(flags, 'depends-on');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      const body = {
+        project: String(flags.project ?? ''),
+        title: String(flags.title ?? positionals[1] ?? ''),
+        description: typeof flags.description === 'string' ? flags.description : null,
+        maxAttempts: flags['max-attempts'] ? Number(flags['max-attempts']) : undefined,
+        priority: flags.priority ? Number(flags.priority) : undefined,
+        workspaceType: typeof flags.workspace === 'string' ? flags.workspace : undefined,
+        acceptanceCriteria: flagList(flags, 'acceptance'),
+        model: typeof flags.model === 'string' ? flags.model : null,
+        budget: typeof flags.budget === 'string' ? Number(flags.budget) : undefined,
+        dependsOn,
+      };
+      await routeMutation(flags, live, 'POST', '/tickets', body, (b) => {
+        const t = b as { id: string; title: string };
+        return `Created ticket ${t.id} (${t.title})`;
+      });
+      return;
+    }
+
+    const db = openDb(dbPath(flags));
     const ticket = createTicket(db, {
       projectId: String(flags.project ?? ''),
       title: String(flags.title ?? positionals[1] ?? ''),
@@ -406,9 +503,22 @@ async function main(): Promise<void> {
   }
 
   if (command === 'dep' && subcommand === 'add') {
-    const db = openDb(dbPath(flags));
     const ticketId = String(flags.ticket ?? '');
     const dependsOnTicketId = String(flags['depends-on'] ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(
+        flags,
+        live,
+        'POST',
+        '/deps',
+        { project: String(flags.project ?? ''), ticket: ticketId, dependsOn: dependsOnTicketId },
+        () => `Added dependency: ${ticketId} depends on ${dependsOnTicketId}`
+      );
+      return;
+    }
+
+    const db = openDb(dbPath(flags));
     addDependency(db, { ticketId, dependsOnTicketId });
     resolveReadiness(db, String(flags.project ?? ''));
     output(flags, { ticketId, dependsOnTicketId }, `Added dependency: ${ticketId} depends on ${dependsOnTicketId}`);
@@ -416,6 +526,25 @@ async function main(): Promise<void> {
   }
 
   if (command === 'tick') {
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      // The daemon owns its own adapter, set once at `serve` startup -- an
+      // adapter flag given here has nothing to attach to on a remote
+      // process, so it's noted (not silently dropped) rather than either
+      // erroring the whole command or pretending it did something.
+      const ignoredAdapterFlags = ['adapter', 'claude-exe', 'fake-script', 'fake-outcome'].filter((k) => k in flags);
+      if (ignoredAdapterFlags.length > 0) {
+        process.stderr.write(
+          `Note: --${ignoredAdapterFlags.join(', --')} ignored: a live daemon uses the adapter it was started with, not a flag on this command.\n`
+        );
+      }
+      await routeMutation(flags, live, 'POST', '/tick', { project: String(flags.project ?? '') }, (b) => {
+        const r = b as { started: Array<{ ticketId: string }> };
+        return `Started ${r.started.length} run(s).`;
+      });
+      return;
+    }
+
     const db = openDb(dbPath(flags));
     recoverOrphanedRuns(db);
     const adapter = buildAdapter(db, flags);
@@ -432,6 +561,22 @@ async function main(): Promise<void> {
   }
 
   if (command === 'run' && flags['until-idle']) {
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      // No "wait until idle" route exists (docs/strategy/batch-8-spec.md's
+      // API list has no such endpoint), and `run --until-idle` holding its
+      // own worker handles inside this CLI invocation while a daemon is
+      // also live is exactly the two-writer situation the whole daemon
+      // exists to prevent. Refused outright rather than either violating
+      // single-writer or inventing a polling mechanism the spec doesn't ask
+      // for.
+      process.stderr.write(
+        "run --until-idle cannot run against a live daemon: the daemon already ticks continuously on its own, and there is no route to wait for idle. Use 'tick' for a single forced pass, or 'board'/'status' to watch progress.\n"
+      );
+      process.exitCode = 1;
+      return;
+    }
+
     const db = openDb(dbPath(flags));
     recoverOrphanedRuns(db);
     const adapter = buildAdapter(db, flags);
@@ -518,9 +663,22 @@ async function main(): Promise<void> {
   }
 
   if (command === 'decide') {
+    const ticketId = String(flags.ticket ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(
+        flags,
+        live,
+        'POST',
+        `/tickets/${ticketId}/decide`,
+        { answer: String(flags.answer ?? '') },
+        (b) => `${ticketId} decided, now ${(b as { status: string }).status}`
+      );
+      return;
+    }
     const db = openDb(dbPath(flags));
     try {
-      const ticket = decide(db, { ticketId: String(flags.ticket ?? ''), answer: String(flags.answer ?? '') });
+      const ticket = decide(db, { ticketId, answer: String(flags.answer ?? '') });
       output(flags, ticket, `${ticket.id} decided, now ${ticket.status}`);
     } catch (err) {
       if (err instanceof DecideError) {
@@ -534,9 +692,17 @@ async function main(): Promise<void> {
   }
 
   if (command === 'retry') {
+    const ticketId = String(flags.ticket ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'POST', `/tickets/${ticketId}/retry`, undefined, (b) =>
+        `${ticketId} retried, now ${(b as { status: string }).status}`
+      );
+      return;
+    }
     const db = openDb(dbPath(flags));
     try {
-      const ticket = retry(db, { ticketId: String(flags.ticket ?? '') });
+      const ticket = retry(db, { ticketId });
       output(flags, ticket, `${ticket.id} retried, now ${ticket.status}`);
     } catch (err) {
       if (err instanceof RetryError) {
@@ -550,9 +716,17 @@ async function main(): Promise<void> {
   }
 
   if (command === 'approve') {
+    const ticketId = String(flags.ticket ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'POST', `/tickets/${ticketId}/approve`, undefined, (b) =>
+        `${ticketId} approved, now ${(b as { status: string }).status}`
+      );
+      return;
+    }
     const db = openDb(dbPath(flags));
     try {
-      const ticket = approve(db, { ticketId: String(flags.ticket ?? '') });
+      const ticket = approve(db, { ticketId });
       output(flags, ticket, `${ticket.id} approved, now ${ticket.status}`);
     } catch (err) {
       if (err instanceof ApproveError) {
@@ -566,9 +740,22 @@ async function main(): Promise<void> {
   }
 
   if (command === 'reject') {
+    const ticketId = String(flags.ticket ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(
+        flags,
+        live,
+        'POST',
+        `/tickets/${ticketId}/reject`,
+        { reason: String(flags.reason ?? '') },
+        (b) => `${ticketId} rejected, now ${(b as { status: string }).status}`
+      );
+      return;
+    }
     const db = openDb(dbPath(flags));
     try {
-      const ticket = reject(db, { ticketId: String(flags.ticket ?? ''), reason: String(flags.reason ?? '') });
+      const ticket = reject(db, { ticketId, reason: String(flags.reason ?? '') });
       output(flags, ticket, `${ticket.id} rejected, now ${ticket.status}`);
     } catch (err) {
       if (err instanceof RejectError) {
@@ -582,9 +769,15 @@ async function main(): Promise<void> {
   }
 
   if (command === 'resume') {
+    const projectId = String(flags.project ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'POST', `/projects/${projectId}/resume`, undefined, () => `${projectId} resumed`);
+      return;
+    }
     const db = openDb(dbPath(flags));
     try {
-      const project = resume(db, { projectId: String(flags.project ?? '') });
+      const project = resume(db, { projectId });
       output(flags, project, `${project.id} resumed`);
     } catch (err) {
       if (err instanceof ResumeError) {
@@ -597,8 +790,28 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'cancel') {
+    const ticketId = String(flags.ticket ?? '');
+    const live = await liveDaemonFor(flags);
+    if (!live) {
+      // No direct-write fallback exists for this command: cancelling a live
+      // run requires a live worker handle, which only a running daemon
+      // holds (see docs/strategy/batch-8-spec.md section 2's "cancel is
+      // daemon-only and says so when no daemon is up").
+      process.stderr.write(
+        'cancel requires a running daemon (magarine serve) -- no live daemon was found for this state directory (matching --db, if given).\n'
+      );
+      process.exitCode = 1;
+      return;
+    }
+    await routeMutation(flags, live, 'POST', `/tickets/${ticketId}/cancel`, undefined, (b) =>
+      `${ticketId} cancelled, now ${(b as { status: string }).status}`
+    );
+    return;
+  }
+
   process.stderr.write(
-    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|serve|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
+    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }
