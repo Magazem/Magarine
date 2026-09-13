@@ -130,10 +130,14 @@ export interface DaemonLoopDeps {
 }
 
 export interface DaemonLoop {
-  /** Every run the daemon currently believes is in flight, keyed by run id. Exposed so a cancel handler (step 3's API) can look up a ticket's live run without a second bookkeeping structure -- iterate values() and match on ticketId. */
+  /** Every run the daemon currently believes is in flight, keyed by run id. Exposed so a cancel handler (the API's cancelTicket, below) can look up a ticket's live run without a second bookkeeping structure -- iterate values() and match on ticketId. */
   live: Map<string, StartedRun>;
   /** Stops the tick interval, then cancels every live run: adapter.stop() plus forcing the run/ticket back to a settled DB state (run_cancelled, no attempt consumed) -- never waits on a hung run's own `done` promise, which may never resolve on its own. Safe to call more than once. */
   stop(): Promise<void>;
+  /** The API's `POST /tick`: forces one scheduling pass for a single project, right now, outside the regular interval. Registers any newly-started runs into the same `live` map the periodic loop uses, so a run started this way is cancellable and gets swept up on shutdown exactly like any other. */
+  forceTick(projectId: string): Promise<{ started: Array<{ ticketId: string; runId: string }> }>;
+  /** The API's `POST /tickets/{id}/cancel`: stops the live run for `ticketId` (adapter.stop() + return to READY, no attempt consumed) and removes it from `live`. Returns 'not_running' without touching anything if this daemon holds no live run for that ticket -- the caller (daemonApi.ts) turns that into a 409, not a silent no-op. */
+  cancelTicket(ticketId: string): Promise<'cancelled' | 'not_running'>;
 }
 
 // Runs restart recovery once (any run still 'running' in the DB is by
@@ -151,6 +155,26 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
   let stopped = false;
   let ticking = false;
 
+  // Shared by the periodic loop and forceTick(): ticks one project and
+  // registers whatever it started into the SAME live map either path uses,
+  // so a run started by a forced API tick is cancellable and gets swept up
+  // on shutdown exactly like one started by the regular interval.
+  const tickProject = async (projectId: string): Promise<StartedRun[]> => {
+    const { started } = await tick({
+      db: deps.db,
+      adapter: deps.adapter,
+      projectId,
+      maxParallelWorkers: deps.maxParallelWorkers,
+      runTimeoutMs: deps.runTimeoutMs,
+      artifactsDir: deps.artifactsDir,
+    });
+    for (const s of started) {
+      live.set(s.runId, s);
+      void s.done.then(() => live.delete(s.runId));
+    }
+    return started;
+  };
+
   // Guards against overlapping passes: tick() itself awaits adapter calls,
   // so a slow pass and the next interval firing could otherwise both be
   // live at once and race each other's reads of the same READY tickets.
@@ -160,18 +184,7 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
     try {
       for (const project of listProjects(deps.db)) {
         if (stopped) break;
-        const { started } = await tick({
-          db: deps.db,
-          adapter: deps.adapter,
-          projectId: project.id,
-          maxParallelWorkers: deps.maxParallelWorkers,
-          runTimeoutMs: deps.runTimeoutMs,
-          artifactsDir: deps.artifactsDir,
-        });
-        for (const s of started) {
-          live.set(s.runId, s);
-          void s.done.then(() => live.delete(s.runId));
-        }
+        await tickProject(project.id);
       }
     } catch (err) {
       // The daemon must survive its own scheduling pass the same way
@@ -200,6 +213,22 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
         await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'daemon_shutdown');
       }
       live.clear();
+    },
+    async forceTick(projectId) {
+      // Runs even while a periodic pass is in flight (no `ticking` guard):
+      // an explicit `POST /tick` is the caller asking for a pass on THIS
+      // project right now, and tick() itself is safe to call concurrently
+      // with a pass over other projects -- each project's own READY-ticket
+      // read only ever touches that project's rows.
+      const started = stopped ? [] : await tickProject(projectId);
+      return { started: started.map((s) => ({ ticketId: s.ticketId, runId: s.runId })) };
+    },
+    async cancelTicket(ticketId) {
+      const sr = [...live.values()].find((s) => s.ticketId === ticketId);
+      if (!sr) return 'not_running';
+      await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'user_cancelled');
+      live.delete(sr.runId);
+      return 'cancelled';
     },
   };
 }

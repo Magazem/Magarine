@@ -285,3 +285,118 @@ test('DaemonLoop.stop() cancels a hanging worker back to READY without consuming
   // Calling stop() again must be a safe no-op, not a double-cancel.
   await assert.doesNotReject(() => loop.stop());
 });
+
+// forceTick/cancelTicket (step 3, backing the API's POST /tick and
+// POST /tickets/{id}/cancel) get the same in-process treatment as the rest
+// of this file: pure scheduling-primitive logic against a real DB and the
+// real FakeAdapter. daemonApi.test.ts covers the cross-process, real-HTTP
+// version of the same behaviour.
+
+test('DaemonLoop.forceTick ticks only the named project, registers the started run into the shared live map, and skips a project already at its concurrency cap', async (t) => {
+  const db = openDb(':memory:');
+  const projectA = createProject(db, { name: 'a', maxParallelWorkers: 1 });
+  const projectB = createProject(db, { name: 'b', maxParallelWorkers: 1 });
+  const ticketA = createTicket(db, { projectId: projectA.id, title: 'ta' });
+  const ticketB = createTicket(db, { projectId: projectB.id, title: 'tb' });
+  const adapter = new FakeAdapter();
+  adapter.setScript(ticketA.id, { kind: 'hang' });
+  adapter.setScript(ticketB.id, { kind: 'hang' });
+
+  // A very long interval: nothing in this test should be explained by the
+  // periodic pass firing on its own -- every state change here comes from
+  // an explicit forceTick call.
+  const loop = startDaemonLoop({
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    artifactsDir: join(testRoot.root, 'artifacts-4'),
+    tickIntervalMs: 60_000,
+  });
+  t.after(() => loop.stop());
+
+  // The loop's own automatic first tick already fires once at startup
+  // (before this line runs) and would have started BOTH projects' tickets
+  // on its own, which would make forceTick's own contribution unobservable.
+  // Wait for that one pass to fully land, then reason from there.
+  const deadline = Date.now() + 2000;
+  while (
+    (getTicket(db, ticketA.id)!.status !== 'IN_PROGRESS' || getTicket(db, ticketB.id)!.status !== 'IN_PROGRESS') &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(getTicket(db, ticketA.id)!.status, 'IN_PROGRESS');
+  assert.equal(getTicket(db, ticketB.id)!.status, 'IN_PROGRESS');
+
+  // Both projects are now at their (maxParallelWorkers: 1) cap. A forced
+  // tick on either one must find nothing to start -- proving forceTick
+  // respects the same concurrency cap tick() always has, not a second,
+  // uncapped spawn path.
+  const resultA = await loop.forceTick(projectA.id);
+  assert.deepEqual(resultA.started, []);
+  const resultB = await loop.forceTick(projectB.id);
+  assert.deepEqual(resultB.started, []);
+
+  // Cancel A's run to free its slot (returns ticketA itself to READY, no
+  // attempt consumed), then forceTick project A again: the freed ticket
+  // should start again, and forceTick must not have touched project B at
+  // all (it only ever tick()s the one project it was asked for).
+  await loop.cancelTicket(ticketA.id);
+  const resultA2 = await loop.forceTick(projectA.id);
+  assert.deepEqual(
+    resultA2.started.map((s) => s.ticketId),
+    [ticketA.id]
+  );
+  assert.ok(
+    [...loop.live.values()].some((s) => s.ticketId === ticketA.id),
+    'the run forceTick started must be registered in the shared live map'
+  );
+  assert.equal(getTicket(db, ticketB.id)!.status, 'IN_PROGRESS', "project B must be untouched by project A's forceTick");
+});
+
+test('DaemonLoop.cancelTicket cancels a live run for the given ticket, and reports \'not_running\' for one it holds no live run for', async (t) => {
+  const db = openDb(':memory:');
+  // maxParallelWorkers: 1 -- hangTicket occupies the only slot, so
+  // idleTicket is promoted OPEN -> READY by the loop's own automatic tick
+  // (resolveReadiness has no concurrency cap of its own) but never actually
+  // gets a run started for it. That is exactly the case this test wants:
+  // "never started a run" without also needing a dependency graph to hold
+  // it back.
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const hangTicket = createTicket(db, { projectId: project.id, title: 'hangs' });
+  const idleTicket = createTicket(db, { projectId: project.id, title: 'never started' });
+  const adapter = new FakeAdapter();
+  adapter.setScript(hangTicket.id, { kind: 'hang' });
+
+  const loop = startDaemonLoop({
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    artifactsDir: join(testRoot.root, 'artifacts-5'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const deadline = Date.now() + 2000;
+  while (loop.live.size === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.live.size, 1);
+
+  // A ticket this daemon never started a run for: nothing to cancel,
+  // reported distinctly from a real cancellation rather than a silent no-op.
+  const notRunning = await loop.cancelTicket(idleTicket.id);
+  assert.equal(notRunning, 'not_running');
+  assert.equal(getTicket(db, idleTicket.id)!.status, 'READY', 'promoted, but never started -- untouched by cancel');
+
+  const cancelled = await loop.cancelTicket(hangTicket.id);
+  assert.equal(cancelled, 'cancelled');
+  assert.equal(getTicket(db, hangTicket.id)!.status, 'READY');
+  assert.equal(getTicket(db, hangTicket.id)!.attemptCount, 0);
+  assert.equal(loop.live.size, 0);
+
+  // Cancelling the same ticket again once it is no longer live: 'not_running',
+  // not a repeat 'cancelled'.
+  const again = await loop.cancelTicket(hangTicket.id);
+  assert.equal(again, 'not_running');
+});
