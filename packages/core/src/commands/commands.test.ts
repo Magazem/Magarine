@@ -688,6 +688,153 @@ test('reject on the last attempt exhausts to FAILED as worker_failed_final and r
   });
 });
 
+// --- Batch 5 item 5: --fake-outcome, and approve/reject end to end without seeding state ---
+
+test('--fake-outcome review lands a ticket in REVIEW through a real tick, and approve moves it to DONE end to end', async () => {
+  await withTempDb('magarine-fake-outcome-review-approve-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    );
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+    );
+
+    const tickRes = await run([
+      'tick',
+      '--project',
+      project.id,
+      '--adapter',
+      'fake',
+      '--fake-outcome',
+      `${ticket.id}=review`,
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+
+    const statusAfterTick = JSON.parse(
+      (await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ id: string; status: string }>;
+    assert.equal(
+      statusAfterTick.find((t) => t.id === ticket.id)!.status,
+      'REVIEW',
+      'a real tick with --fake-outcome review must land the ticket in REVIEW without seeding the state machine directly'
+    );
+
+    const approveRes = await run(['approve', '--ticket', ticket.id, '--json', '--db', dbFile]);
+    assert.equal(approveRes.code, 0, approveRes.stderr);
+    assert.equal(JSON.parse(approveRes.stdout).status, 'DONE');
+  });
+});
+
+test('--fake-outcome review lands a ticket in REVIEW through a real tick, and reject returns it to READY end to end', async () => {
+  await withTempDb('magarine-fake-outcome-review-reject-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    );
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+    );
+
+    const tickRes = await run([
+      'tick',
+      '--project',
+      project.id,
+      '--adapter',
+      'fake',
+      '--fake-outcome',
+      `${ticket.id}=review`,
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+    assert.equal(
+      (
+        JSON.parse((await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout) as Array<{
+          id: string;
+          status: string;
+        }>
+      ).find((t) => t.id === ticket.id)!.status,
+      'REVIEW'
+    );
+
+    const rejectRes = await run([
+      'reject',
+      '--ticket',
+      ticket.id,
+      '--reason',
+      'needs another pass',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(rejectRes.code, 0, rejectRes.stderr);
+    const rejected = JSON.parse(rejectRes.stdout);
+    assert.equal(rejected.status, 'READY');
+    assert.equal(rejected.attemptCount, 1);
+  });
+});
+
+test('batch 5 item 6: the inbox line for a review item shows the worker\'s summary as its reason, not the event type', async () => {
+  await withTempDb('magarine-inbox-review-reason-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    );
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+    );
+
+    const tickRes = await run([
+      'tick',
+      '--project',
+      project.id,
+      '--adapter',
+      'fake',
+      '--fake-outcome',
+      `${ticket.id}=review`,
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+
+    const inbox = JSON.parse(
+      (await run(['inbox', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ ticketId?: string; eventType: string; message: string }>;
+    const item = inbox.find((i) => i.ticketId === ticket.id);
+    assert.ok(item, 'a review item must reach the inbox');
+    assert.equal(item!.eventType, 'worker_needs_review');
+    assert.equal(item!.message, 'fake review', "must be FakeAdapter's review summary, not a repeat of the event type");
+  });
+});
+
+test('--fake-outcome rejects an unknown outcome name by listing the valid ones', async () => {
+  await withTempDb('magarine-fake-outcome-unknown-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    );
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+    );
+    const res = await run([
+      'tick',
+      '--project',
+      project.id,
+      '--adapter',
+      'fake',
+      '--fake-outcome',
+      `${ticket.id}=bogus`,
+      '--db',
+      dbFile,
+    ]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /unknown outcome "bogus"/);
+    assert.match(res.stderr, /review/, 'must list the valid outcome names');
+  });
+});
+
 // Hole flagged by Role H, confirmed by the Orchestrator: `inbox.ts` used to
 // filter to `entityType === 'ticket'` only, so `project_spend_cap_reached`
 // (entityType 'project') was recorded, required the user, and never

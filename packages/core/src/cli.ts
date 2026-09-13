@@ -154,8 +154,15 @@ const FLAG_SPECS: Record<string, string[]> = {
   // DIRECTORY), not chosen once for the whole `run`/`tick` invocation. See
   // scheduler.ts's `tick()`, which now prepares and passes a `workspace`
   // per ticket rather than the adapter carrying one for its whole lifetime.
-  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script'],
-  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script'],
+  // `--fake-outcome <ticketId>=<outcome>`, repeatable, batch 5 item 5:
+  // narrower and friendlier than `--fake-script` for the five outcomes the
+  // daemon's own vocabulary distinguishes (done/review/needs_user_decision/
+  // retryable/final -- see FakeAdapter's `review`/`final` kinds, new this
+  // batch). Layered on top of `--fake-script`, not a replacement: existing
+  // scripts (`succeed`, `question`, `malformed_result`, `hang`) still only
+  // have a `--fake-script` spelling.
+  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
+  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
   status: ['project'],
   board: ['project'],
   inbox: ['project'],
@@ -187,6 +194,19 @@ const FAKE_SCRIPT_KINDS = new Set<FakeScript['kind']>([
   'hang',
 ]);
 
+// Batch 5 item 5: the daemon's own outcome vocabulary, mapped onto
+// FakeAdapter's script kinds -- `done`/`retryable` rename existing kinds to
+// the names a user of `--fake-outcome` actually thinks in; `review` and
+// `final` are the two kinds FakeAdapter gained this batch specifically so
+// this flag could exist (see fakeAdapter.ts's FakeScript union).
+const FAKE_OUTCOME_KINDS: Record<string, FakeScript['kind']> = {
+  done: 'succeed',
+  review: 'review',
+  needs_user_decision: 'needs_user_decision',
+  retryable: 'retryable_failure',
+  final: 'final',
+};
+
 function buildAdapter(db: Db, flags: Flags): AgentAdapter {
   const kind = typeof flags.adapter === 'string' ? flags.adapter : 'fake';
 
@@ -207,6 +227,23 @@ function buildAdapter(db: Db, flags: Flags): AgentAdapter {
         );
       }
       adapter.setScript(ticketId, { kind: scriptKind as FakeScript['kind'] });
+    }
+    for (const spec of flagList(flags, 'fake-outcome')) {
+      const eq = spec.indexOf('=');
+      if (eq < 0) {
+        throw new Error(`--fake-outcome must be "<ticketId>=<outcome>", got: ${spec}`);
+      }
+      const ticketId = spec.slice(0, eq);
+      const outcome = spec.slice(eq + 1);
+      const scriptKind = FAKE_OUTCOME_KINDS[outcome];
+      if (!scriptKind) {
+        throw new Error(
+          `--fake-outcome has an unknown outcome "${outcome}" for ticket ${ticketId}. Valid outcomes: ${Object.keys(
+            FAKE_OUTCOME_KINDS
+          ).join(', ')}.`
+        );
+      }
+      adapter.setScript(ticketId, { kind: scriptKind } as FakeScript);
     }
     return adapter;
   }

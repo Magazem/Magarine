@@ -18,6 +18,17 @@ export type FakeScript =
   | { kind: 'question'; delayMs?: number; message?: string; usage?: unknown }
   | { kind: 'needs_user_decision'; delayMs?: number; blockers?: string[]; usage?: unknown }
   | { kind: 'malformed_result'; delayMs?: number }
+  // Batch 5 item 5: lands the ticket in REVIEW, the one outcome the fake
+  // adapter had no way to produce before (see cli.ts's `--fake-outcome`),
+  // so `approve`/`reject` can be exercised end to end through the real CLI
+  // instead of seeding REVIEW directly against the state machine.
+  | { kind: 'review'; delayMs?: number; summary?: string; usage?: unknown }
+  // A non-retryable failure that is NOT budget_exceeded or
+  // adapter_unavailable -- the daemon's other "straight to FAILED
+  // regardless of attempts remaining" outcome (see stateMachine.ts's
+  // worker_failure handling). Distinct from 'retryable_failure', which the
+  // fake could already produce.
+  | { kind: 'final'; delayMs?: number; message?: string; usage?: unknown }
   // Never emits a terminal event on its own -- models a worker still
   // mid-flight (e.g. reporting a cumulative cost estimate), the way a real
   // run looks right up until the scheduler decides to stop it (see
@@ -150,6 +161,31 @@ export class FakeAdapter implements AgentAdapter {
 
       case 'progress':
         schedule({ type: 'progress', message: script.message ?? 'fake progress', costUsd: script.costUsd }, script.delayMs ?? 0);
+        break;
+
+      case 'review':
+        schedule(
+          {
+            type: 'result_raw',
+            raw: {
+              status: 'review',
+              summary: script.summary ?? 'fake review',
+              artifacts: [],
+              checks: [],
+              blockers: [],
+              questions: [],
+            },
+            usage: script.usage,
+          },
+          script.delayMs ?? 0
+        );
+        break;
+
+      case 'final':
+        schedule(
+          { type: 'failure', message: script.message ?? 'fake final failure', retryable: false, usage: script.usage },
+          script.delayMs ?? 0
+        );
         break;
 
       case 'hang':

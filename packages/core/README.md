@@ -341,6 +341,53 @@ only stores and displays it; shape is entirely adapter-defined. `FakeAdapter`
 scripts can set it via the optional `usage` field on `succeed`,
 `retryable_failure`, and `needs_user_decision` scripts.
 
+## A worker that keeps talking after being stopped
+
+The scheduler sometimes decides to stop a worker itself — a budget overspend,
+a wall-clock timeout, `SIGINT`/`SIGTERM`, or a project's adapter pausing —
+and records the run's outcome right then. The adapter's own process, having
+just been killed, does not go quiet immediately: the real adapter's
+underlying `wait()` promise still resolves once the OS finishes killing it,
+and it still publishes its own terminal event off the back of that (see
+`adapters/claudeCli.ts`'s `managed.wait().then(...)`). `FakeAdapter` and the
+test suite's own `TestAdapter` mirror this on purpose — any behaviour
+observed in the real adapter is mirrored in the fake in the same batch — so
+every one of the scheduler's tests exercises the same race a real run does.
+
+Without a guard, that second event lands on a ticket that has already moved
+out of `IN_PROGRESS`, and `stateMachine.ts` correctly refuses the transition
+by throwing `InvalidTransitionError` — which, uncaught, used to kill the
+daemon at exactly the moment its own cost control had just worked
+(`docs/strategy/batch-4-closeout.md` section 2). Three independent guards in
+`scheduler.ts`/`store.ts` fix this:
+
+1. **First terminal outcome wins.** Before applying any adapter event, the
+   scheduler reads that run's *live* status from the store, not an in-memory
+   flag — this is what makes it total across every path that can settle a
+   run (the scheduler's own stop-initiated failure, and `cancelTicketRun`'s
+   timeout/SIGINT/adapter-unavailable paths, none of which share the first
+   path's per-run bookkeeping). A run no longer `running` means some event
+   already won; the new one is recorded as an internal `late_worker_event`
+   (with its class and any usage it carried, for diagnostics) and otherwise
+   dropped — no transition, no run-row write. The one exception: if the
+   settled run row has no usage recorded yet, a late event's usage is merged
+   in, because cost must never be lost.
+2. **The store never overwrites a settled run.** `finishRun`'s `UPDATE`
+   carries `WHERE status = 'running'` and reports whether it actually applied.
+   This protects the run row even from a caller that gets guard 1 wrong.
+3. **A catch-all keeps the daemon alive regardless.** The entire body that
+   applies one adapter event to one run is wrapped in a single `try`/`catch`.
+   Anything guards 1 and 2 didn't anticipate is recorded as an internal
+   `scheduler_error` (itself wrapped in a swallow, so recording the failure
+   can never become a second unguarded throw) and the daemon keeps running —
+   the other runs in flight are never affected by one run's throw.
+
+The upshot for an operator: a run that gets stopped always resolves to
+exactly one recorded outcome, chosen by whichever terminal event the
+scheduler processes first, and nothing a killed worker says afterward can
+change that outcome, corrupt another run, or take the daemon down. See
+`scheduler.test.ts`'s batch 5 tests for the exact scenarios this covers.
+
 ## What was not built
 
 Batch 1: per the batch spec, nothing beyond the eight numbered deliverables
@@ -374,3 +421,13 @@ split named above (`worker_failed_retryable` vs. `worker_failed_final`,
 Role H) is what lets `worker_failed_final` reach the inbox with a reason on
 the line regardless of whether it came from an exhausted retry or an
 exhausted rejection.
+
+Batch 5 (Role J, supervisor hardening): the second cost-rate calibration
+fixture (`docs/strategy/batch-5-spec.md` section 1 ruling 3) does not exist
+in this repository as of this batch — it comes from this batch's own paid
+budget-stop run, which is the Orchestrator's close-out step, done after this
+code lands. `adapters/claudeCli.ts`'s `BLENDED_USD_PER_RAW_TOKEN` is
+therefore still calibrated against the single batch 4 fixture; confirmed
+HARD, though, that the stream it's calibrated against carries no
+per-message cost field that would make the constant unnecessary (see that
+constant's own header comment).

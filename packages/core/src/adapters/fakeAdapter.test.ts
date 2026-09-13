@@ -69,6 +69,24 @@ test('malformed_result script emits a result_raw payload that fails validation',
   assert.equal((event as { raw: { status?: string } }).raw.status, undefined);
 });
 
+test('review script emits a result with status review and the given summary (batch 5 item 5)', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'review', summary: 'please look at this' });
+  const [event] = await collectEvents(adapter, 't1', 1);
+  assert.equal(event.type, 'result_raw');
+  assert.equal((event as { raw: { status: string; summary: string } }).raw.status, 'review');
+  assert.equal((event as { raw: { status: string; summary: string } }).raw.summary, 'please look at this');
+});
+
+test('final script emits a non-retryable failure (batch 5 item 5)', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'final', message: 'not coming back from this' });
+  const [event] = await collectEvents(adapter, 't1', 1);
+  assert.equal(event.type, 'failure');
+  assert.equal((event as { retryable: boolean }).retryable, false);
+  assert.equal((event as { message: string }).message, 'not coming back from this');
+});
+
 test('hang script never emits any event', async () => {
   const adapter = new FakeAdapter();
   adapter.setScript('t1', { kind: 'hang' });
