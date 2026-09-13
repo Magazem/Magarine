@@ -264,23 +264,41 @@ function describeProgress(line: Record<string, unknown>): string | null {
 // Batch 4 item 3: the daemon needs its own running cost estimate, not just
 // the tool's terminal `total_cost_usd` (which only arrives once, at the very
 // end -- too late for the scheduler to stop an overspending run mid-flight).
-// Assistant messages in the stream carry token `usage` but never a per-message
-// cost; a real $-per-category rate table is not evidence this project has
-// (SOFT/UNKNOWN -- batch-3-closeout.md §8 flags even the per-ticket floor
-// price as unexplained). Rather than invent per-category rates for an
-// unlisted model, this uses ONE blended $-per-raw-token rate, calibrated
-// directly against the one real recorded run this repository has both the
-// full stream AND the tool's own authoritative total for:
+//
+// HARD, batch 5 item 4 (re-checked directly against the recorded stream
+// named below, every line's own `type`/keys enumerated, not assumed): the
+// stream carries NO per-message cost field of any kind. `total_cost_usd`
+// appears exactly once, on the terminal `type: "result"` line; every
+// `type: "assistant"` line carries token `usage` (input/output/cache
+// counts) but nothing priced. So there is no way to make this constant
+// unnecessary short of the tool adding one -- a per-category rate table is
+// also not evidence this project has (SOFT/UNKNOWN -- batch-3-closeout.md
+// §8 flags even the per-ticket floor price as unexplained). This uses ONE
+// blended $-per-raw-token rate instead, calibrated directly against the one
+// real recorded run this repository has both the full stream AND the
+// tool's own authoritative total for:
 // spikes/claude-cli/runs/2026-09-12T14-15-13-624Z-stream. That run's two
 // distinct assistant turns (four stream lines, but message.id repeats --
 // see the dedup below) sum to 61244 raw tokens (input + output +
 // cache_creation + cache_read) against a reported total_cost_usd of
 // 0.3673715. See claudeCli.test.ts's calibration test, which reproduces that
-// exact number from this constant and that fixture's usage. This is a SOFT
-// estimate used only to trigger the scheduler's own budget stop
-// (scheduler.ts); the tool's own `total_cost_usd` on the terminal result
-// line remains what gets persisted to `runs.usage_json` and displayed on the
-// board (store.ts).
+// exact number from this constant and that fixture's usage.
+//
+// SOFT, still one data point: docs/strategy/batch-5-spec.md section 1
+// ruling 3 calls for a second calibration fixture (from this batch's own
+// paid budget-stop run) asserting both fixtures reproduce the tool's own
+// total within two percent. That fixture does not exist in this repository
+// as of this batch -- per docs/strategy/batch-5-spec.md section 2, saving
+// it is the Orchestrator's own close-out step, done after this code lands
+// and the paid run happens, not something available to calibrate against
+// here. This constant, and its single-fixture test, are unchanged from
+// batch 4 pending that fixture. This is a SOFT estimate used only to
+// trigger the scheduler's own budget stop (scheduler.ts); the tool's own
+// `total_cost_usd` on the terminal result line remains what gets persisted
+// to `runs.usage_json` and displayed on the board (store.ts) for every
+// outcome except a scheduler-initiated budget stop, where no such line
+// ever arrives -- see scheduler.ts's 'progress' case, which records this
+// same tally as the run's usage at the moment it stops the worker.
 const BLENDED_USD_PER_RAW_TOKEN = 0.3673715 / 61244;
 
 function rawTokenCount(usage: Record<string, unknown>): number {

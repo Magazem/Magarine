@@ -138,6 +138,32 @@ test("the running cost tally on progress events is deduped by assistant message 
   }
 });
 
+test('batch 5 item 4: the calibration fixture\'s stream carries no per-message cost field, only the terminal result\'s total_cost_usd', () => {
+  // Locks in the finding recorded in claudeCli.ts's BLENDED_USD_PER_RAW_TOKEN
+  // header: a per-message cost field would make that constant unnecessary,
+  // and it does not exist in this stream. Read directly, not asserted from
+  // memory -- every line's own keys are enumerated so a future fixture (or
+  // tool version) that DOES add one fails this test rather than going
+  // unnoticed.
+  const lines = readFileSync(fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'), 'utf8')
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+
+  assert.ok(lines.some((l) => l.type === 'assistant'), 'sanity: the fixture must actually contain assistant turns');
+  for (const line of lines) {
+    if (line.type === 'assistant') {
+      assert.equal('total_cost_usd' in line, false, 'an assistant line unexpectedly carries a cost field');
+      const usage = (line.message as Record<string, unknown> | undefined)?.usage as Record<string, unknown> | undefined;
+      if (usage) assert.equal('cost_usd' in usage || 'total_cost_usd' in usage, false, 'usage unexpectedly carries a cost field');
+    }
+  }
+
+  const resultLines = lines.filter((l) => l.type === 'result');
+  assert.equal(resultLines.length, 1, 'total_cost_usd must appear on exactly the one terminal result line');
+  assert.equal(typeof resultLines[0].total_cost_usd, 'number');
+});
+
 test('artefact verification: a schema-valid result claiming an artefact that was never written is classified retryable', async () => {
   const { events, workspaceRoot } = await runOnce({
     stdoutFile: fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'),
