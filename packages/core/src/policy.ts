@@ -201,6 +201,18 @@ const POLICY: Record<string, EventPolicy> = {
   // here is actionable by a user.
   late_worker_event: { visibility: 'internal', requiresUser: false },
   scheduler_error: { visibility: 'internal', requiresUser: false },
+
+  // --- Batch 6: per-model pricing ---
+  // docs/strategy/batch-6-spec.md section 1 ruling 1: an unrecognized model
+  // prices at the most-expensive-known rate rather than crashing or
+  // guessing low, because over-estimating stops work early and visibly
+  // while under-estimating lets real spend past the ceiling silently. That
+  // pricing choice needs to reach the user, same reasoning as
+  // `adapter_unavailable` -- fired by scheduler.ts (entityType 'run') from
+  // the adapter's progress events, one row per run. Not a TransitionEvent
+  // member (it never changes tickets.status), so not exercised by the
+  // completeness test below.
+  unknown_model_rate: { visibility: 'inbox', requiresUser: true },
 };
 
 export function classify(eventType: string): EventPolicy {

@@ -635,6 +635,49 @@ test('a progress event whose cumulative costUsd crosses the ceiling stops the wo
   });
 });
 
+// --- Batch 6 item 3: an unrecognized model prices loud, not silent ---
+
+test('a progress event flagging unknownModel raises exactly one inbox unknown_model_rate event per run, even across repeated flags', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 5 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'runs an unrecognized model' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'turn 1', costUsd: 0.01, unknownModel: 'claude-mystery-9' });
+  adapter.emit(s.handle.id, { type: 'progress', message: 'turn 2', costUsd: 0.02, unknownModel: 'claude-mystery-9' });
+  adapter.emit(s.handle.id, { type: 'result_raw', raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] } });
+  await s.done;
+
+  const events = listEventsForEntity(db, 'run', s.runId);
+  const unknownModelEvents = events.filter((e) => e.eventType === 'unknown_model_rate');
+  assert.equal(unknownModelEvents.length, 1, 'exactly one row per run, despite two flagged progress events');
+  assert.equal(unknownModelEvents[0].visibility, 'inbox');
+  assert.equal(unknownModelEvents[0].requiresUser, true);
+  assert.deepEqual(unknownModelEvents[0].payload, { model: 'claude-mystery-9' });
+});
+
+test('a progress event with no unknownModel flag never raises unknown_model_rate', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 5 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'runs a recognized model' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'turn 1', costUsd: 0.01 });
+  adapter.emit(s.handle.id, { type: 'result_raw', raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] } });
+  await s.done;
+
+  const events = listEventsForEntity(db, 'run', s.runId);
+  assert.equal(events.filter((e) => e.eventType === 'unknown_model_rate').length, 0);
+});
+
 test('a project spend cap that admits one run refuses the second at spawn time, pauses the project, and emits project_spend_cap_reached exactly once', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 0.6, maxSpendUsd: 1.0 });

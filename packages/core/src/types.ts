@@ -180,6 +180,8 @@ export type WorkerEvent =
       message: string;
       /** Cumulative spend for the run so far, if the adapter can report it (batch 4 item 3). Absent means the adapter has no running estimate. */
       costUsd?: number;
+      /** Batch 6 item 3: set to the model string (or a placeholder if the stream never named one) the moment the adapter has to price a message at pricing.ts's unknown-model fallback rate, so the scheduler can raise `unknown_model_rate` instead of pricing silently. Absent means every message tallied so far used a recognized rate. */
+      unknownModel?: string;
     }
   | { type: 'question'; message: string }
   | { type: 'result_raw'; raw: unknown; usage?: unknown }

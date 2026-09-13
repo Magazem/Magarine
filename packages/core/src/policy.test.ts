@@ -106,3 +106,7 @@ test('non-TransitionEvent rows for batch 4\'s project-level events', () => {
   assert.deepEqual(classify('project_resume'), { visibility: 'activity', requiresUser: false });
   assert.deepEqual(classify('project_spend_cap_reached'), { visibility: 'inbox', requiresUser: true });
 });
+
+test('non-TransitionEvent row for batch 6\'s unknown-model pricing fallback: visible, not silent', () => {
+  assert.deepEqual(classify('unknown_model_rate'), { visibility: 'inbox', requiresUser: true });
+});

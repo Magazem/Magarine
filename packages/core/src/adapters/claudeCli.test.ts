@@ -162,6 +162,68 @@ for (const fixture of [
   });
 }
 
+test('batch 6 item 3: an assistant line naming a model outside pricing.ts\'s rate table flags unknownModel on the progress event, and still tallies (at the fallback rate) rather than dropping the message', async () => {
+  // Synthetic, not a recorded fixture -- no real run has ever used an
+  // unrecognized model id, by construction (real fixtures only carry
+  // models this repo already has rates for). Shape copied from the real
+  // fixtures' assistant/result lines, trimmed to the fields the adapter
+  // actually reads.
+  const synthDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-unknown-model-'));
+  const stdoutFile = join(synthDir, 'stdout.txt');
+  const lines = [
+    { type: 'system', subtype: 'init' },
+    {
+      type: 'assistant',
+      message: {
+        id: 'msg_unknown_1',
+        model: 'claude-nonexistent-model',
+        content: [{ type: 'text', text: 'hi' }],
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
+        },
+      },
+    },
+    { type: 'result', total_cost_usd: 0.001, usage: { input_tokens: 10, output_tokens: 5 } },
+  ];
+  writeFileSync(stdoutFile, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+  try {
+    const { events, workspaceRoot } = await runOnce({
+      stdoutFile,
+      exitCode: 0,
+      createFiles: {
+        '.orchestrator/result.json': JSON.stringify({
+          status: 'ready_for_review',
+          summary: 'ok',
+          artifacts: [],
+          checks: [],
+          blockers: [],
+          questions: [],
+        }),
+      },
+    });
+    try {
+      const flagged = events.find(
+        (e): e is { type: 'progress'; message: string; costUsd?: number; unknownModel?: string } =>
+          e.type === 'progress' && typeof (e as { unknownModel?: string }).unknownModel === 'string'
+      );
+      assert.ok(flagged, 'expected a progress event carrying unknownModel for the unrecognized model id');
+      assert.equal(flagged!.unknownModel, 'claude-nonexistent-model');
+      assert.ok(
+        typeof flagged!.costUsd === 'number' && flagged!.costUsd > 0,
+        'expected the message to still be tallied (at the fallback rate), not dropped, once flagged'
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(synthDir, { recursive: true, force: true });
+  }
+});
+
 test('batch 5 item 4: the calibration fixture\'s stream carries no per-message cost field, only the terminal result\'s total_cost_usd', () => {
   // Locks in the finding recorded in claudeCli.ts's messageModel/priceUsage
   // header: a per-message cost field would make per-category rate lookup

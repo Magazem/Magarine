@@ -432,6 +432,28 @@ async function applyWorkerEventInner(
 ): Promise<boolean> {
   switch (event.type) {
     case 'progress': {
+      // Batch 6 item 3: pricing.ts prices an unrecognized model at the
+      // most-expensive-known rate rather than crashing or guessing low
+      // (docs/strategy/batch-6-spec.md section 1 ruling 1 -- over-estimating
+      // stops work early and visibly, which is the point). That pricing
+      // choice is silent on its own, so the adapter flags it on the
+      // progress event and this raises the visible record of it. One row
+      // per run: the idempotency key has no counter, so a run with many
+      // messages on an unrecognized model still inserts exactly once.
+      if (event.unknownModel) {
+        const policy = classify('unknown_model_rate');
+        insertEvent(db, {
+          projectId: ticket.projectId,
+          eventType: 'unknown_model_rate',
+          entityType: 'run',
+          entityId: run.id,
+          payload: { model: event.unknownModel },
+          visibility: policy.visibility,
+          requiresUser: policy.requiresUser,
+          idempotencyKey: `unknown_model_rate:${run.id}`,
+        });
+      }
+
       // Batch 4 item 3 (docs/strategy/batch-4-spec.md section 1 ruling 1,
       // layer 2): the daemon keeps its own running account of spend rather
       // than trusting only the tool's own between-turn ceiling check. The

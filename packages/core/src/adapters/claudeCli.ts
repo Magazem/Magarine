@@ -5,7 +5,7 @@ import { spawnManaged, type ManagedProcess } from '../process.ts';
 import { WORKER_RESULT_JSON_SCHEMA, validateWorkerResult } from '../resultContract.ts';
 import { buildWorkerPrompt } from '../envelope.ts';
 import { prepareWorkspace } from '../workspace.ts';
-import { priceUsage, type Usage } from '../pricing.ts';
+import { isKnownModel, priceUsage, type Usage } from '../pricing.ts';
 import type {
   AgentAdapter,
   AgentAdapterCapabilities,
@@ -417,20 +417,29 @@ export class ClaudeCliAdapter implements AgentAdapter {
         if (obj.type === 'result') {
           resultLine = obj as ResultLine;
         } else {
+          // Batch 6 item 3: set whenever THIS line's model isn't in
+          // pricing.ts's rate table (including a line that omits `model`
+          // altogether), so a progress event can carry it forward for the
+          // scheduler to raise `unknown_model_rate` on -- pricing already
+          // falls back to the most-expensive-known rate either way
+          // (pricing.ts's UNKNOWN_MODEL_RATES), so this is purely the
+          // "tell someone" half of that ruling, not a pricing change.
+          let unknownModel: string | undefined;
           if (obj.type === 'assistant') {
             const msg = obj.message as Record<string, unknown> | undefined;
             const usage = msg?.usage as Usage | undefined;
             const messageId = typeof msg?.id === 'string' ? msg.id : undefined;
+            const model = messageModel(msg);
             if (usage && messageId && !state.talliedMessageIds.has(messageId)) {
               state.talliedMessageIds.add(messageId);
-              // messageModel(msg) is undefined for a stream that omits it; priceUsage
-              // falls back to the most-expensive-known rate either way (pricing.ts),
-              // which is the safe direction here.
-              state.costTallyUsd += priceUsage(messageModel(msg) ?? '', usage);
+              state.costTallyUsd += priceUsage(model ?? '', usage);
+            }
+            if (!isKnownModel(model ?? '')) {
+              unknownModel = model ?? '(assistant line carried no model field)';
             }
           }
           const message = describeProgress(obj);
-          if (message) this.publish(state, { type: 'progress', message, costUsd: state.costTallyUsd });
+          if (message) this.publish(state, { type: 'progress', message, costUsd: state.costTallyUsd, unknownModel });
         }
       }
     });
