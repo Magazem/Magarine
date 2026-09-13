@@ -167,9 +167,8 @@ order they normally fire in practice:
 2. **The tool's own `--max-budget-usd` flag**, checked between turns against
    its own authoritative per-category accounting (layer 2 of "Budget and
    spend caps" above). This is what stops a run whose worker never self-limits
-   — one that doesn't track its own spend, or one running with the budget
-   line deliberately hidden (see "Exercising the guards" below) — and it is
-   accurate where the daemon's own tally is not.
+   — one that doesn't track its own spend — and it is accurate where the
+   daemon's own tally is not.
 3. **The daemon's own live tally** (layer 3 above), a running estimate that
    is a known *lower bound* on true spend, not a second enforcement layer.
    It rarely fires in practice — not because it is broken, but because
@@ -181,21 +180,8 @@ order they normally fire in practice:
    real budget-stopped run rarely needs it. See the known limitation
    above (one turn's worth of overshoot is possible either way).
 
-**Exercising the guards.** A worker informed of its ceiling self-limits so
-reliably (mechanism 1) that four real paid runs never reached mechanisms 2 or
-3 at all (`docs/strategy/batch-6-closeout.md` section 3) — the Strategist
-ruled this stays true in production, so the fix is a way to *test* the other
-two guards, not to weaken mechanism 1. Lowering `store.ts`'s `MIN_BUDGET_USD`
-floor to force an early stop was also refused: the floor is a real safety
-property, and weakening it for test convenience is how safety properties
-die. Instead, `MAGARINE_TEST_OMIT_ENVELOPE_BUDGET=1` (read in exactly one
-place, `envelope.ts`'s `buildWorkerPrompt`) drops the budget line from the
-prompt entirely, so a blinded worker behaves exactly like one whose envelope
-never carried `maxBudgetUsd` — free to spend past the ceiling with no way to
-self-limit, so mechanisms 2 and 3 are what actually stop it. **Test-only**:
-`buildWorkerPrompt` refuses (throws) if this variable is set for a workspace
-that is not under the OS temp directory, so it can never be used, by
-accident or otherwise, to blind a real, non-throwaway run.
+The tool informs the worker of its own budget and spend on its own, so the
+worker's self-stop (mechanism 1) is the expected first stop in production.
 
 ### Surfaces: `board`, `inbox`, `activity`, `decide`, `retry`, `approve`, `reject`, `resume`
 
@@ -548,7 +534,7 @@ model falls back to the loud unknown-model rate rather than mispricing
 silently, but this is a real gap, not a closed one, until a real run
 confirms them.
 
-Batch 7 (Role L, budget semantics and the blinding switch): the worker's own
+Batch 7 (Role L, budget semantics): the worker's own
 budget self-stop (`budget_insufficient`/`worker_budget_stop`, see "How a run
 stops on cost" above) is built and tested end to end through
 `scheduler.ts`/`stateMachine.ts`/the `FakeAdapter`, with a replay test

@@ -1,12 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { buildWorkerPrompt } from './envelope.ts';
 import type { TicketEnvelope } from './types.ts';
-
-const OMIT_BUDGET_ENV_VAR = 'MAGARINE_TEST_OMIT_ENVELOPE_BUDGET';
 
 function ticket(overrides: Partial<TicketEnvelope>): TicketEnvelope {
   return {
@@ -112,51 +107,4 @@ test('a second, updated envelope for the same ticket id does not carry over stal
 test('prompt names budget_insufficient as the status to report when the worker cannot finish within its budget', () => {
   const prompt = buildWorkerPrompt(ticket({}), '/tmp/ws');
   assert.match(prompt, /"budget_insufficient"/);
-});
-
-// Batch 7 (Role L): the blinding switch. See envelope.ts's OMIT_BUDGET_ENV_VAR
-// header comment for why this exists (exercising the budget guards, which a
-// worker informed of its ceiling self-limits ahead of) and why it is refused
-// outside the system temp directory (the floor stays real; only a throwaway
-// test workspace may ever be blinded).
-test('the blinding switch (batch 7)', async (t) => {
-  const savedEnvVar = process.env[OMIT_BUDGET_ENV_VAR];
-  t.after(() => {
-    if (savedEnvVar === undefined) delete process.env[OMIT_BUDGET_ENV_VAR];
-    else process.env[OMIT_BUDGET_ENV_VAR] = savedEnvVar;
-  });
-
-  await t.test('unset: budget line is present as usual', () => {
-    delete process.env[OMIT_BUDGET_ENV_VAR];
-    const prompt = buildWorkerPrompt(ticket({ maxBudgetUsd: 1.23 }), '/tmp/ws');
-    assert.match(prompt, /Budget ceiling for this ticket: \$1\.23/);
-  });
-
-  await t.test('set, workspace under the system temp directory: budget line is omitted', () => {
-    process.env[OMIT_BUDGET_ENV_VAR] = '1';
-    const tempWorkspace = mkdtempSync(join(tmpdir(), 'magarine-envelope-test-'));
-    try {
-      const prompt = buildWorkerPrompt(ticket({ maxBudgetUsd: 1.23 }), tempWorkspace);
-      assert.ok(!prompt.includes('Budget ceiling for this ticket'), 'the budget line must be dropped');
-      // Nothing else about the prompt changes: the rest is unaffected.
-      assert.match(prompt, /widget\.ts exists/);
-    } finally {
-      rmSync(tempWorkspace, { recursive: true, force: true });
-    }
-  });
-
-  await t.test('set, workspace NOT under the system temp directory: refused', () => {
-    process.env[OMIT_BUDGET_ENV_VAR] = '1';
-    assert.throws(() => {
-      buildWorkerPrompt(ticket({ maxBudgetUsd: 1.23 }), join(process.cwd(), 'not-a-temp-dir'));
-    }, /refused/);
-  });
-
-  await t.test('set, workspace is a sibling directory that only shares the temp dir as a string prefix: refused', () => {
-    process.env[OMIT_BUDGET_ENV_VAR] = '1';
-    const resolvedTmp = tmpdir().replace(/[/\\]+$/, '');
-    assert.throws(() => {
-      buildWorkerPrompt(ticket({ maxBudgetUsd: 1.23 }), `${resolvedTmp}-sibling-not-actually-inside`);
-    }, /refused/);
-  });
 });

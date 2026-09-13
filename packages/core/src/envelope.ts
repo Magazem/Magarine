@@ -1,37 +1,4 @@
-import { tmpdir } from 'node:os';
-import { resolve as resolvePath, sep } from 'node:path';
 import type { TicketEnvelope } from './types.ts';
-
-// Batch 7 (Role L, docs/strategy/batch-7-spec.md section 1 ruling 2): the
-// worker always reads its own budget out of the envelope and self-limits
-// (batch-6-closeout.md section 3), which is the best stop the system has in
-// production but also means the Orchestrator's paid runs could never reach
-// either guard to exercise it. The Strategist refused lowering
-// `store.ts`'s MIN_BUDGET_USD floor for test convenience -- that floor is a
-// real safety property. Instead this one test-only env var, read in exactly
-// this one place, drops the budget line from the prompt so a blinded worker
-// behaves exactly like one whose envelope never carried `maxBudgetUsd` at
-// all. Refused (throws) unless the workspace it is being used against is
-// under the OS temp directory, so it can never silently blind a real,
-// non-throwaway run.
-const OMIT_BUDGET_ENV_VAR = 'MAGARINE_TEST_OMIT_ENVELOPE_BUDGET';
-
-function isUnderSystemTempDir(workspacePath: string): boolean {
-  const resolvedWorkspace = resolvePath(workspacePath);
-  let resolvedTmp = resolvePath(tmpdir());
-  let candidate = resolvedWorkspace;
-  // Windows paths are case-insensitive; tmpdir()/mkdtempSync agree on actual
-  // case in practice, but a test (or a caller) constructing its own path
-  // string is not guaranteed to match it byte-for-byte.
-  if (process.platform === 'win32') {
-    resolvedTmp = resolvedTmp.toLowerCase();
-    candidate = candidate.toLowerCase();
-  }
-  // Exact match or a real path *segment* under it -- `sep`-prefixed, so a
-  // sibling directory that merely shares the temp dir as a string prefix
-  // (e.g. tmp dir `C:\Temp`, candidate `C:\Temp2\...`) is correctly refused.
-  return candidate === resolvedTmp || candidate.startsWith(resolvedTmp + sep);
-}
 
 // Turns a TicketEnvelope into the text prompt handed to a worker CLI.
 // Contains exactly what technical-architecture-weekend-mvp.md's "The worker
@@ -80,18 +47,10 @@ export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: strin
 
   sections.push(`Workspace: ${workspacePath}`);
 
-  // Batch 7 test-only blinding switch -- see OMIT_BUDGET_ENV_VAR's header
-  // comment above. Read in this one place only.
-  const omitBudgetForTest = process.env[OMIT_BUDGET_ENV_VAR] === '1';
-  if (omitBudgetForTest && !isUnderSystemTempDir(workspacePath)) {
-    throw new Error(
-      `${OMIT_BUDGET_ENV_VAR} is test-only and is refused for a workspace outside the system temp directory: ${workspacePath}`
-    );
-  }
   // Tolerant of an envelope built before maxBudgetUsd existed (e.g. a
   // fixture in adapters/, which this role does not own and cannot edit):
   // an absent budget just doesn't get a line, rather than throwing.
-  if (typeof envelope.maxBudgetUsd === 'number' && !omitBudgetForTest) {
+  if (typeof envelope.maxBudgetUsd === 'number') {
     sections.push(`Budget ceiling for this ticket: $${envelope.maxBudgetUsd.toFixed(2)}`);
   }
 
