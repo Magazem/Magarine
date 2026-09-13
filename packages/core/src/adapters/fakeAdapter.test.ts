@@ -81,19 +81,26 @@ test('hang script never emits any event', async () => {
   assert.equal(called, false);
 });
 
-test('stop() cancels a pending scripted event before it fires', async () => {
+test('stop() cancels a pending scripted event before it fires, but still publishes its own post-stop terminal failure', async () => {
+  // Batch 5 fidelity rule: the real adapter's killed process still resolves
+  // its own wait() promise and publishes a terminal outcome after stop() is
+  // called, regardless of what the run was doing. The fake must mirror
+  // that, not go silent -- see fakeAdapter.ts's stop() for why (this is the
+  // exact behaviour batch-4-closeout.md section 2's crash needed and 194
+  // green tests could not see, because this fake used to have none of it).
   const adapter = new FakeAdapter();
   adapter.setScript('t1', { kind: 'succeed', delayMs: 50 });
   const handle = await adapter.startWorker({ ticket: envelope('t1'), systemPolicy: 'p' });
-  let called = false;
-  await adapter.observe(handle, () => {
-    called = true;
+  const events: WorkerEvent[] = [];
+  await adapter.observe(handle, (event) => {
+    events.push(event);
   });
 
   await adapter.stop(handle);
   await new Promise((resolve) => setTimeout(resolve, 100));
 
-  assert.equal(called, false, 'stop() before the delay elapses must suppress the scheduled event');
+  assert.equal(events.length, 1, 'the scheduled succeed event must be suppressed; only the post-stop event fires');
+  assert.equal(events[0].type, 'failure', "mirrors the real adapter: a killed process's own wait() still resolves and publishes");
 });
 
 test('destroy() is safe to call on an already-stopped handle', async () => {

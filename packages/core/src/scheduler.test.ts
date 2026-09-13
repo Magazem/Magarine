@@ -660,6 +660,71 @@ test('a project with no max_spend_usd set never refuses a spawn on spend-cap gro
   assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
 });
 
+// --- Batch 5: the supervisor must survive its own decisions ---
+//
+// Reproduction of batch-4-closeout.md section 2's crash. The real
+// sequence: the scheduler's own budget stop calls adapter.stop() and
+// records `budget_exceeded` (moving the ticket to FAILED); the killed real
+// adapter's process then resolves its own wait() promise and publishes its
+// own terminal failure, which the scheduler applies to an already-FAILED
+// ticket -- `InvalidTransitionError`, uncaught, kills the daemon. 194 green
+// tests never saw this because FakeAdapter's stop() used to just go silent.
+// Now that it mirrors the real adapter (see fakeAdapter.ts's stop()), this
+// test drives the same crash through the real scheduler.
+//
+// This test is written to describe the FIXED behaviour (no crash, the
+// first outcome wins, the late event is recorded, not lost) so that
+// batch 5's guards (settle-once via a live run-status check, finishRun's
+// WHERE status='running' guard, and the observe callback's catch-all) make
+// it pass unmodified once they land -- see docs/strategy/batch-5-spec.md
+// section 1 ruling 1. Before those guards exist, it fails on the very
+// first assertion, and the captured error message is
+// batch-4-closeout.md section 2's exact `InvalidTransitionError` text.
+test('a post-stop terminal event from a budget stop must not crash the daemon (batch 5 reproduction)', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'over budget' });
+  // project.maxBudgetUsd defaults to 2.0 (createProject's default); this
+  // reports a cumulative cost far past it, so scheduler.ts's own budget
+  // guard (applyWorkerEventInner's 'progress' case) fires and calls
+  // adapter.stop() itself, before the worker would ever finish on its own.
+  adapter.setScript(ticket.id, { kind: 'progress', costUsd: 999 });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+
+  const rejections: unknown[] = [];
+  const onRejection = (err: unknown) => rejections.push(err);
+  process.on('unhandledRejection', onRejection);
+  try {
+    const { started } = await tick(deps);
+    await started[0].done;
+    // fakeAdapter.ts's post-stop event is deferred to a later macrotask;
+    // give it a turn to fire (and, pre-fix, its rejection to surface)
+    // before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+
+  assert.equal(
+    rejections.length,
+    0,
+    `the daemon must survive a post-stop terminal event, but got an unhandled rejection: ${
+      rejections[0] instanceof Error ? rejections[0].stack : String(rejections[0])
+    }`
+  );
+
+  const after = getTicket(db, ticket.id)!;
+  assert.equal(after.status, 'FAILED', 'the scheduler-recorded budget_exceeded outcome must still win');
+
+  const run = getRun(db, started[0].runId)!;
+  assert.equal(run.status, 'failed');
+  assert.equal(run.failureClass, 'budget_exceeded', 'the first outcome is never overwritten by the late event');
+
+  const runEvents = listEventsForEntity(db, 'run', started[0].runId);
+  const lateEvents = runEvents.filter((e) => e.eventType === 'late_worker_event');
+  assert.equal(lateEvents.length, 1, 'the post-stop event must be recorded, not silently dropped');
+});
+
 test('a progress event at or under the ceiling never stops the worker', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 1 });
