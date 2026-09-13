@@ -5,3 +5,6 @@
 *.db-wal
 
 node_modules/
+
+# Stray test-output logs
+*.log
