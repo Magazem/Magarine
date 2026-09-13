@@ -18,7 +18,17 @@ export type TransitionEvent =
   | 'worker_retryable_failure'
   | 'worker_question'
   | 'worker_needs_user_decision'
-  | 'cancel';
+  | 'cancel'
+  // Batch 3, per docs/strategy/batch-3-spec.md Role F item 8:
+  | 'manual_retry' // FAILED -> READY, raises max_attempts by one
+  // Persisted event_type is literally 'user_decision', per the cross-role
+  // contract in batch-3-spec.md section 2 ("A user decision is an event
+  // with event_type = 'user_decision'"), so this transition's name IS the
+  // wire event type rather than a separate verb — recordTicketTransition
+  // inserts eventType: input.event verbatim, and Role G reads project
+  // decisions back out by that exact string.
+  | 'user_decision' // BLOCKED -> READY, records { ticketId, question, answer }
+  | 'run_cancelled'; // IN_PROGRESS -> READY, does not consume an attempt
 
 export class InvalidTransitionError extends Error {
   constructor(from: TicketStatus, event: TransitionEvent) {
@@ -28,9 +38,12 @@ export class InvalidTransitionError extends Error {
 }
 
 // Static targets for events whose destination does not depend on ticket
-// data. `worker_retryable_failure` is handled separately below because its
-// destination (READY vs FAILED) depends on attempt_count vs max_attempts.
-const TRANSITIONS: Record<TicketStatus, Partial<Record<Exclude<TransitionEvent, 'worker_retryable_failure'>, TicketStatus>>> = {
+// data. `worker_retryable_failure` and `manual_retry` are handled separately
+// below: the former's destination (READY vs FAILED) depends on attempt_count
+// vs max_attempts, the latter also mutates max_attempts itself.
+type StaticTransitionEvent = Exclude<TransitionEvent, 'worker_retryable_failure' | 'manual_retry'>;
+
+const TRANSITIONS: Record<TicketStatus, Partial<Record<StaticTransitionEvent, TicketStatus>>> = {
   OPEN: {
     dependencies_resolved: 'READY',
     cancel: 'CANCELLED',
@@ -49,12 +62,18 @@ const TRANSITIONS: Record<TicketStatus, Partial<Record<Exclude<TransitionEvent, 
     worker_needs_review: 'REVIEW',
     worker_question: 'IN_PROGRESS',
     worker_needs_user_decision: 'BLOCKED',
+    // A daemon-initiated cancellation (adapter_unavailable, a run timeout, or
+    // SIGINT/SIGTERM during runUntilIdle): the ticket is not at fault, so
+    // unlike worker_retryable_failure this never consumes an attempt.
+    run_cancelled: 'READY',
     cancel: 'CANCELLED',
   },
   REVIEW: {
     cancel: 'CANCELLED',
   },
-  BLOCKED: {},
+  BLOCKED: {
+    user_decision: 'READY',
+  },
   DONE: {},
   FAILED: {},
   CANCELLED: {},
@@ -63,6 +82,7 @@ const TRANSITIONS: Record<TicketStatus, Partial<Record<Exclude<TransitionEvent, 
 interface NextState {
   toStatus: TicketStatus;
   attemptCount: number;
+  maxAttempts: number;
 }
 
 function computeNextState(ticket: Ticket, event: TransitionEvent): NextState {
@@ -72,14 +92,21 @@ function computeNextState(ticket: Ticket, event: TransitionEvent): NextState {
     }
     const attemptCount = ticket.attemptCount + 1;
     const toStatus: TicketStatus = attemptCount >= ticket.maxAttempts ? 'FAILED' : 'READY';
-    return { toStatus, attemptCount };
+    return { toStatus, attemptCount, maxAttempts: ticket.maxAttempts };
   }
 
-  const toStatus = TRANSITIONS[ticket.status][event];
+  if (event === 'manual_retry') {
+    if (ticket.status !== 'FAILED') {
+      throw new InvalidTransitionError(ticket.status, event);
+    }
+    return { toStatus: 'READY', attemptCount: ticket.attemptCount, maxAttempts: ticket.maxAttempts + 1 };
+  }
+
+  const toStatus = TRANSITIONS[ticket.status][event as StaticTransitionEvent];
   if (!toStatus) {
     throw new InvalidTransitionError(ticket.status, event);
   }
-  return { toStatus, attemptCount: ticket.attemptCount };
+  return { toStatus, attemptCount: ticket.attemptCount, maxAttempts: ticket.maxAttempts };
 }
 
 export interface RecordTransitionInput {
@@ -123,12 +150,13 @@ export function recordTicketTransition(db: Db, input: RecordTransitionInput): Re
       return { applied: false, ticket, sequence: null };
     }
 
-    const { toStatus, attemptCount } = computeNextState(ticket, input.event);
+    const { toStatus, attemptCount, maxAttempts } = computeNextState(ticket, input.event);
 
     const now = new Date().toISOString();
-    db.prepare('UPDATE tickets SET status = ?, attempt_count = ?, updated_at = ? WHERE id = ?').run(
+    db.prepare('UPDATE tickets SET status = ?, attempt_count = ?, max_attempts = ?, updated_at = ? WHERE id = ?').run(
       toStatus,
       attemptCount,
+      maxAttempts,
       now,
       ticket.id
     );
@@ -146,6 +174,7 @@ export function computeStatusFromEvents(
 ): { status: TicketStatus; attemptCount: number } {
   let status: TicketStatus = 'OPEN';
   let attemptCount = 0;
+  let currentMaxAttempts = maxAttempts;
 
   for (const event of events) {
     const fakeTicket: Ticket = {
@@ -158,9 +187,10 @@ export function computeStatusFromEvents(
       priority: 0,
       assignee: null,
       attemptCount,
-      maxAttempts,
+      maxAttempts: currentMaxAttempts,
       workspaceType: 'NONE',
       workspaceRef: null,
+      maxBudgetUsdOverride: null,
       resultJson: null,
       createdAt: '',
       updatedAt: '',
@@ -168,6 +198,7 @@ export function computeStatusFromEvents(
     const next = computeNextState(fakeTicket, event.eventType as TransitionEvent);
     status = next.toStatus;
     attemptCount = next.attemptCount;
+    currentMaxAttempts = next.maxAttempts;
   }
 
   return { status, attemptCount };

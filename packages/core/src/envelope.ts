@@ -33,7 +33,10 @@ export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: strin
   sections.push(
     envelope.completedDependencies.length > 0
       ? `Dependencies already completed:\n${envelope.completedDependencies
-          .map((d) => `- ${d.title}${d.summary ? `: ${d.summary}` : ''}`)
+          .map((d) => {
+            const artifactLines = (d.artifacts ?? []).map((a) => `    - (${a.kind}) ${a.path}`).join('\n');
+            return `- ${d.title}${d.summary ? `: ${d.summary}` : ''}${artifactLines ? `\n${artifactLines}` : ''}`;
+          })
           .join('\n')}`
       : 'Dependencies already completed: (none)'
   );
@@ -43,6 +46,12 @@ export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: strin
   );
 
   sections.push(`Workspace: ${workspacePath}`);
+  // Tolerant of an envelope built before maxBudgetUsd existed (e.g. a
+  // fixture in adapters/, which this role does not own and cannot edit):
+  // an absent budget just doesn't get a line, rather than throwing.
+  if (typeof envelope.maxBudgetUsd === 'number') {
+    sections.push(`Budget ceiling for this ticket: $${envelope.maxBudgetUsd.toFixed(2)}`);
+  }
 
   sections.push(
     `Expected output: ${envelope.expectedOutputFormat}\n` +

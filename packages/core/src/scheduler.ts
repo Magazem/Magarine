@@ -1,28 +1,59 @@
+import { createHash } from 'node:crypto';
+import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
 import { validateWorkerResult } from './resultContract.ts';
 import { recordTicketTransition } from './stateMachine.ts';
+import { prepareWorkspace } from './workspace.ts';
 import {
+  createArtifact,
   createRun,
   finishRun,
+  findConflictingArtifact,
   getDependencies,
+  getProject,
+  getRun,
   getTicket,
+  insertEvent,
+  isProjectAdapterPaused,
+  listArtifactsForTicket,
+  listEventsForEntity,
+  listEventsForProject,
   listTicketsByStatus,
+  pauseProjectAdapter,
+  resolveMaxBudgetUsd,
   setRunUsage,
   setRunWorkerSessionRef,
 } from './store.ts';
-import type { AgentAdapter, Run, Ticket, TicketEnvelope, WorkerEvent } from './types.ts';
+import type {
+  AgentAdapter,
+  Project,
+  Run,
+  Ticket,
+  TicketEnvelope,
+  TicketEnvelopeArtifact,
+  WorkerEvent,
+  WorkerHandle,
+  WorkerResultArtifact,
+  WorkspaceType,
+} from './types.ts';
 
 export interface SchedulerDeps {
   db: Db;
   adapter: AgentAdapter;
   maxParallelWorkers: number;
   projectId: string;
+  /** Wall-clock cap per run, enforced by the scheduler itself (adapter-agnostic, unlike an adapter's own process timeout). Undefined means no cap. */
+  runTimeoutMs?: number;
+  /** Where NONE-mode runs' verified artifacts are captured before their temp workspace is deleted. Defaults to `<cwd>/.magarine/artifacts`. */
+  artifactsDir?: string;
 }
 
 export interface StartedRun {
   ticketId: string;
   runId: string;
+  handle: WorkerHandle;
   done: Promise<void>;
 }
 
@@ -30,66 +61,350 @@ export interface TickResult {
   started: StartedRun[];
 }
 
-function buildEnvelope(db: Db, ticket: Ticket): TicketEnvelope {
+// Where a dependency's file artifact appears inside a NONE-mode dependent's
+// own workspace. Used both when building the envelope text (so the prompt
+// describes a real path) and when actually copying the file there before
+// the worker starts — the two must agree, since the worker mode has no
+// visibility into anything but its own workspace.
+function dependencyInputRelativePath(dependsOnTicketId: string, sourcePathOrUri: string): string {
+  return join('.orchestrator', 'inputs', dependsOnTicketId, basename(sourcePathOrUri));
+}
+
+function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope {
   const completedDependencies = getDependencies(db, ticket.id)
     .filter((d) => d.dependencyType === 'blocks')
     .map((d) => {
       const dep = getTicket(db, d.dependsOnTicketId);
-      return { ticketId: d.dependsOnTicketId, title: dep?.title ?? '', summary: dep?.resultJson ?? undefined };
+
+      const doneEvents = listEventsForEntity(db, 'ticket', d.dependsOnTicketId).filter(
+        (e) => e.eventType === 'worker_done'
+      );
+      const lastDone = doneEvents[doneEvents.length - 1];
+      const summary =
+        lastDone && typeof lastDone.payload === 'object' && lastDone.payload !== null
+          ? ((lastDone.payload as Record<string, unknown>).summary as string | undefined)
+          : undefined;
+
+      const artifacts: TicketEnvelopeArtifact[] = listArtifactsForTicket(db, d.dependsOnTicketId).map((a) => ({
+        kind: a.kind,
+        path:
+          a.kind === 'file' && ticket.workspaceType === 'NONE'
+            ? dependencyInputRelativePath(d.dependsOnTicketId, a.pathOrUri)
+            : a.pathOrUri,
+      }));
+
+      return { ticketId: d.dependsOnTicketId, title: dep?.title ?? '', summary, artifacts };
+    });
+
+  const relevantDecisions = listEventsForProject(db, ticket.projectId)
+    .filter((e) => e.eventType === 'user_decision')
+    .map((e) => {
+      const p = e.payload as { question?: string; answer?: string };
+      return `Q: ${p.question ?? ''} — A: ${p.answer ?? ''}`;
     });
 
   return {
     ticketId: ticket.id,
-    projectBrief: '',
-    relevantDecisions: [],
+    projectBrief: project.brief ?? '',
+    relevantDecisions,
     title: ticket.title,
     description: ticket.description ?? '',
     acceptanceCriteria: ticket.acceptanceCriteria,
     completedDependencies,
     allowedTools: [],
     expectedOutputFormat: 'Write .orchestrator/result.json matching the WorkerResult schema.',
+    maxBudgetUsd: resolveMaxBudgetUsd(project, ticket),
   };
 }
 
-// Applies one terminal or non-terminal WorkerEvent for a single run. This is
-// the only place that turns an adapter event into a ticket transition; it
-// always goes through `recordTicketTransition`, never writes status itself.
-function applyWorkerEvent(
+// Before starting a NONE-mode ticket, copy each completed dependency's
+// declared file artifacts into this run's own workspace, since a NONE
+// workspace is a private temp directory the dependency never wrote into.
+// DIRECTORY-mode tickets need no copy: every ticket in the project already
+// shares the same directory (see workspace.ts's corrected ruling).
+function copyNoneDependencyInputs(db: Db, ticket: Ticket, workspacePath: string): void {
+  const deps = getDependencies(db, ticket.id).filter((d) => d.dependencyType === 'blocks');
+  for (const dep of deps) {
+    const fileArtifacts = listArtifactsForTicket(db, dep.dependsOnTicketId).filter((a) => a.kind === 'file');
+    for (const artifact of fileArtifacts) {
+      const dest = join(workspacePath, dependencyInputRelativePath(dep.dependsOnTicketId, artifact.pathOrUri));
+      try {
+        mkdirSync(dirname(dest), { recursive: true });
+        copyFileSync(artifact.pathOrUri, dest);
+      } catch {
+        // The daemon's own captured copy no longer exists on disk; nothing
+        // to hand the dependent. Not fatal — the worker will simply not
+        // find the file, same as if the dependency never produced one.
+      }
+    }
+  }
+}
+
+function resolveArtifactPath(pathOrUri: string, workspacePath: string): string {
+  return isAbsolute(pathOrUri) ? pathOrUri : join(workspacePath, pathOrUri);
+}
+
+function checksumFile(path: string): string | null {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+// DIRECTORY mode: artifacts already live in the project's one shared
+// directory, so nothing is copied — just verified (best-effort checksum)
+// and recorded. Two concurrent runs that declare the same path raise an
+// `artifact_collision` activity event (accepted, not prevented, per
+// batch-3-spec.md section 1's ruling).
+function captureDirectoryArtifacts(
+  db: Db,
+  ticket: Ticket,
+  run: Run,
+  workspacePath: string,
+  declared: WorkerResultArtifact[]
+): void {
+  for (const artifact of declared) {
+    if (artifact.kind !== 'file') {
+      createArtifact(db, {
+        ticketId: ticket.id,
+        runId: run.id,
+        projectId: ticket.projectId,
+        kind: artifact.kind,
+        pathOrUri: artifact.path,
+      });
+      continue;
+    }
+
+    const resolved = resolveArtifactPath(artifact.path, workspacePath);
+    const conflict = findConflictingArtifact(db, ticket.projectId, resolved, ticket.id);
+    if (conflict) {
+      insertEvent(db, {
+        projectId: ticket.projectId,
+        eventType: 'artifact_collision',
+        entityType: 'ticket',
+        entityId: ticket.id,
+        payload: { path: resolved, conflictingTicketId: conflict.ticketId, conflictingRunId: conflict.runId },
+        visibility: 'activity',
+        idempotencyKey: `artifact_collision:${run.id}:${resolved}`,
+      });
+    }
+
+    createArtifact(db, {
+      ticketId: ticket.id,
+      runId: run.id,
+      projectId: ticket.projectId,
+      kind: 'file',
+      pathOrUri: resolved,
+      checksum: checksumFile(resolved),
+    });
+  }
+}
+
+// NONE mode: the workspace is a temp directory about to be deleted, so a
+// file artifact is copied into `<artifactsDir>/<runId>/...` — a location
+// the daemon owns for as long as the row in `artifacts` exists — before
+// that happens.
+function captureNoneModeArtifacts(
+  db: Db,
+  ticket: Ticket,
+  run: Run,
+  workspacePath: string,
+  artifactsDir: string,
+  declared: WorkerResultArtifact[]
+): void {
+  for (const artifact of declared) {
+    if (artifact.kind !== 'file') {
+      createArtifact(db, {
+        ticketId: ticket.id,
+        runId: run.id,
+        projectId: ticket.projectId,
+        kind: artifact.kind,
+        pathOrUri: artifact.path,
+      });
+      continue;
+    }
+
+    const source = resolveArtifactPath(artifact.path, workspacePath);
+    const dest = join(artifactsDir, run.id, artifact.path);
+    try {
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(source, dest);
+    } catch {
+      continue; // Declared but never actually written; nothing durable to keep.
+    }
+
+    createArtifact(db, {
+      ticketId: ticket.id,
+      runId: run.id,
+      projectId: ticket.projectId,
+      kind: 'file',
+      pathOrUri: dest,
+      checksum: checksumFile(dest),
+    });
+  }
+}
+
+function captureArtifacts(
+  db: Db,
+  ticket: Ticket,
+  run: Run,
+  workspaceType: WorkspaceType,
+  workspacePath: string,
+  artifactsDir: string,
+  declared: WorkerResultArtifact[]
+): void {
+  if (declared.length === 0) return;
+  if (workspaceType === 'DIRECTORY') {
+    captureDirectoryArtifacts(db, ticket, run, workspacePath, declared);
+  } else if (workspaceType === 'NONE') {
+    captureNoneModeArtifacts(db, ticket, run, workspacePath, artifactsDir, declared);
+  }
+  // GIT_WORKTREE: not built this batch (workspace.ts refuses the mode
+  // outright), so there is nothing to capture for it here.
+}
+
+// Cancels one run/ticket pair without consuming an attempt: finishes the
+// run as 'cancelled' (only if it is still recorded as running, so a run
+// that already reached a real terminal state is never overwritten) and
+// applies `run_cancelled` (only if the ticket is still IN_PROGRESS, so a
+// ticket that already moved on is left alone). Shared by the
+// adapter_unavailable failure path, the per-run timeout, and
+// SIGINT/SIGTERM handling in runUntilIdle — the only three ways a run gets
+// cancelled by the daemon rather than by the worker's own result. A NONE
+// workspace is disposable temp storage, so it is reclaimed here too
+// (looked up from the run's own persisted workspace_ref, not from a
+// closure — cancelRun's callers, timeout and SIGINT, never went through
+// tick()'s per-run closures in the first place).
+function cancelTicketRun(db: Db, ticketId: string, runId: string, failureClass: string): void {
+  const run = getRun(db, runId);
+  if (run && run.status === 'running') {
+    finishRun(db, runId, { status: 'cancelled', failureClass });
+  }
+  const ticket = getTicket(db, ticketId);
+  if (ticket && ticket.status === 'IN_PROGRESS') {
+    recordTicketTransition(db, {
+      ticketId,
+      event: 'run_cancelled',
+      idempotencyKey: `run_cancelled:${runId}`,
+      visibility: 'activity',
+    });
+  }
+  if (ticket?.workspaceType === 'NONE' && run?.workspaceRef) {
+    rmSync(run.workspaceRef, { recursive: true, force: true });
+  }
+}
+
+async function cancelRun(
+  deps: SchedulerDeps,
+  sr: { ticketId: string; runId: string; handle: WorkerHandle },
+  failureClass: string
+): Promise<void> {
+  await deps.adapter.stop(sr.handle);
+  cancelTicketRun(deps.db, sr.ticketId, sr.runId, failureClass);
+}
+
+interface ApplyEventContext {
+  questionSeq: { n: number };
+  progressSeq: { n: number };
+  workspacePath: string;
+  workspaceType: WorkspaceType;
+  artifactsDir: string;
+  workspaceCleanup: () => Promise<void>;
+}
+
+// Applies one WorkerEvent for a single run and, if it was terminal, cleans
+// up a NONE-mode workspace exactly once regardless of which branch below
+// produced the terminal result — a disposable temp workspace must not
+// survive a failure or a malformed result any more than it survives a
+// success. (An earlier version of this function called workspaceCleanup()
+// only at the end of the 'done' path, which silently leaked a temp
+// directory per malformed result or per ordinary retryable/non-retryable
+// failure; caught by scanning the OS temp dir for magarine-run-* leftovers
+// after a full scheduler.test.ts run, not by any single test's own
+// assertions.) Returns true when the event was terminal (result_raw or
+// failure), which is the caller's cue to resolve the run's `done` promise —
+// progress/question return false and the run continues.
+async function applyWorkerEvent(db: Db, ticket: Ticket, run: Run, event: WorkerEvent, ctx: ApplyEventContext): Promise<boolean> {
+  const terminal = await applyWorkerEventInner(db, ticket, run, event, ctx);
+  if (terminal && ctx.workspaceType === 'NONE') {
+    await ctx.workspaceCleanup();
+  }
+  return terminal;
+}
+
+// This is the only place that turns an adapter event into a ticket
+// transition; it always goes through `recordTicketTransition`, never writes
+// status itself. Non-transition bookkeeping events (worker_progress,
+// artifact_collision, adapter_unavailable's inbox notice) go through
+// `insertEvent` directly, since they never change `tickets.status`.
+async function applyWorkerEventInner(
   db: Db,
   ticket: Ticket,
   run: Run,
   event: WorkerEvent,
-  questionSeq: { n: number },
-  resolveDone: () => void
-): void {
+  ctx: ApplyEventContext
+): Promise<boolean> {
   switch (event.type) {
-    case 'progress':
-      return; // Not persisted in this batch; real adapters may log via events later.
+    case 'progress': {
+      if (ctx.progressSeq.n >= 200) return false;
+      ctx.progressSeq.n += 1;
+      insertEvent(db, {
+        projectId: ticket.projectId,
+        eventType: 'worker_progress',
+        entityType: 'run',
+        entityId: run.id,
+        payload: { message: event.message },
+        visibility: 'internal',
+        idempotencyKey: `worker_progress:${run.id}:${ctx.progressSeq.n}`,
+      });
+      return false;
+    }
 
     case 'question': {
-      questionSeq.n += 1;
+      ctx.questionSeq.n += 1;
       recordTicketTransition(db, {
         ticketId: ticket.id,
         event: 'worker_question',
-        idempotencyKey: `worker_question:${run.id}:${questionSeq.n}`,
+        idempotencyKey: `worker_question:${run.id}:${ctx.questionSeq.n}`,
         payload: { message: event.message },
         visibility: 'activity',
       });
-      return; // Run continues; not terminal.
+      return false;
     }
 
     case 'failure': {
-      finishRun(db, run.id, { status: 'failed', failureClass: 'adapter_failure' });
       if (event.usage !== undefined) setRunUsage(db, run.id, event.usage);
+
+      if (event.retryable === false && event.failureClass === 'adapter_unavailable') {
+        cancelTicketRun(db, ticket.id, run.id, 'adapter_unavailable');
+        insertEvent(db, {
+          projectId: ticket.projectId,
+          eventType: 'adapter_unavailable',
+          entityType: 'ticket',
+          entityId: ticket.id,
+          payload: { message: event.message },
+          visibility: 'inbox',
+          requiresUser: true,
+          idempotencyKey: `adapter_unavailable:${run.id}`,
+        });
+        pauseProjectAdapter(db, ticket.projectId);
+        return true;
+      }
+
+      // Retryable, or non-retryable but not adapter_unavailable: both are a
+      // failed attempt (attempt_count increments; READY if attempts remain,
+      // else FAILED), same as before batch 3 — the delta is that the real
+      // failureClass is now recorded on the run instead of a hardcoded one.
+      finishRun(db, run.id, { status: 'failed', failureClass: event.failureClass ?? 'adapter_failure' });
       recordTicketTransition(db, {
         ticketId: ticket.id,
         event: 'worker_retryable_failure',
         idempotencyKey: `worker_retryable_failure:${run.id}`,
-        payload: { message: event.message },
+        payload: { message: event.message, retryable: event.retryable, failureClass: event.failureClass },
         visibility: 'activity',
       });
-      resolveDone();
-      return;
+      return true;
     }
 
     case 'result_raw': {
@@ -104,11 +419,17 @@ function applyWorkerEvent(
           payload: { errors: validated.errors },
           visibility: 'activity',
         });
-        resolveDone();
-        return;
+        return true;
       }
 
       const result = validated.data;
+      // Captured once here, ahead of the per-status branching below, since
+      // a worker can declare artifacts regardless of which terminal status
+      // it reports — capturing only on 'done' would lose them for a run
+      // that ends in review or needs a decision, right before its NONE
+      // workspace is deleted below.
+      captureArtifacts(db, ticket, run, ctx.workspaceType, ctx.workspacePath, ctx.artifactsDir, result.artifacts);
+
       switch (result.status) {
         case 'done':
           finishRun(db, run.id, { status: 'succeeded' });
@@ -156,8 +477,8 @@ function applyWorkerEvent(
           });
           break;
       }
-      resolveDone();
-      return;
+
+      return true;
     }
   }
 }
@@ -171,12 +492,22 @@ function applyWorkerEvent(
 export async function tick(deps: SchedulerDeps): Promise<TickResult> {
   resolveReadiness(deps.db, deps.projectId);
 
+  if (isProjectAdapterPaused(deps.db, deps.projectId)) {
+    return { started: [] };
+  }
+
   const inProgressCount = listTicketsByStatus(deps.db, deps.projectId, 'IN_PROGRESS').length;
   const available = Math.max(0, deps.maxParallelWorkers - inProgressCount);
   if (available === 0) {
     return { started: [] };
   }
 
+  const project = getProject(deps.db, deps.projectId);
+  if (!project) {
+    return { started: [] };
+  }
+
+  const artifactsDir = deps.artifactsDir ?? join(process.cwd(), '.magarine', 'artifacts');
   const readyTickets = listTicketsByStatus(deps.db, deps.projectId, 'READY').slice(0, available);
   const started: StartedRun[] = [];
 
@@ -197,8 +528,38 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       continue;
     }
 
+    let ws;
+    try {
+      ws = prepareWorkspace(ticket.workspaceType, ticket.id, { workspaceRoot: project.workspaceRoot ?? undefined });
+    } catch (err) {
+      // Leave the ticket READY (nothing changed its status) and surface
+      // the misconfiguration (e.g. DIRECTORY with no project.workspace_root)
+      // rather than crashing the whole tick and losing every other ready
+      // ticket in it.
+      insertEvent(deps.db, {
+        projectId: ticket.projectId,
+        eventType: 'workspace_preparation_failed',
+        entityType: 'ticket',
+        entityId: ticket.id,
+        payload: { message: err instanceof Error ? err.message : String(err) },
+        visibility: 'inbox',
+        requiresUser: true,
+        idempotencyKey: `workspace_preparation_failed:${ticket.id}:${ticket.updatedAt}`,
+      });
+      continue;
+    }
+
+    if (ticket.workspaceType === 'NONE') {
+      copyNoneDependencyInputs(deps.db, ticket, ws.path);
+    }
+
     const attempt = ticket.attemptCount + 1;
-    const run = createRun(deps.db, { ticketId: ticket.id, attempt, adapter: deps.adapter.id });
+    const run = createRun(deps.db, {
+      ticketId: ticket.id,
+      attempt,
+      adapter: deps.adapter.id,
+      workspaceRef: ws.path,
+    });
 
     recordTicketTransition(deps.db, {
       ticketId: ticket.id,
@@ -206,23 +567,47 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       idempotencyKey: `run_started:${run.id}`,
     });
 
-    const envelope = buildEnvelope(deps.db, ticket);
-    const handle = await deps.adapter.startWorker({ ticket: envelope, systemPolicy: 'default' });
+    const envelope = buildEnvelope(deps.db, ticket, project);
+    const handle = await deps.adapter.startWorker({
+      ticket: envelope,
+      workspace: { type: ticket.workspaceType, path: ws.path },
+      systemPolicy: 'default',
+    });
     setRunWorkerSessionRef(deps.db, run.id, handle.id);
 
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => {
       resolveDone = resolve;
     });
-    const questionSeq = { n: 0 };
+    const ctx: ApplyEventContext = {
+      questionSeq: { n: 0 },
+      progressSeq: { n: 0 },
+      workspacePath: ws.path,
+      workspaceType: ticket.workspaceType,
+      artifactsDir,
+      workspaceCleanup: ws.cleanup,
+    };
+
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    const finishNormally = () => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      resolveDone();
+    };
+    if (deps.runTimeoutMs !== undefined) {
+      timeoutTimer = setTimeout(() => {
+        void cancelRun(deps, { ticketId: ticket.id, runId: run.id, handle }, 'run_timeout').then(resolveDone);
+      }, deps.runTimeoutMs);
+    }
 
     // Fire-and-forget: the callback applies transitions as events arrive.
     void deps.adapter.observe(handle, (event) => {
       const current = getTicket(deps.db, ticket.id)!;
-      applyWorkerEvent(deps.db, current, run, event, questionSeq, resolveDone);
+      void applyWorkerEvent(deps.db, current, run, event, ctx).then((terminal) => {
+        if (terminal) finishNormally();
+      });
     });
 
-    started.push({ ticketId: ticket.id, runId: run.id, done });
+    started.push({ ticketId: ticket.id, runId: run.id, handle, done });
   }
 
   return { started };
@@ -231,14 +616,57 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
 // Repeatedly ticks until a tick starts nothing new. Each iteration waits for
 // everything it started before ticking again, so dependents that just
 // became READY are picked up on the next pass. Will not return while a
-// worker is hung (by design: that mirrors a real daemon, which keeps
-// waiting until the hung run is cancelled).
+// worker is hung and no signal has arrived (by design: that mirrors a real
+// daemon, which keeps waiting until the hung run is cancelled).
+//
+// SIGINT/SIGTERM: stops every live worker via the adapter, marks their runs
+// cancelled and their tickets back to READY (never consuming an attempt —
+// this is the daemon's own decision, not the ticket's fault), then returns.
+// A run's `done` promise may never resolve on its own here (a genuinely
+// hung fake/real worker emits nothing once stopped), so cancellation must
+// not wait on it — it forces the DB state directly instead.
 export async function runUntilIdle(deps: SchedulerDeps): Promise<void> {
-  for (;;) {
-    const { started } = await tick(deps);
-    if (started.length === 0) {
-      return;
+  const live = new Map<string, StartedRun>();
+  let signalled = false;
+  let interruptResolve!: () => void;
+  const interrupted = new Promise<void>((resolve) => {
+    interruptResolve = resolve;
+  });
+
+  const onSignal = () => {
+    if (signalled) return;
+    signalled = true;
+    interruptResolve();
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+
+  try {
+    for (;;) {
+      if (signalled) break;
+
+      const { started } = await tick(deps);
+      if (started.length === 0) break;
+
+      for (const s of started) {
+        live.set(s.runId, s);
+        void s.done.then(() => live.delete(s.runId));
+      }
+
+      const outcome = await Promise.race([
+        Promise.all(started.map((s) => s.done)).then((): 'done' => 'done'),
+        interrupted.then((): 'interrupted' => 'interrupted'),
+      ]);
+      if (outcome === 'interrupted') break;
     }
-    await Promise.all(started.map((s) => s.done));
+  } finally {
+    process.off('SIGINT', onSignal);
+    process.off('SIGTERM', onSignal);
+  }
+
+  if (signalled) {
+    for (const sr of live.values()) {
+      await cancelRun(deps, sr, 'interrupted');
+    }
   }
 }

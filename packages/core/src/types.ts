@@ -18,6 +18,13 @@ export interface Project {
   description: string | null;
   defaultAdapter: string | null;
   maxParallelWorkers: number;
+  maxBudgetUsd: number;
+  /** Project brief handed to every worker via TicketEnvelope.projectBrief. */
+  brief: string | null;
+  /** Required when any ticket in the project uses the DIRECTORY workspace type: one shared directory for the whole project. */
+  workspaceRoot: string | null;
+  /** Set when an `adapter_unavailable` failure pauses this project's adapter; cleared by `resumeProjectAdapter`. Null means not paused. */
+  adapterPausedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -35,6 +42,8 @@ export interface Ticket {
   maxAttempts: number;
   workspaceType: WorkspaceType;
   workspaceRef: string | null;
+  /** Overrides the project's max_budget_usd for this ticket alone; null falls back to the project default. */
+  maxBudgetUsdOverride: number | null;
   resultJson: string | null;
   createdAt: string;
   updatedAt: string;
@@ -83,6 +92,7 @@ export interface EventRow {
 export interface Artifact {
   id: string;
   ticketId: string;
+  runId: string;
   kind: string;
   pathOrUri: string;
   description: string | null;
@@ -99,6 +109,12 @@ export interface Workspace {
   path?: string;
 }
 
+export interface TicketEnvelopeArtifact {
+  kind: string;
+  /** A resolved filesystem path for kind 'file'; free-form text/URI for any other kind. */
+  path: string;
+}
+
 export interface TicketEnvelope {
   ticketId: string;
   projectBrief: string;
@@ -106,9 +122,17 @@ export interface TicketEnvelope {
   title: string;
   description: string;
   acceptanceCriteria: string[];
-  completedDependencies: Array<{ ticketId: string; title: string; summary?: string }>;
+  completedDependencies: Array<{
+    ticketId: string;
+    title: string;
+    /** The worker's own summary text (WorkerResult.summary), never a raw JSON blob. */
+    summary?: string;
+    artifacts: TicketEnvelopeArtifact[];
+  }>;
   allowedTools: string[];
   expectedOutputFormat: string;
+  /** Ticket override if set, else the project default (see store.ts resolveMaxBudgetUsd). */
+  maxBudgetUsd: number;
 }
 
 export interface WorkerHandle {
@@ -151,7 +175,14 @@ export type WorkerEvent =
   | { type: 'progress'; message: string }
   | { type: 'question'; message: string }
   | { type: 'result_raw'; raw: unknown; usage?: unknown }
-  | { type: 'failure'; message: string; retryable: boolean; usage?: unknown };
+  | {
+      type: 'failure';
+      message: string;
+      retryable: boolean;
+      /** Adapter-defined classification, e.g. 'adapter_unavailable' | 'budget_exceeded' | 'worker_reported_failure'. Absent means the adapter did not classify beyond retryable/non-retryable. */
+      failureClass?: string;
+      usage?: unknown;
+    };
 
 export interface AgentAdapterCapabilities {
   supportsFiles: boolean;

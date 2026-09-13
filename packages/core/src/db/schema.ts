@@ -109,4 +109,21 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE tickets ADD COLUMN max_budget_usd_override REAL;
     `,
   },
+  {
+    // Batch 3: the project's brief and its DIRECTORY workspace root (one
+    // shared directory per project, per batch-3-spec.md section 1), a
+    // per-project adapter pause (set on an adapter_unavailable failure,
+    // cleared by `magarine resume`), and `artifacts` gains the run that
+    // declared each artifact plus a denormalized project_id so a shared
+    // directory's same-path collisions can be queried without a join.
+    id: '0004_batch3_scheduler_seam',
+    sql: `
+      ALTER TABLE projects ADD COLUMN brief TEXT;
+      ALTER TABLE projects ADD COLUMN workspace_root TEXT;
+      ALTER TABLE projects ADD COLUMN adapter_paused_at TEXT;
+      ALTER TABLE artifacts ADD COLUMN run_id TEXT;
+      ALTER TABLE artifacts ADD COLUMN project_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_artifacts_project_path ON artifacts(project_id, path_or_uri);
+    `,
+  },
 ];

@@ -24,6 +24,10 @@ interface ProjectRow {
   description: string | null;
   default_adapter: string | null;
   max_parallel_workers: number;
+  max_budget_usd: number;
+  brief: string | null;
+  workspace_root: string | null;
+  adapter_paused_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -35,6 +39,10 @@ function rowToProject(row: ProjectRow): Project {
     description: row.description,
     defaultAdapter: row.default_adapter,
     maxParallelWorkers: row.max_parallel_workers,
+    maxBudgetUsd: row.max_budget_usd,
+    brief: row.brief,
+    workspaceRoot: row.workspace_root,
+    adapterPausedAt: row.adapter_paused_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -42,23 +50,55 @@ function rowToProject(row: ProjectRow): Project {
 
 export function createProject(
   db: Db,
-  input: { name: string; description?: string | null; defaultAdapter?: string | null; maxParallelWorkers?: number }
+  input: {
+    name: string;
+    description?: string | null;
+    defaultAdapter?: string | null;
+    maxParallelWorkers?: number;
+    maxBudgetUsd?: number;
+    brief?: string | null;
+    workspaceRoot?: string | null;
+  }
 ): Project {
   const now = new Date().toISOString();
   const id = newId('proj');
   db.prepare(
-    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, brief, workspace_root, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.name,
     input.description ?? null,
     input.defaultAdapter ?? null,
     input.maxParallelWorkers ?? 1,
+    input.maxBudgetUsd ?? 2.0,
+    input.brief ?? null,
+    input.workspaceRoot ?? null,
     now,
     now
   );
   return getProject(db, id)!;
+}
+
+export function pauseProjectAdapter(db: Db, projectId: string): void {
+  db.prepare('UPDATE projects SET adapter_paused_at = ? WHERE id = ?').run(new Date().toISOString(), projectId);
+}
+
+export function resumeProjectAdapter(db: Db, projectId: string): void {
+  db.prepare('UPDATE projects SET adapter_paused_at = NULL WHERE id = ?').run(projectId);
+}
+
+export function isProjectAdapterPaused(db: Db, projectId: string): boolean {
+  const row = db.prepare('SELECT adapter_paused_at FROM projects WHERE id = ?').get(projectId) as
+    | { adapter_paused_at: string | null }
+    | undefined;
+  return row?.adapter_paused_at != null;
+}
+
+// Ticket override if set, else the project default. Shared by envelope
+// building (scheduler.ts) and anything else that needs the resolved figure.
+export function resolveMaxBudgetUsd(project: Project, ticket: Ticket): number {
+  return ticket.maxBudgetUsdOverride ?? project.maxBudgetUsd;
 }
 
 export function getProject(db: Db, id: string): Project | undefined {
@@ -79,6 +119,7 @@ interface TicketRow {
   max_attempts: number;
   workspace_type: string;
   workspace_ref: string | null;
+  max_budget_usd_override: number | null;
   result_json: string | null;
   created_at: string;
   updated_at: string;
@@ -98,6 +139,7 @@ function rowToTicket(row: TicketRow): Ticket {
     maxAttempts: row.max_attempts,
     workspaceType: row.workspace_type as WorkspaceType,
     workspaceRef: row.workspace_ref,
+    maxBudgetUsdOverride: row.max_budget_usd_override,
     resultJson: row.result_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -115,6 +157,7 @@ export function createTicket(
     maxAttempts?: number;
     workspaceType?: WorkspaceType;
     workspaceRef?: string | null;
+    maxBudgetUsdOverride?: number | null;
   }
 ): Ticket {
   const now = new Date().toISOString();
@@ -123,8 +166,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -135,6 +178,7 @@ export function createTicket(
     input.maxAttempts ?? 3,
     input.workspaceType ?? 'NONE',
     input.workspaceRef ?? null,
+    input.maxBudgetUsdOverride ?? null,
     now,
     now
   );
@@ -346,23 +390,90 @@ export function listEventsForProject(db: Db, projectId: string): EventRow[] {
   return rows.map(rowToEvent);
 }
 
+interface ArtifactRow {
+  id: string;
+  ticket_id: string;
+  run_id: string | null;
+  kind: string;
+  path_or_uri: string;
+  description: string | null;
+  checksum: string | null;
+  created_at: string;
+}
+
+function rowToArtifact(row: ArtifactRow): Artifact {
+  return {
+    id: row.id,
+    ticketId: row.ticket_id,
+    runId: row.run_id ?? '',
+    kind: row.kind,
+    pathOrUri: row.path_or_uri,
+    description: row.description,
+    checksum: row.checksum,
+    createdAt: row.created_at,
+  };
+}
+
 export function createArtifact(
   db: Db,
-  input: { ticketId: string; kind: string; pathOrUri: string; description?: string | null; checksum?: string | null }
+  input: {
+    ticketId: string;
+    runId: string;
+    projectId: string;
+    kind: string;
+    pathOrUri: string;
+    description?: string | null;
+    checksum?: string | null;
+  }
 ): Artifact {
   const now = new Date().toISOString();
   const id = newId('art');
   db.prepare(
-    `INSERT INTO artifacts (id, ticket_id, kind, path_or_uri, description, checksum, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, input.ticketId, input.kind, input.pathOrUri, input.description ?? null, input.checksum ?? null, now);
+    `INSERT INTO artifacts (id, ticket_id, run_id, project_id, kind, path_or_uri, description, checksum, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.ticketId,
+    input.runId,
+    input.projectId,
+    input.kind,
+    input.pathOrUri,
+    input.description ?? null,
+    input.checksum ?? null,
+    now
+  );
   return {
     id,
     ticketId: input.ticketId,
+    runId: input.runId,
     kind: input.kind,
     pathOrUri: input.pathOrUri,
     description: input.description ?? null,
     checksum: input.checksum ?? null,
     createdAt: now,
   };
+}
+
+export function listArtifactsForTicket(db: Db, ticketId: string): Artifact[] {
+  const rows = db
+    .prepare('SELECT * FROM artifacts WHERE ticket_id = ? ORDER BY created_at ASC')
+    .all(ticketId) as ArtifactRow[];
+  return rows.map(rowToArtifact);
+}
+
+// The other artifact, if any, already declaring this exact path in this
+// project under a different ticket. Used to raise `artifact_collision` when
+// two runs write into the same shared DIRECTORY workspace.
+export function findConflictingArtifact(
+  db: Db,
+  projectId: string,
+  pathOrUri: string,
+  excludeTicketId: string
+): Artifact | undefined {
+  const row = db
+    .prepare(
+      'SELECT * FROM artifacts WHERE project_id = ? AND path_or_uri = ? AND ticket_id != ? ORDER BY created_at ASC LIMIT 1'
+    )
+    .get(projectId, pathOrUri, excludeTicketId) as ArtifactRow | undefined;
+  return row ? rowToArtifact(row) : undefined;
 }
