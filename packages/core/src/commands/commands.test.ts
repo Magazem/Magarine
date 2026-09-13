@@ -1098,3 +1098,45 @@ test('--run-timeout cancels a hung fake run: ticket returns to READY without con
     );
   });
 });
+
+// Batch 9: the Manager's CLI surfaces.
+test('plan creates a manager ticket that shows up tagged on the board, and project create/set --manager-model round-trips', async () => {
+  await withTempDb('magarine-plan-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--manager-model', 'claude-fable-5-1', '--json', '--db', dbFile])).stdout
+    );
+    assert.equal(project.managerModel, 'claude-fable-5-1');
+
+    const planRes = await run([
+      'plan',
+      '--project',
+      project.id,
+      '--mission',
+      'Write three reports and an index.',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(planRes.code, 0, planRes.stderr);
+    const planned = JSON.parse(planRes.stdout);
+    assert.equal(planned.kind, 'manager');
+    assert.equal(planned.description, 'Write three reports and an index.');
+    assert.equal(planned.workspaceType, 'NONE');
+
+    const boardText = (await run(['board', '--project', project.id, '--db', dbFile])).stdout;
+    assert.match(boardText, /\[MANAGER\]/);
+
+    const updated = JSON.parse(
+      (await run(['project', 'set', '--project', project.id, '--manager-model', 'claude-opus-5', '--json', '--db', dbFile])).stdout
+    );
+    assert.equal(updated.managerModel, 'claude-opus-5');
+  });
+});
+
+test('plan against a nonexistent project fails with a clean message, not a stack trace', async () => {
+  await withTempDb('magarine-plan-missing-project-', async (dbFile) => {
+    const res = await run(['plan', '--project', 'proj_ghost', '--mission', 'do it', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such project/);
+  });
+});

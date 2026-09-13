@@ -6,6 +6,7 @@ import { approve, ApproveError } from './commands/approve.ts';
 import { buildBoard } from './commands/board.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { buildInbox } from './commands/inbox.ts';
+import { planMission, PlanError } from './commands/plan.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { retry, RetryError } from './commands/retry.ts';
@@ -17,6 +18,7 @@ import {
   getProject,
   getTicket,
   setProjectDefaultModel,
+  setProjectManagerModel,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
 } from './store.ts';
@@ -26,7 +28,9 @@ import type { AgentAdapter, DependencyType, WorkspaceType } from './types.ts';
 // list, verbatim: "GET /health, GET /board, GET /inbox, GET /activity, POST
 // /tickets, POST /deps, POST /tickets/{id}/decide|retry|approve|reject|
 // cancel, POST /projects/{id}/resume|set, POST /tick to force a pass.
-// Nothing else." All JSON, all behind the token.
+// Nothing else." All JSON, all behind the token. Batch 9 adds exactly one
+// route to that list, per its own spec (section 2): `POST
+// /projects/{id}/plan`, the Manager's daemon-route trigger.
 //
 // Every mutation here goes through the exact same functions the CLI already
 // calls (store.ts, commands/*.ts, dependencies.ts) -- this file adds no
@@ -197,9 +201,10 @@ function handleAddDependency(db: Db, body: unknown): RouteResult {
 function handleSetProject(db: Db, projectId: string, body: unknown): RouteResult {
   const project = getProject(db, projectId);
   if (!project) throw new ApiError(404, `no such project: ${projectId}`);
-  const b = body as { maxSpend?: number | null; model?: string };
+  const b = body as { maxSpend?: number | null; model?: string; managerModel?: string | null };
   if (typeof b.maxSpend !== 'undefined') setProjectMaxSpendUsd(db, projectId, b.maxSpend);
   if (typeof b.model === 'string') setProjectDefaultModel(db, projectId, b.model);
+  if (typeof b.managerModel !== 'undefined') setProjectManagerModel(db, projectId, b.managerModel);
   return { status: 200, body: getProject(db, projectId) };
 }
 
@@ -213,8 +218,19 @@ async function handleCancel(db: Db, loop: DaemonLoop, ticketId: string): Promise
   return { status: 200, body: getTicket(db, ticketId) };
 }
 
+// Batch 9: `plan` creates the manager ticket only -- it never forces a tick
+// itself, same as `POST /tickets` for an ordinary ticket. A live daemon
+// picks it up on its own next periodic pass (batch-9-spec.md section 2:
+// "if a daemon is up, it runs on the next tick").
+function handlePlan(db: Db, projectId: string, body: unknown): RouteResult {
+  const b = body as { mission?: string };
+  if (!b.mission) throw new ApiError(400, '"mission" is required');
+  const ticket = planMission(db, { projectId, mission: b.mission });
+  return { status: 201, body: ticket };
+}
+
 const TICKET_ACTION_PATH = /^\/tickets\/([^/]+)\/(decide|retry|approve|reject|cancel)$/;
-const PROJECT_ACTION_PATH = /^\/projects\/([^/]+)\/(resume|set)$/;
+const PROJECT_ACTION_PATH = /^\/projects\/([^/]+)\/(resume|set|plan)$/;
 
 async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: unknown): Promise<RouteResult> {
   const method = req.method ?? 'GET';
@@ -287,6 +303,7 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     const [, projectId, action] = projectMatch;
     if (action === 'resume') return { status: 200, body: resume(deps.db, { projectId }) };
     if (action === 'set') return handleSetProject(deps.db, projectId, body);
+    if (action === 'plan') return handlePlan(deps.db, projectId, body);
   }
 
   throw new ApiError(404, 'not found');

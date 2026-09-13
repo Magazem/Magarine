@@ -17,6 +17,7 @@ import {
   getTicket,
   listTickets,
   setProjectDefaultModel,
+  setProjectManagerModel,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
 } from './store.ts';
@@ -26,6 +27,7 @@ import { buildActivity, formatActivity } from './commands/activity.ts';
 import { buildBoard, formatBoard } from './commands/board.ts';
 import { buildInbox, formatInbox } from './commands/inbox.ts';
 import { decide, DecideError } from './commands/decide.ts';
+import { planMission, PlanError } from './commands/plan.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
@@ -194,8 +196,14 @@ const FLAG_SPECS: Record<string, string[]> = {
   // `tickets.model` -- the project-default-with-per-ticket-override shape
   // `resolveModel` reads (store.ts), same as `--max-spend`/`--budget`
   // above it for the budget columns.
-  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root', 'max-spend', 'model'],
-  'project set': ['project', 'max-spend', 'model'],
+  // `--manager-model` (batch 9) sets `projects.manager_model` -- the model
+  // the Manager runs on for THIS project, defaulting to `--model`/
+  // `default_model` when unset (store.ts's resolveManagerModel). A project
+  // setting, not a per-ticket one: see types.ts's Project.managerModel for
+  // why a manager ticket never gets its own `--model` override the way an
+  // ordinary `ticket add` does.
+  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root', 'max-spend', 'model', 'manager-model'],
+  'project set': ['project', 'max-spend', 'model', 'manager-model'],
   'ticket add': [
     'project',
     'title',
@@ -243,6 +251,11 @@ const FLAG_SPECS: Record<string, string[]> = {
   board: ['project'],
   inbox: ['project'],
   activity: ['project', 'ticket', 'all'],
+  // Batch 9: `magarine plan --project <id> --mission "<text>"` creates the
+  // manager ticket. No `--title`: deriveManagerTitle (commands/plan.ts)
+  // makes one from the mission, the same way a work ticket's title is
+  // always given directly rather than derived.
+  plan: ['project', 'mission'],
   decide: ['ticket', 'answer'],
   retry: ['ticket'],
   approve: ['ticket'],
@@ -406,6 +419,7 @@ async function main(): Promise<void> {
       defaultModel: typeof flags.model === 'string' ? flags.model : undefined,
       brief: typeof flags.brief === 'string' ? flags.brief : null,
       workspaceRoot: typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : null,
+      managerModel: typeof flags['manager-model'] === 'string' ? flags['manager-model'] : null,
     });
     output(flags, project, `Created project ${project.id} (${project.name})`);
     return;
@@ -415,9 +429,10 @@ async function main(): Promise<void> {
     const projectId = String(flags.project ?? positionals[1] ?? '');
     const live = await liveDaemonFor(flags);
     if (live) {
-      const body: { maxSpend?: number; model?: string } = {};
+      const body: { maxSpend?: number; model?: string; managerModel?: string } = {};
       if (typeof flags['max-spend'] === 'string') body.maxSpend = Number(flags['max-spend']);
       if (typeof flags.model === 'string') body.model = flags.model;
+      if (typeof flags['manager-model'] === 'string') body.managerModel = flags['manager-model'];
       await routeMutation(flags, live, 'POST', `/projects/${projectId}/set`, body, () => `Updated project ${projectId}`);
       return;
     }
@@ -435,7 +450,37 @@ async function main(): Promise<void> {
     if (typeof flags.model === 'string') {
       setProjectDefaultModel(db, projectId, flags.model);
     }
+    if (typeof flags['manager-model'] === 'string') {
+      setProjectManagerModel(db, projectId, flags['manager-model']);
+    }
     output(flags, getProject(db, projectId), `Updated project ${projectId}`);
+    return;
+  }
+
+  if (command === 'plan') {
+    const projectId = String(flags.project ?? '');
+    const mission = String(flags.mission ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'POST', `/projects/${projectId}/plan`, { mission }, (b) => {
+        const t = b as { id: string; title: string };
+        return `Created manager ticket ${t.id} (${t.title})`;
+      });
+      return;
+    }
+
+    const db = openDb(dbPath(flags));
+    try {
+      const ticket = planMission(db, { projectId, mission });
+      output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})`);
+    } catch (err) {
+      if (err instanceof PlanError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
     return;
   }
 
@@ -811,7 +856,7 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    'Usage: magarine <project create|project set|ticket add|dep add|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
+    'Usage: magarine <project create|project set|ticket add|dep add|plan|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }

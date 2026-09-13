@@ -1,6 +1,6 @@
 import type { Db } from '../db/index.ts';
 import { getDependencies, getProject, getTicket, listTickets } from '../store.ts';
-import type { Ticket, TicketStatus } from '../types.ts';
+import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
 
 // `board`: every ticket in a project, its attempts, its cost, and what is
 // still blocking it. Read-only; touches no other role's files.
@@ -9,6 +9,8 @@ export interface BoardTicket {
   id: string;
   title: string;
   status: TicketStatus;
+  /** Batch 9: 'work' (the default; every ticket before this batch) or 'manager'. formatBoard tags 'manager' rows distinctly -- see its own comment for why that matters once planning is used in anger. */
+  kind: TicketKind;
   attemptCount: number;
   maxAttempts: number;
   costUsd: number;
@@ -116,6 +118,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
         id: t.id,
         title: t.title,
         status: t.status,
+        kind: t.kind,
         attemptCount: t.attemptCount,
         maxAttempts: t.maxAttempts,
         costUsd: c.costUsd,
@@ -148,10 +151,17 @@ export function formatBoard(result: BoardResult): string {
 
   const rows = result.tickets
     .map((t) => {
+      // Batch 9: a manager ticket sitting in the same list as work tickets,
+      // indistinguishable, would make the board harder to read the moment
+      // planning is actually used -- proposing tickets, not doing work
+      // itself, is the entire point of the design, and a reader needs to
+      // see that at a glance, not infer it from the title happening to
+      // start with "Plan:".
+      const title = t.kind === 'manager' ? `[MANAGER] ${t.title}` : t.title;
       const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
       const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate)}`;
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
-      const parts = [t.id, t.status, t.title, attempts, cost, blocked].filter((p) => p.length > 0);
+      const parts = [t.id, t.status, title, attempts, cost, blocked].filter((p) => p.length > 0);
       return parts.join('\t');
     })
     .join('\n');

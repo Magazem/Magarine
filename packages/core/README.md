@@ -221,7 +221,11 @@ worker's self-stop (mechanism 1) is the expected first stop in production.
   status, title, attempts (`n/max`), cost (sum of `total_cost_usd` across
   the ticket's runs), and, if any, which of its blocking dependencies are
   not yet `DONE`. Ticket spend sums that ticket's own runs; project spend
-  sums every ticket's spend in turn.
+  sums every ticket's spend in turn. **Batch 9**: a manager ticket's title
+  is prefixed `[MANAGER]` — it sits in the same list, same status column, no
+  separate section, but is never mistakable for a work ticket at a glance
+  (see "Planning a project" below). `--json` carries this as `kind: 'work'
+  | 'manager'` on every ticket instead.
 - **`inbox --project <id>`**: events that need the user's attention and are
   still unresolved. Ticket-scoped: a `worker_needs_user_decision` while its
   ticket is still `BLOCKED`, a `worker_needs_review` while its ticket is
@@ -500,7 +504,8 @@ dependency was added for this.
 | `POST` | `/tickets/{id}/reject` | `{reason}`. |
 | `POST` | `/tickets/{id}/cancel` | No body. `409` if this daemon holds no live run for that ticket. |
 | `POST` | `/projects/{id}/resume` | No body. |
-| `POST` | `/projects/{id}/set` | `{maxSpend?, model?}`. |
+| `POST` | `/projects/{id}/set` | `{maxSpend?, model?, managerModel?}`. |
+| `POST` | `/projects/{id}/plan` | `{mission}` — creates a manager ticket. See "Planning a project" below. |
 | `POST` | `/tick` | `{project}` — forces one scheduling pass for that project right now, outside the regular interval. |
 
 Nothing else — no websocket, no push, per spec. **There is no
@@ -595,6 +600,107 @@ logged and skipped rather than thrown, since recovery runs synchronously
 before the daemon starts listening and a workspace-removal failure must
 never be able to take down `serve` itself, or undo the run/ticket recovery
 that already succeeded.
+
+## Planning a project (Batch 9)
+
+The Manager is the last piece of `technical-architecture-weekend-mvp.md`
+that this project had not built: a mission goes in, tickets with
+dependencies come out, the daemon runs them. It is deliberately built to
+have almost no power of its own.
+
+```sh
+node src/cli.ts plan --project <projectId> --mission "Write a short report on the differences between SQLite journal modes: one file per journal mode, and an index file that links them and is written last." --json
+```
+
+Creates a manager ticket (`kind: 'manager'`) and returns immediately —
+`plan` never ticks or spawns anything itself. If a daemon is up for this
+`--db`, the mutation routes through `POST /projects/{id}/plan`, the same
+single-writer rule every other mutating command follows; otherwise it
+writes directly and the next `run --until-idle` (or a daemon's own next
+periodic tick) picks it up.
+
+**A Manager run is a ticket, not a special process.** It goes through the
+exact same adapter as any worker (`ClaudeCliAdapter`/`FakeAdapter`), so cost
+tracking, budget ceilings, model pinning, retries, and the inbox all apply
+to it completely unchanged — nothing in `scheduler.ts`'s tick loop, the
+concurrency cap, or the spend cap has any idea it is looking at a Manager
+rather than a worker until the moment its result comes back. `board` still
+shows what it cost like any ticket; a manager ticket's row is prefixed
+`[MANAGER]` so it is never mistaken for one (see the `board` surface
+above). Its `--workspace` is always `NONE`: it has no files of its own to
+produce, only a plan.
+
+**What it can do:** propose exactly five things, each validated against the
+current board and applied only as a whole (`packages/core/src/proposal.ts`,
+`managerApply.ts`) — create a ticket, add a dependency between two existing
+tickets, change a ticket's priority, ask the owner a question, or update the
+project's brief. Everything it proposes is recorded as one
+`manager_proposal_applied` event carrying the full proposal, so the applied
+board can always be explained after the fact.
+
+**What it cannot do, which is the more interesting half of this design:**
+
+- It cannot touch the database. Its only output is a file
+  (`.orchestrator/proposal.json`, declared as an artefact like any other);
+  the daemon reads, validates, and applies it — the Manager itself never
+  runs a single write.
+- It cannot propose a sixth kind of command. `create_ticket`,
+  `add_dependency`, `change_priority`, `request_user_decision`,
+  `update_project_brief` — exactly the architecture document's list, no
+  more.
+- It cannot half-apply a plan. One invalid command in a proposal rejects
+  the whole thing, treated the same as a malformed `result.json`: retryable,
+  reaching the inbox on exhaustion with the validation errors attached. See
+  `managerApply.test.ts`'s rollback tests — a synthetic failure partway
+  through a proposal's application leaves the board exactly as it was
+  before, proven by disabling the transaction and watching the test catch it.
+- It cannot introduce a dependency cycle, anywhere in the combined graph of
+  the existing board plus its own proposal — rejected whole, because a
+  cyclic dependency would deadlock the board permanently.
+- It cannot make a manager ticket depend on a work ticket, or the reverse,
+  in either direction — enforced at `addDependency` itself (`store.ts`), not
+  only in the proposal validator, so this holds for `dep add`/`POST /deps`
+  too, not just for what a Manager itself proposes.
+- It cannot create another manager ticket. Every `create_ticket` command
+  produces an ordinary work ticket; only `plan` (or the daemon route) ever
+  creates a manager ticket.
+- It cannot see a worker's own prompt, another ticket's full description, or
+  a completed dependency's reported summary/artifacts. Its envelope
+  (`managerEnvelope.ts`) is built independently of the worker-envelope path
+  and carries only: the project brief, the mission, the board in compact
+  form (id/title/status/kind/dependencies/attempts/spend — no descriptions),
+  the decision log, the last five final failures with a curated one-line
+  reason each, and the command schema.
+- It cannot remember a previous invocation. Every Manager run rebuilds its
+  envelope from the database from scratch; nothing about it is a
+  long-lived session or an accumulating context — the same "an orchestrator
+  that accumulates context is the expensive idle agent this project is
+  designed against" ruling that shaped the daemon itself from the start.
+- It is never triggered automatically. Only an explicit `plan` (CLI or API)
+  starts one — no trigger on a ticket's final failure, and no trigger on a
+  schedule. Both are real, named future work, deliberately not built until
+  this one explicit path has been watched running for real.
+- Its cap is small on purpose: at most twenty commands per proposal, at most
+  fifteen of them `create_ticket` — bounding how much damage one run can do
+  even if everything else about it were somehow wrong.
+
+**Answering a Manager's question.** A `request_user_decision` command
+routes the manager ticket through the exact same `worker_needs_user_decision`
+→ `BLOCKED` transition an ordinary worker's own decision request uses — no
+second answering mechanism exists. `decide --ticket <id> --answer "<text>"`
+answers it, same as any blocked ticket, returning it to `READY`; the next
+tick re-runs the Manager, which sees the answer in its own decision log
+(the same one `relevantDecisions` already reads for a worker).
+
+**Model and budget.** A manager ticket's budget resolves the same way any
+ticket's does (`project set --max-spend`/`ticket add --budget`'s ceiling
+machinery, unchanged). Its model defaults to the project's own
+`default_model`, with an independent override: `project create
+--manager-model <model>` / `project set --manager-model <model>`
+(`projects.manager_model`) — a project-level setting, not a per-ticket one,
+since a project can have many manager tickets over its lifetime and each
+one should see the CURRENT setting, not whatever was true when an earlier
+one happened to run.
 
 ## Layout
 
@@ -881,12 +987,14 @@ purpose:
   delivery is expected to work normally but is untested here — no POSIX
   machine was available this batch, the same gap `process.ts`'s own
   tree-kill has carried since Batch 2.
-- **The daemon ticks every project in its database on a fixed interval,
+- ~~The daemon ticks every project in its database on a fixed interval,
   with a single `--max-parallel` concurrency cap applied independently
-  *per project*** — N projects each get up to that many concurrent workers,
-  not a shared global cap across all of them. This matches the CLI's own
-  `tick`/`run --until-idle`, which never had a cross-project cap either;
-  nothing in the spec asked for one.
+  *per project*~~ — **corrected in Batch 9**: `--max-parallel` is now the
+  machine-wide ceiling, and `projects.max_parallel_workers` (written since
+  Batch 1 but never read anywhere in scheduling until now) is a project's
+  own additional cap. See "Running it" above and `daemon.ts`'s
+  `computeProjectCap`. `tick`/`run --until-idle` are unchanged, since each
+  runs one project at a time.
 - **A real production concurrency bug, found by this batch's own tests, is
   fixed but the counterfactual isn't cleanly reproducible on demand.**
   `openDb` now sets `journal_mode = WAL` and `busy_timeout = 5000` (see
@@ -901,3 +1009,49 @@ purpose:
   writer/reader pair in a dedicated harness. The fix is correct and
   independently verified either way; the clean "before" reproduction just
   isn't available to hand over.
+
+Batch 9 (Role N, the Manager invocation, and housekeeping): the Manager
+(`plan`, `POST /projects/{id}/plan`, `proposal.ts`/`managerApply.ts`) is
+built and tested end to end — see "Planning a project" above for the full
+shape, including what it deliberately cannot do. The EPERM cleanup flake
+carried since Batch 5 is root-caused and fixed (see "Crash recovery" above
+and workspace.ts's `removeDirectoryResilient`); `serve --max-parallel` is
+now machine-wide (see the corrected Batch 8 bullet above). What was found
+rather than built cleanly the first time, or is out of scope on purpose:
+
+- **Automatic Manager triggers are not built.** The architecture document
+  names several triggers for the Manager (mission decomposition, ambiguous
+  blockers, material plan changes, explicit user request, scheduled
+  reviews); this batch builds exactly one, the explicit `plan` command, per
+  the ruling that the document's other triggers wait until this one has
+  been watched running for real. No trigger fires on a ticket's final
+  failure, and no trigger fires on a schedule.
+- **`GIT_WORKTREE` for a Manager-created ticket is accepted, not validated
+  away, at proposal time** — `create_ticket.workspace_type` allows all
+  three `WorkspaceType` values, the same as `ticket add` always has;
+  `workspace.ts` still refuses `GIT_WORKTREE` at *run* time, unchanged from
+  Batch 2. The proposal validator was deliberately not made stricter than
+  the CLI surface it mirrors.
+- **A `request_user_decision` answering mechanism was not built new** — it
+  reuses the existing `worker_needs_user_decision`/`decide` machinery
+  verbatim (see "Planning a project" above). One consequence worth naming:
+  answering a Manager's question re-runs the WHOLE Manager from scratch on
+  the next tick (a fresh, paid invocation), not just the one open question
+  — there is no partial-resume shape for "the Manager already applied most
+  of its proposal and only needs one answer to finish."
+- **This is the first test in the codebase joining the real
+  `ClaudeCliAdapter` to `scheduler.ts`'s `tick()`** (`managerSpawnedPipeline.test.ts`).
+  The batch 8 standing rule ("every result status and failure class needs a
+  test driving the adapter's own classification and the spawned pipeline")
+  has been in force since Batch 8; every OTHER result status (`review`,
+  `budget_insufficient`, and the rest) still has only adapter-alone tests
+  (`adapters/claudeCli.test.ts`) and scheduler-alone tests
+  (`scheduler.test.ts`, driven by `FakeAdapter`), never both joined for the
+  same run. Found while building this batch's own spawned-pipeline test,
+  not fixed — closing that gap for the pre-existing statuses is a real
+  future item, not something this batch's own scope covered.
+- **`project create`/`project set --manager-model` were added even though
+  step 6's own list didn't name them explicitly** — without a way to set
+  `projects.manager_model`, the column step 2 added would have been as dead
+  as `max_parallel_workers` was found to be in this same batch's
+  housekeeping. Surfaced rather than left as a column nothing can reach.

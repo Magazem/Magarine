@@ -413,3 +413,41 @@ test('kill-and-restart, verified through the API: the second daemon\'s own GET /
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+// Batch 9: the Manager's daemon route.
+test('POST /projects/{id}/plan creates a manager ticket, and POST /projects/{id}/set accepts managerModel', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'plan-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const call = (method: 'GET' | 'POST', path: string, body?: unknown) =>
+        api(info.port, fileInfo.token, method, path, body);
+
+      const planRes = await call('POST', `/projects/${project.id}/plan`, { mission: 'Write three reports and an index.' });
+      assert.equal(planRes.status, 201);
+      const planned = planRes.json as { id: string; kind: string; description: string; workspaceType: string };
+      assert.equal(planned.kind, 'manager');
+      assert.equal(planned.description, 'Write three reports and an index.');
+      assert.equal(planned.workspaceType, 'NONE');
+
+      const missingMission = await call('POST', `/projects/${project.id}/plan`, {});
+      assert.equal(missingMission.status, 400);
+
+      const board = (await call('GET', `/board?project=${project.id}`)).json as { tickets: Array<{ id: string; kind: string }> };
+      assert.equal(board.tickets.find((t) => t.id === planned.id)?.kind, 'manager');
+
+      const setRes = await call('POST', `/projects/${project.id}/set`, { managerModel: 'claude-fable-5-1' });
+      assert.equal(setRes.status, 200);
+      assert.equal((setRes.json as { managerModel: string }).managerModel, 'claude-fable-5-1');
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

@@ -620,7 +620,7 @@ test('NONE workspace directories are removed after the run completes (checked ag
     const remaining = readdirSync(root).filter((name) => name.startsWith('magarine-run-'));
     assert.deepEqual(remaining, [], 'the NONE workspace directory created for this run must not remain on disk');
   } finally {
-    cleanup();
+    await cleanup();
   }
 });
 
@@ -670,6 +670,6 @@ test('a NONE-mode cleanup failure (every retry exhausted) still publishes the ru
     const remaining = readdirSync(root).filter((name) => name.startsWith('magarine-run-'));
     assert.equal(remaining.length, 1, 'a persistently-failed cleanup leaves the directory behind -- cosmetic, not silent');
   } finally {
-    cleanup();
+    await cleanup();
   }
 });
