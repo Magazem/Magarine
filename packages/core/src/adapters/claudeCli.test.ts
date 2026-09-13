@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaudeCliAdapter } from './claudeCli.ts';
+import { testTempRoot } from '../testSupport.ts';
 import type { TicketEnvelope, WorkerEvent } from '../types.ts';
 
 // All real API-calling runs happened in the batch-1 spike
@@ -297,27 +298,39 @@ test('observe() attached after the run already finished still receives the termi
 });
 
 test('NONE workspace directories are removed after the run completes (checked against the real filesystem, not just the return value)', async () => {
-  const before = new Set(readdirSync(tmpdir()));
-
-  const adapter = new ClaudeCliAdapter({
-    claudeExe: process.execPath,
-    argsPrefix: [fakeExePath],
-    maxBudgetUsd: 2,
-    workspaceType: 'NONE',
-    env: {
-      MAGARINE_FAKE_SPEC: JSON.stringify({
-        stdoutFile: fixturePath('manual-not-logged-in', 'stdout.txt'),
-        exitCode: 0,
-      }),
-    },
-  });
-  const handle = await adapter.startWorker({ ticket: envelope(), systemPolicy: 'default' });
-  await new Promise<void>((resolve) => {
-    void adapter.observe(handle, (event) => {
-      if (event.type === 'result_raw' || event.type === 'failure') resolve();
+  // Batch 5 item 3: scans a private root this test file exclusively owns
+  // (via ClaudeCliAdapterOptions.baseDir -> workspace.ts's injectable
+  // baseDir), not the shared OS tmpdir(). Before this, `node --test`
+  // running files concurrently meant another file's own `magarine-run-*`
+  // directory could transiently look new to this scan -- measured at one
+  // run in six, see batch-4-closeout.md section 5 item 2. Scanning a root
+  // nothing else writes into makes this deterministic instead of merely
+  // less likely.
+  const { root, cleanup } = testTempRoot('claudecli-leak');
+  try {
+    const adapter = new ClaudeCliAdapter({
+      claudeExe: process.execPath,
+      argsPrefix: [fakeExePath],
+      maxBudgetUsd: 2,
+      workspaceType: 'NONE',
+      baseDir: root,
+      env: {
+        MAGARINE_FAKE_SPEC: JSON.stringify({
+          stdoutFile: fixturePath('manual-not-logged-in', 'stdout.txt'),
+          exitCode: 0,
+        }),
+      },
     });
-  });
+    const handle = await adapter.startWorker({ ticket: envelope(), systemPolicy: 'default' });
+    await new Promise<void>((resolve) => {
+      void adapter.observe(handle, (event) => {
+        if (event.type === 'result_raw' || event.type === 'failure') resolve();
+      });
+    });
 
-  const after = readdirSync(tmpdir()).filter((name) => name.startsWith('magarine-run-') && !before.has(name));
-  assert.deepEqual(after, [], 'the NONE workspace directory created for this run must not remain in the OS temp dir');
+    const remaining = readdirSync(root).filter((name) => name.startsWith('magarine-run-'));
+    assert.deepEqual(remaining, [], 'the NONE workspace directory created for this run must not remain on disk');
+  } finally {
+    cleanup();
+  }
 });

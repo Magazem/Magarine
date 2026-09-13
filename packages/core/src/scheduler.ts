@@ -50,6 +50,8 @@ export interface SchedulerDeps {
   runTimeoutMs?: number;
   /** Where NONE-mode runs' verified artifacts are captured before their temp workspace is deleted. Defaults to `<cwd>/.magarine/artifacts`. */
   artifactsDir?: string;
+  /** Passed straight through to `prepareWorkspace`'s `baseDir` for NONE-mode runs. Test-only; production default (the OS temp directory) is unchanged. See workspace.ts's WorkspaceOptions.baseDir. */
+  workspaceBaseDir?: string;
 }
 
 export interface StartedRun {
@@ -658,7 +660,10 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
 
     let ws;
     try {
-      ws = prepareWorkspace(ticket.workspaceType, ticket.id, { workspaceRoot: project.workspaceRoot ?? undefined });
+      ws = prepareWorkspace(ticket.workspaceType, ticket.id, {
+        workspaceRoot: project.workspaceRoot ?? undefined,
+        baseDir: deps.workspaceBaseDir,
+      });
     } catch (err) {
       // Leave the ticket READY (nothing changed its status) and surface
       // the misconfiguration (e.g. DIRECTORY with no project.workspace_root)

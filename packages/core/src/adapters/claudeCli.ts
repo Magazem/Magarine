@@ -48,6 +48,8 @@ export interface ClaudeCliAdapterOptions {
   timeoutMs?: number;
   /** Extra env vars merged over process.env for the spawned process. */
   env?: NodeJS.ProcessEnv;
+  /** Passed straight through to `prepareWorkspace`'s `baseDir` for NONE-mode runs. Test-only; production default (the OS temp directory) is unchanged. See workspace.ts's WorkspaceOptions.baseDir. */
+  baseDir?: string;
   /**
    * Test seam only, always empty in production. Args spawned before the
    * real `claude` CLI flags, so a test can set `claudeExe: process.execPath`
@@ -323,7 +325,10 @@ export class ClaudeCliAdapter implements AgentAdapter {
     const workspaceType = input.workspace?.type ?? this.options.workspaceType;
     const ws = input.workspace?.path
       ? { path: input.workspace.path, cleanup: async () => {} }
-      : prepareWorkspace(workspaceType, input.ticket.ticketId, { workspaceRoot: this.options.workspaceRoot });
+      : prepareWorkspace(workspaceType, input.ticket.ticketId, {
+          workspaceRoot: this.options.workspaceRoot,
+          baseDir: this.options.baseDir,
+        });
 
     const prompt = buildWorkerPrompt(input.ticket, ws.path);
 

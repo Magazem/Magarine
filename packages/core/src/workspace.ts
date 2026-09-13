@@ -11,6 +11,20 @@ export interface PreparedWorkspace {
 export interface WorkspaceOptions {
   /** Required for DIRECTORY mode: the project's shared workspace root (projects.workspace_root). */
   workspaceRoot?: string;
+  /**
+   * Base directory NONE-mode temp directories are created under. Defaults
+   * to the OS temp directory (node:os `tmpdir()`), which is the production
+   * behaviour and is unchanged by this option's existence. Batch 5 item 3:
+   * a test-only injection point so a test file can give itself a private
+   * root instead of sharing the OS temp directory with every other
+   * concurrently-running test file -- see testSupport.ts's `testTempRoot`.
+   * This is what makes a leak-detection assertion that scans a directory
+   * for `magarine-run-*` entries deterministic: without it, `node --test`
+   * running files concurrently means one file's directory can transiently
+   * look new to another file's scan (measured at one run in six -- see
+   * batch-4-closeout.md section 5 item 2).
+   */
+  baseDir?: string;
 }
 
 // NONE: a fresh, disposable temp directory per run, never shared with any
@@ -28,7 +42,7 @@ export function prepareWorkspace(type: WorkspaceType, ticketId: string, options:
   void ticketId;
 
   if (type === 'NONE') {
-    const path = mkdtempSync(join(tmpdir(), 'magarine-run-'));
+    const path = mkdtempSync(join(options.baseDir ?? tmpdir(), 'magarine-run-'));
     return {
       path,
       cleanup: async () => {

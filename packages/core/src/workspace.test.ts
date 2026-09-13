@@ -26,6 +26,27 @@ test('NONE gives a distinct directory per call', async () => {
   }
 });
 
+test('NONE respects an injected baseDir instead of the OS temp directory, with the production default unchanged (batch 5 item 3)', async () => {
+  const customBase = mkdtempSync(join(tmpdir(), 'magarine-custom-base-'));
+  try {
+    const ws = prepareWorkspace('NONE', 'tkt_none_3', { baseDir: customBase });
+    try {
+      assert.ok(ws.path.startsWith(customBase), `expected ${ws.path} to be created under ${customBase}`);
+    } finally {
+      await ws.cleanup();
+    }
+
+    const wsDefault = prepareWorkspace('NONE', 'tkt_none_4');
+    try {
+      assert.ok(!wsDefault.path.startsWith(customBase), 'omitting baseDir must still fall back to the OS temp directory');
+    } finally {
+      await wsDefault.cleanup();
+    }
+  } finally {
+    rmSync(customBase, { recursive: true, force: true });
+  }
+});
+
 test('DIRECTORY gives the project workspaceRoot itself (one shared directory), and it persists after cleanup()', async () => {
   const root = mkdtempSync(join(tmpdir(), 'magarine-wsroot-'));
   try {
