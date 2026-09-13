@@ -48,6 +48,18 @@ interface Flags {
   [key: string]: string | boolean | string[];
 }
 
+// Batch 10 (Role O): `plan` has always validated its `--project` against a
+// typed PlanError before creating anything (commands/plan.ts); `ticket add`
+// never did the equivalent check, so `ticket add --project <nonexistent>`
+// fell straight through to `createTicket`'s raw `INSERT`, which fails on the
+// `tickets.project_id` foreign key with SQLite's own constraint-violation
+// message -- uncaught by any typed-error branch here, so it reached the
+// user as a raw database error rather than the same clean "no such project"
+// line `plan` already gives. Named after the command, not a generic
+// "NotFoundError", to match ApproveError/DecideError/PlanError/etc.'s
+// per-command convention in this file.
+class TicketAddError extends Error {}
+
 // A flag repeated on the command line (`--acceptance a --acceptance b`)
 // collects into an array instead of the last one silently winning. A flag
 // given once stays a plain string/boolean, so every existing single-value
@@ -302,6 +314,15 @@ const FAKE_OUTCOME_KINDS: Record<string, FakeScript['kind']> = {
   // fakeAdapter.ts's 'budget_insufficient' FakeScript kind and
   // scheduler.ts's dedicated `worker_budget_stop` routing for this status.
   budget_insufficient: 'budget_insufficient',
+  // Batch 10 (Role O): FakeAdapter has had a 'manager_proposal' script kind
+  // since batch 9 (managerScheduler.test.ts drives it directly), but it was
+  // never reachable from either CLI flag -- `plan` then `run --until-idle`
+  // could not be exercised end to end without a real daemon. Bare
+  // `--fake-outcome <ticketId>=manager_proposal` gives the "manager ran but
+  // never wrote proposal.json" shape (no `proposal` payload); a scenario
+  // needing a real proposal still has to script FakeAdapter directly from a
+  // test, since neither flag has a way to pass one on the command line.
+  manager_proposal: 'manager_proposal',
 };
 
 function buildAdapter(db: Db, flags: Flags): AgentAdapter {
@@ -508,42 +529,57 @@ async function main(): Promise<void> {
     }
 
     const db = openDb(dbPath(flags));
-    const ticket = createTicket(db, {
-      projectId: String(flags.project ?? ''),
-      title: String(flags.title ?? positionals[1] ?? ''),
-      description: typeof flags.description === 'string' ? flags.description : null,
-      maxAttempts: flags['max-attempts'] ? Number(flags['max-attempts']) : 3,
-      priority: flags.priority ? Number(flags.priority) : 0,
-      workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
-      acceptanceCriteria: flagList(flags, 'acceptance'),
-      model: typeof flags.model === 'string' ? flags.model : null,
-    });
+    const projectId = String(flags.project ?? '');
+    try {
+      const project = getProject(db, projectId);
+      if (!project) {
+        throw new TicketAddError(`no such project: ${projectId}`);
+      }
 
-    // `setTicketBudgetOverride` enforces `MIN_BUDGET_USD` (store.ts) with a
-    // message naming the floor -- a raw `UPDATE` here would bypass it, which
-    // is exactly the hole batch 4's close-out found: `--budget 0.01` was
-    // silently accepted despite the twenty-five-cent floor.
-    if (typeof flags.budget === 'string') {
-      setTicketBudgetOverride(db, ticket.id, Number(flags.budget));
-    }
+      const ticket = createTicket(db, {
+        projectId,
+        title: String(flags.title ?? positionals[1] ?? ''),
+        description: typeof flags.description === 'string' ? flags.description : null,
+        maxAttempts: flags['max-attempts'] ? Number(flags['max-attempts']) : 3,
+        priority: flags.priority ? Number(flags.priority) : 0,
+        workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
+        acceptanceCriteria: flagList(flags, 'acceptance'),
+        model: typeof flags.model === 'string' ? flags.model : null,
+      });
 
-    // Dependencies are attached, and only then is readiness resolved --
-    // never before all of them are attached, and never left unresolved
-    // after. Resolving mid-loop (or not at all) is exactly the batch 1
-    // regression this flag exists to make impossible: a ticket must not be
-    // promoted to READY, even briefly, while a `--depends-on` from this
-    // same command has not been wired in yet. See dependencies.ts's
-    // `resolveReadiness` doc comment and cli.test.ts's ordering regression
-    // test for the original bug this guards against.
-    for (const dependsOnTicketId of dependsOn) {
-      addDependency(db, { ticketId: ticket.id, dependsOnTicketId });
-    }
-    if (dependsOn.length > 0) {
-      resolveReadiness(db, ticket.projectId);
-    }
+      // `setTicketBudgetOverride` enforces `MIN_BUDGET_USD` (store.ts) with a
+      // message naming the floor -- a raw `UPDATE` here would bypass it, which
+      // is exactly the hole batch 4's close-out found: `--budget 0.01` was
+      // silently accepted despite the twenty-five-cent floor.
+      if (typeof flags.budget === 'string') {
+        setTicketBudgetOverride(db, ticket.id, Number(flags.budget));
+      }
 
-    const finalTicket = getTicket(db, ticket.id)!;
-    output(flags, finalTicket, `Created ticket ${finalTicket.id} (${finalTicket.title})`);
+      // Dependencies are attached, and only then is readiness resolved --
+      // never before all of them are attached, and never left unresolved
+      // after. Resolving mid-loop (or not at all) is exactly the batch 1
+      // regression this flag exists to make impossible: a ticket must not be
+      // promoted to READY, even briefly, while a `--depends-on` from this
+      // same command has not been wired in yet. See dependencies.ts's
+      // `resolveReadiness` doc comment and cli.test.ts's ordering regression
+      // test for the original bug this guards against.
+      for (const dependsOnTicketId of dependsOn) {
+        addDependency(db, { ticketId: ticket.id, dependsOnTicketId });
+      }
+      if (dependsOn.length > 0) {
+        resolveReadiness(db, ticket.projectId);
+      }
+
+      const finalTicket = getTicket(db, ticket.id)!;
+      output(flags, finalTicket, `Created ticket ${finalTicket.id} (${finalTicket.title})`);
+    } catch (err) {
+      if (err instanceof TicketAddError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
     return;
   }
 

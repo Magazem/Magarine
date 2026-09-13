@@ -191,6 +191,72 @@ test('an unknown flag is reported by name instead of failing deep inside a DB co
   }
 });
 
+test('ticket add against a nonexistent project fails with a typed "no such project" message, not a raw DB constraint error', async () => {
+  // Batch 10 (Role O): `plan --project <bogus>` has always failed cleanly
+  // via commands/plan.ts's PlanError; `ticket add --project <bogus>` used to
+  // fall straight through to createTicket's raw INSERT and surface SQLite's
+  // own foreign-key-constraint wording instead. Driven through the real CLI
+  // entry point, not by calling createTicket/getProject directly, so this
+  // proves the actual command-line behaviour a user would see.
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-ticketadd-badproject-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['ticket', 'add', '--project', 'tkt_does_not_exist', '--title', 'T', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such project: tkt_does_not_exist/);
+    assert.doesNotMatch(res.stderr, /FOREIGN KEY|CONSTRAINT/i, 'must not leak a raw SQLite constraint message');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('plan then run --until-idle exercises manager_proposal through the fake adapter via --fake-outcome, with no daemon running', async () => {
+  // Batch 10 (Role O): manager_proposal has been a FakeAdapter script kind
+  // since batch 9 (managerScheduler.test.ts drives it directly against the
+  // adapter), but neither --fake-script nor --fake-outcome accepted it, so
+  // this path was reachable only from a test file, never from the command
+  // line -- exactly the gap this test now closes. No `proposal` payload can
+  // be passed through a bare CLI flag, so this exercises the "manager ran
+  // but never wrote proposal.json" shape: a malformed/retryable result,
+  // proven here by the ticket landing back on READY rather than DONE.
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-manager-proposal-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const projectRes = await run(['project', 'create', '--name', 'ManagerProposalDemo', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+
+    const planRes = await run(['plan', '--project', project.id, '--mission', 'ship the thing', '--json', '--db', dbFile]);
+    assert.equal(planRes.code, 0, planRes.stderr);
+    const managerTicket = JSON.parse(planRes.stdout) as { id: string };
+
+    const runRes = await run([
+      'run',
+      '--until-idle',
+      '--project',
+      project.id,
+      '--fake-outcome',
+      `${managerTicket.id}=manager_proposal`,
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(runRes.code, 0, runRes.stderr);
+
+    const statusRes = await run(['status', '--project', project.id, '--json', '--db', dbFile]);
+    const tickets = JSON.parse(statusRes.stdout) as Array<{ id: string; status: string }>;
+    // A manager_proposal script with no proposal payload never writes
+    // proposal.json, so every attempt is rejected as malformed (retryable);
+    // `run --until-idle` keeps retrying the same scripted outcome until
+    // max_attempts is exhausted, landing FAILED -- never DONE, and never any
+    // new ticket created, since no proposal was ever actually applied.
+    assert.equal(tickets.length, 1, 'no proposal was ever applied, so no new tickets should exist');
+    const after = tickets.find((t) => t.id === managerTicket.id)!;
+    assert.equal(after.status, 'FAILED');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // State directory resolution (paths.ts), driven through the real CLI
 // entry point rather than by calling resolveStateDir() directly, per
 // batch-4-spec.md section 1 ruling 5: nothing is written under the current

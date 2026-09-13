@@ -25,6 +25,27 @@ pnpm test
 under `src/` and executes it directly (Node strips the TypeScript types at
 load time; nothing is compiled to disk first).
 
+### The spawned-pipeline rule
+
+Since Batch 8, every result status and failure class the daemon can produce
+is expected to have a test that spawns the real fake `claude` executable
+through the real `ClaudeCliAdapter` through the real `scheduler.ts`'s
+`tick()`, not just one that drives `FakeAdapter` or `classifyOutcome` in
+isolation — three separate defects on this project were correct where built
+and silently discarded at the join between the two, invisible to a suite
+that only ever exercised the stand-in (see `managerSpawnedPipeline.test.ts`'s
+header comment for the fuller story). Batch 9 built the first such test, for
+a `manager`-kind ticket's `done`/`manager_proposal` path only; Batch 10
+(`workerSpawnedPipeline.test.ts`) applies the same rule backwards, to every
+status and failure class that predated it: `done`, `review`,
+`needs_user_decision`, `failed`, `budget_insufficient`, a malformed result, a
+declared-but-missing artefact, a tool-side `budget_exceeded`, a timeout, and
+the not-logged-in `adapter_unavailable` path — the last of which turned out
+to expose a real, currently-shipped gap (see "What was not built" below).
+Every test in that file is mutation-checked: the file's own comments record,
+per test, the exact line changed to prove the test can fail, and what
+happened when it was changed.
+
 ## Running the CLI
 
 The CLI is not published as a `bin`; run it directly with Node:
@@ -1039,7 +1060,7 @@ rather than built cleanly the first time, or is out of scope on purpose:
   the next tick (a fresh, paid invocation), not just the one open question
   — there is no partial-resume shape for "the Manager already applied most
   of its proposal and only needs one answer to finish."
-- **This is the first test in the codebase joining the real
+- ~~This is the first test in the codebase joining the real
   `ClaudeCliAdapter` to `scheduler.ts`'s `tick()`** (`managerSpawnedPipeline.test.ts`).
   The batch 8 standing rule ("every result status and failure class needs a
   test driving the adapter's own classification and the spawned pipeline")
@@ -1049,9 +1070,61 @@ rather than built cleanly the first time, or is out of scope on purpose:
   (`scheduler.test.ts`, driven by `FakeAdapter`), never both joined for the
   same run. Found while building this batch's own spawned-pipeline test,
   not fixed — closing that gap for the pre-existing statuses is a real
-  future item, not something this batch's own scope covered.
+  future item, not something this batch's own scope covered.~~ —
+  **closed in Batch 10**: `workerSpawnedPipeline.test.ts` adds one real
+  spawned-pipeline test per pre-existing status/failure class. See "The
+  spawned-pipeline rule" above and the Batch 10 entry below for what that
+  found.
 - **`project create`/`project set --manager-model` were added even though
   step 6's own list didn't name them explicitly** — without a way to set
   `projects.manager_model`, the column step 2 added would have been as dead
   as `max_parallel_workers` was found to be in this same batch's
   housekeeping. Surfaced rather than left as a column nothing can reach.
+
+Batch 10 (Role O, applying the batch 8 standing rule backwards): one real
+spawned-pipeline test per pre-existing result status/failure class is added
+(`workerSpawnedPipeline.test.ts`) -- `done`, `review`,
+`needs_user_decision`, `failed`, `budget_insufficient`, a malformed result, a
+declared-but-missing artefact, a tool-side `budget_exceeded`, and a timeout,
+each mutation-checked (see that file's own per-test comments for exactly
+what was broken to confirm each test can fail). `manager_proposal` is added
+to `cli.ts`'s `--fake-outcome` list, and `ticket add` now validates its
+`--project` against a typed `TicketAddError` before creating anything, the
+same way `plan`'s `PlanError` already does (see cli.test.ts's coverage for
+both). What was found rather than fixed, being outside this role's owned
+files (`cli.ts`, test files, `adapters/fakeAdapter.ts`'s outcome list,
+`adapters/testFixtures/`):
+
+- **A real, currently-shipped gap: the not-logged-in `adapter_unavailable`
+  path is unreachable from the real `ClaudeCliAdapter`.** scheduler.ts's
+  dedicated handling for this failure (pause the project's adapter so the
+  daemon stops burning attempts against a dead login; return the ticket to
+  READY with NO attempt consumed; a dedicated inbox event) only fires when
+  an incoming `failure` event has `retryable === false && failureClass ===
+  'adapter_unavailable'`. `adapters/claudeCli.ts`'s `outcomeToEvent`, for its
+  own `adapter_unavailable` outcome, sets `retryable: false` but never sets
+  `failureClass` at all -- only the `ADAPTER_UNAVAILABLE:` message prefix
+  distinguishes the case there. So a real not-logged-in worker never matches
+  scheduler.ts's guard: it falls through to the generic "non-retryable but
+  not adapter_unavailable" branch instead, landing the ticket on FAILED with
+  one attempt consumed, no pause, and no dedicated inbox event -- the exact
+  opposite of the intended behaviour, and exactly the shape this batch's own
+  standing rule exists to catch (correct where scheduler.ts's guard was
+  built, silently unreachable at the join to the real adapter, invisible to
+  a suite -- scheduler.test.ts -- that only ever drove FakeAdapter's own
+  hand-set `failureClass`). `workerSpawnedPipeline.test.ts`'s
+  `adapter_unavailable` test locks in the current (incorrect) behaviour, with
+  a comment naming the one-line fix (`failureClass: 'adapter_unavailable'`
+  alongside claudeCli.ts's existing `stoppedBy: 'tool_max_budget_usd'` for
+  its sibling `budget_exceeded` case) and recording that applying it and
+  rerunning flips every assertion in that test to the intended outcome.
+  `adapters/claudeCli.ts` is not a file this role may edit; the fix belongs
+  to whichever role owns it next.
+- **`--fake-outcome <id>=manager_proposal` cannot carry a `proposal`
+  payload** -- CLI flags are `<ticketId>=<kind>` pairs with no way to encode
+  a JSON object on the command line, so the only outcome reachable this way
+  is "the manager ran but never wrote proposal.json" (a malformed/retryable
+  result). A scenario needing a real, appliable proposal still has to script
+  `FakeAdapter` directly from a test (`managerScheduler.test.ts`,
+  `managerSpawnedPipeline.test.ts`), which is not a gap batch-10-spec.md
+  asked this role to close.
