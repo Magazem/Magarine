@@ -455,7 +455,8 @@ async function applyWorkerEventInner(
         // daemon's own running cost estimate is the only figure available
         // at the moment of the stop, so it is recorded here, explicitly
         // labelled as an estimate rather than the tool's own authoritative
-        // total (see claudeCli.ts's BLENDED_USD_PER_RAW_TOKEN header).
+        // total (see claudeCli.ts's messageModel/priceUsage header, which also
+        // records this estimate's known undercount on output tokens).
         setRunUsage(db, run.id, { total_cost_usd: tally, source: 'scheduler_budget_estimate' });
         recordTicketTransition(db, {
           ticketId: ticket.id,

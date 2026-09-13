@@ -5,6 +5,7 @@ import { spawnManaged, type ManagedProcess } from '../process.ts';
 import { WORKER_RESULT_JSON_SCHEMA, validateWorkerResult } from '../resultContract.ts';
 import { buildWorkerPrompt } from '../envelope.ts';
 import { prepareWorkspace } from '../workspace.ts';
+import { priceUsage, type Usage } from '../pricing.ts';
 import type {
   AgentAdapter,
   AgentAdapterCapabilities,
@@ -265,50 +266,53 @@ function describeProgress(line: Record<string, unknown>): string | null {
 // the tool's terminal `total_cost_usd` (which only arrives once, at the very
 // end -- too late for the scheduler to stop an overspending run mid-flight).
 //
-// HARD, batch 5 item 4 (re-checked directly against the recorded stream
-// named below, every line's own `type`/keys enumerated, not assumed): the
-// stream carries NO per-message cost field of any kind. `total_cost_usd`
-// appears exactly once, on the terminal `type: "result"` line; every
-// `type: "assistant"` line carries token `usage` (input/output/cache
-// counts) but nothing priced. So there is no way to make this constant
-// unnecessary short of the tool adding one -- a per-category rate table is
-// also not evidence this project has (SOFT/UNKNOWN -- batch-3-closeout.md
-// §8 flags even the per-ticket floor price as unexplained). This uses ONE
-// blended $-per-raw-token rate instead, calibrated directly against the one
-// real recorded run this repository has both the full stream AND the
-// tool's own authoritative total for:
-// spikes/claude-cli/runs/2026-09-12T14-15-13-624Z-stream. That run's two
-// distinct assistant turns (four stream lines, but message.id repeats --
-// see the dedup below) sum to 61244 raw tokens (input + output +
-// cache_creation + cache_read) against a reported total_cost_usd of
-// 0.3673715. See claudeCli.test.ts's calibration test, which reproduces that
-// exact number from this constant and that fixture's usage.
+// Batch 6 item 2 replaces the single BLENDED_USD_PER_RAW_TOKEN constant
+// (removed) with per-model, per-category pricing via `priceUsage`
+// (pricing.ts), reading `message.model` straight off the same assistant
+// line the usage comes from. This fixes the model-blindness batch 5 found
+// (405% off on a second model, docs/strategy/batch-5-closeout.md section 2)
+// for the categories it can fix.
 //
-// SOFT, still one data point: docs/strategy/batch-5-spec.md section 1
-// ruling 3 calls for a second calibration fixture (from this batch's own
-// paid budget-stop run) asserting both fixtures reproduce the tool's own
-// total within two percent. That fixture does not exist in this repository
-// as of this batch -- per docs/strategy/batch-5-spec.md section 2, saving
-// it is the Orchestrator's own close-out step, done after this code lands
-// and the paid run happens, not something available to calibrate against
-// here. This constant, and its single-fixture test, are unchanged from
-// batch 4 pending that fixture. This is a SOFT estimate used only to
-// trigger the scheduler's own budget stop (scheduler.ts); the tool's own
-// `total_cost_usd` on the terminal result line remains what gets persisted
-// to `runs.usage_json` and displayed on the board (store.ts) for every
-// outcome except a scheduler-initiated budget stop, where no such line
-// ever arrives -- see scheduler.ts's 'progress' case, which records this
-// same tally as the run's usage at the moment it stops the worker.
-const BLENDED_USD_PER_RAW_TOKEN = 0.3673715 / 61244;
-
-function rawTokenCount(usage: Record<string, unknown>): number {
-  const num = (v: unknown) => (typeof v === 'number' ? v : 0);
-  return (
-    num(usage.input_tokens) +
-    num(usage.output_tokens) +
-    num(usage.cache_creation_input_tokens) +
-    num(usage.cache_read_input_tokens)
-  );
+// HARD, and this is a real limitation, not a rounding error: deduping by
+// message id and summing input_tokens/cache_creation_input_tokens/
+// cache_read_input_tokens across `assistant` lines reproduces the terminal
+// `result` line's authoritative totals for those three categories EXACTLY,
+// on both fixtures this repository has an authoritative total for. Doing
+// the same for output_tokens does not -- the deduped sum is 104 against an
+// authoritative 644 on one fixture (16.1% of true) and 30 against 489 on
+// the other (6.1% of true). No stable multiplier bridges this: the
+// undercount factor differs 2.6x between the two points, and the
+// `system`/`thinking_tokens` progress lines that might look like the
+// missing signal are themselves estimates that overshoot the terminal
+// line's own `output_tokens_details.thinking_tokens` (202 estimated vs. 81
+// final on one fixture) while the true output gap is far larger than the
+// thinking count either way -- thinking is not the missing piece, and
+// nothing else on the stream reports it. There is no available signal,
+// short of the terminal line itself, for the extra output tokens; a
+// mid-run tally is structurally unable to see them. See claudeCli.test.ts's
+// "running cost tally... undercounts" test for the full numbers on both
+// fixtures.
+//
+// Practical consequence, worth restating because nobody has flagged it yet:
+// BLENDED_USD_PER_RAW_TOKEN was curve-fit to fixture 1's true dollar total,
+// so it was inflated well above real per-category rates to compensate for
+// exactly this output undercount -- which is incidentally why the batch 5
+// budget-stop run tripped at $0.2565 against a $0.25 ceiling. Pricing each
+// category at its real rate removes that inflation, so the running tally
+// this function now produces is LOWER than before on every run, and the
+// scheduler's budget stop will fire LATER, not at the same point. This is
+// the correct behaviour for a rate table that no longer over-charges
+// input/cache tokens to paper over the output gap, but it directly affects
+// how close to a ceiling a close-out run should expect to land.
+//
+// Given the ceiling is enforced from this tally, an unfixable output
+// undercount means the ceiling can be beaten by real spend on an
+// output-heavy, cache-light run -- silently, since the daemon has no
+// signal telling it its own estimate is low. This is reported, not
+// papered over, per docs/strategy/batch-6-spec.md's instruction to state
+// the disagreement rather than loosen a bound.
+function messageModel(msg: Record<string, unknown> | undefined): string | undefined {
+  return typeof msg?.model === 'string' ? msg.model : undefined;
 }
 
 interface HandleState {
@@ -415,11 +419,14 @@ export class ClaudeCliAdapter implements AgentAdapter {
         } else {
           if (obj.type === 'assistant') {
             const msg = obj.message as Record<string, unknown> | undefined;
-            const usage = msg?.usage as Record<string, unknown> | undefined;
+            const usage = msg?.usage as Usage | undefined;
             const messageId = typeof msg?.id === 'string' ? msg.id : undefined;
             if (usage && messageId && !state.talliedMessageIds.has(messageId)) {
               state.talliedMessageIds.add(messageId);
-              state.costTallyUsd += rawTokenCount(usage) * BLENDED_USD_PER_RAW_TOKEN;
+              // messageModel(msg) is undefined for a stream that omits it; priceUsage
+              // falls back to the most-expensive-known rate either way (pricing.ts),
+              // which is the safe direction here.
+              state.costTallyUsd += priceUsage(messageModel(msg) ?? '', usage);
             }
           }
           const message = describeProgress(obj);

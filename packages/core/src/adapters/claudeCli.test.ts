@@ -111,40 +111,64 @@ test('happy path: falls back to the stream structured_output when no .orchestrat
   }
 });
 
-test("the running cost tally on progress events is deduped by assistant message id and, by construction (calibrated against this exact fixture), reproduces the fixture's own reported total_cost_usd", async () => {
-  // This fixture's stream repeats each of its two real assistant turns
-  // across two stream-json lines with the SAME message.id (observed by
-  // inspecting the raw file directly), summing to the terminal result's own
-  // usage. A naive per-line accumulation would double the true cost.
-  const { events, workspaceRoot } = await runOnce({
-    stdoutFile: fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'),
-    exitCode: 0,
-    createFiles: { 'hello.txt': 'hello from magarine worker' },
+// Batch 6 item 2: the running cost tally is now priced per model/category
+// (pricing.ts's priceUsage) instead of one blended constant, deduped by
+// assistant message id as before -- the dedup itself is unchanged and still
+// correct (this fixture's stream repeats each real assistant turn across
+// two stream-json lines with the SAME message.id; a naive per-line
+// accumulation would double the true cost).
+//
+// It is NOT within two percent of the fixture's own total_cost_usd, and
+// that is reported here rather than hidden behind a widened tolerance
+// (docs/strategy/batch-6-spec.md's instruction: report the disagreement).
+// input_tokens, cache_creation_input_tokens and cache_read_input_tokens all
+// reconstruct EXACTLY from the deduped assistant-line sum on both fixtures
+// (verified directly, not asserted here) -- the entire shortfall below is
+// the output_tokens category, which assistant lines report at 16.1% (fixture
+// 1) and 6.1% (fixture 2) of the terminal result line's authoritative
+// count, with no other signal on the stream carrying the difference (see
+// the messageModel/priceUsage header comment in claudeCli.ts). Both
+// fixtures happen to be cache-write-dominated (output was 8.8% and 2.4% of
+// true spend respectively), which is the only reason the resulting total
+// error looks small here -- an output-heavy, cache-light real run would
+// show a far larger shortfall, unbounded by anything measured in this repo.
+for (const fixture of [
+  { dir: '2026-09-12T14-15-13-624Z-stream', model: 'claude-fable-5-1', trueTotal: 0.3673715, expectedTally: 0.3403715 },
+  { dir: '2026-09-13T13-23-00-000Z-stream-calib2', model: 'claude-sonnet-5', trueTotal: 0.20431960000000002, expectedTally: 0.1997296 },
+]) {
+  test(`the running cost tally (${fixture.model}) is deduped by assistant message id, priced per-model/category, and UNDERCOUNTS the fixture's own total_cost_usd (output tokens are not fully visible mid-stream)`, async () => {
+    const { events, workspaceRoot } = await runOnce({
+      stdoutFile: fixturePath(fixture.dir, 'stdout.txt'),
+      exitCode: 0,
+      createFiles: { 'hello.txt': 'hello from magarine worker' },
+    });
+    try {
+      const progressWithCost = events.filter(
+        (e): e is { type: 'progress'; message: string; costUsd?: number } => e.type === 'progress' && typeof e.costUsd === 'number'
+      );
+      assert.ok(progressWithCost.length > 0, 'expected at least one progress event carrying a cumulative costUsd');
+      const finalTally = progressWithCost.at(-1)!.costUsd!;
+      assert.ok(
+        finalTally < fixture.trueTotal,
+        `expected the tally (${finalTally}) to UNDERcount the fixture's total_cost_usd (${fixture.trueTotal}) -- an over-count here would mean the known output-token gap somehow closed, which would itself be worth investigating`
+      );
+      assert.ok(
+        Math.abs(finalTally - fixture.expectedTally) < 1e-9,
+        `expected the deduped per-category tally (${finalTally}) to match the independently-computed value (${fixture.expectedTally}) -- a mismatch means dedup or the per-message model lookup broke`
+      );
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
-  try {
-    const progressWithCost = events.filter(
-      (e): e is { type: 'progress'; message: string; costUsd?: number } => e.type === 'progress' && typeof e.costUsd === 'number'
-    );
-    assert.ok(progressWithCost.length > 0, 'expected at least one progress event carrying a cumulative costUsd');
-    const finalTally = progressWithCost.at(-1)!.costUsd!;
-    // The fixture's own `result` line reports total_cost_usd: 0.3673715 for
-    // the same two turns (spikes/claude-cli/runs/2026-09-12T14-15-13-624Z-stream/stdout.txt).
-    assert.ok(
-      Math.abs(finalTally - 0.3673715) < 0.0005,
-      `expected the deduped tally (${finalTally}) to reproduce the fixture's total_cost_usd (0.3673715) -- a mismatch this large means either dedup broke or the calibration constant drifted`
-    );
-  } finally {
-    rmSync(workspaceRoot, { recursive: true, force: true });
-  }
-});
+}
 
 test('batch 5 item 4: the calibration fixture\'s stream carries no per-message cost field, only the terminal result\'s total_cost_usd', () => {
-  // Locks in the finding recorded in claudeCli.ts's BLENDED_USD_PER_RAW_TOKEN
-  // header: a per-message cost field would make that constant unnecessary,
-  // and it does not exist in this stream. Read directly, not asserted from
-  // memory -- every line's own keys are enumerated so a future fixture (or
-  // tool version) that DOES add one fails this test rather than going
-  // unnoticed.
+  // Locks in the finding recorded in claudeCli.ts's messageModel/priceUsage
+  // header: a per-message cost field would make per-category rate lookup
+  // unnecessary for the mid-run tally, and it does not exist in this
+  // stream. Read directly, not asserted from memory -- every line's own
+  // keys are enumerated so a future fixture (or tool version) that DOES add
+  // one fails this test rather than going unnoticed.
   const lines = readFileSync(fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt'), 'utf8')
     .split('\n')
     .filter((l) => l.trim())
