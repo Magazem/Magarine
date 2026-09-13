@@ -228,6 +228,20 @@ const POLICY: Record<string, EventPolicy> = {
   // member (it never changes tickets.status), so not exercised by the
   // completeness test below.
   unknown_model_rate: { visibility: 'inbox', requiresUser: true },
+
+  // --- Batch 9: the Manager invocation ---
+  // Fired by managerApply.ts once a valid proposal has been applied,
+  // carrying the full proposal and the created-ticket id mapping (entityType
+  // 'ticket', entityId the manager ticket -- see that file's doc comment on
+  // why replay needs the ids, not just the titles). Not a TransitionEvent
+  // member (it never changes tickets.status on its own -- the manager
+  // ticket's own worker_done/worker_needs_user_decision transition is a
+  // separate event in the same transaction), so not exercised by the
+  // completeness test below, same shape as project_resume/adapter_unavailable
+  // above. Activity, not inbox: the board itself now shows every ticket this
+  // created, same reasoning as worker_done/review_approved -- nothing here
+  // needs a person's attention beyond what is already visible.
+  manager_proposal_applied: { visibility: 'activity', requiresUser: false },
 };
 
 export function classify(eventType: string): EventPolicy {

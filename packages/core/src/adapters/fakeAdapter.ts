@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type {
   AgentAdapter,
   AgentAdapterCapabilities,
@@ -6,6 +8,7 @@ import type {
   Workspace,
   WorkerEvent,
   WorkerHandle,
+  WorkerResultStatus,
 } from '../types.ts';
 
 // A permanent test double for AgentAdapter, per
@@ -43,6 +46,16 @@ export type FakeScript =
   // scheduler.ts's budget-stop branch in applyWorkerEventInner's 'progress'
   // case).
   | { kind: 'progress'; costUsd?: number; message?: string; delayMs?: number }
+  // Batch 9: models a Manager ticket's run. Writes `proposal` (if given) to
+  // the REAL workspace as `.orchestrator/proposal.json` before the terminal
+  // event fires, the same file a real `claude` invocation is asked to
+  // produce (envelope built by managerEnvelope.ts) -- this is what lets a
+  // fake-adapter test drive the daemon's actual file-read + validate +
+  // apply pipeline (managerApply.ts) without a real spawned process.
+  // Omitting `proposal` simulates a manager that never wrote the file at
+  // all (the "missing artefact" malformed-result case): `resultStatus`
+  // still fires, but the daemon's own direct file read finds nothing.
+  | { kind: 'manager_proposal'; delayMs?: number; proposal?: unknown; resultStatus?: WorkerResultStatus; summary?: string; usage?: unknown }
   | { kind: 'hang' };
 
 interface HandleState {
@@ -51,6 +64,8 @@ interface HandleState {
   listeners: Array<(event: WorkerEvent) => void>;
   /** The deferred post-stop terminal event scheduled by stop() (see its comment). Tracked separately from `timers` -- which stop() itself clears -- so destroy() can cancel it even on a handle that was already stopped once. */
   postStopTimer?: NodeJS.Timeout;
+  /** Batch 9: the real workspace path this handle's ticket was given, captured from startWorker's `input.workspace` -- needed so a `manager_proposal` script can write a real proposal.json into it. Undefined if no workspace was given (never true in production; only a hand-written test calling startWorker without one could hit this). */
+  workspacePath?: string;
 }
 
 export class FakeAdapter implements AgentAdapter {
@@ -73,7 +88,7 @@ export class FakeAdapter implements AgentAdapter {
       ticketId: input.ticket.ticketId,
       runId: `fakerun_${randomUUID()}`,
     };
-    this.handles.set(handle.id, { timers: [], stopped: false, listeners: [] });
+    this.handles.set(handle.id, { timers: [], stopped: false, listeners: [], workspacePath: input.workspace?.path });
     return handle;
   }
 
@@ -215,6 +230,35 @@ export class FakeAdapter implements AgentAdapter {
           script.delayMs ?? 0
         );
         break;
+
+      case 'manager_proposal': {
+        const artifacts = [];
+        if (script.proposal !== undefined) {
+          if (!state.workspacePath) {
+            throw new Error('manager_proposal script requires startWorker to have been given a workspace');
+          }
+          const proposalPath = join(state.workspacePath, '.orchestrator', 'proposal.json');
+          mkdirSync(dirname(proposalPath), { recursive: true });
+          writeFileSync(proposalPath, JSON.stringify(script.proposal));
+          artifacts.push({ kind: 'file', path: '.orchestrator/proposal.json' });
+        }
+        schedule(
+          {
+            type: 'result_raw',
+            raw: {
+              status: script.resultStatus ?? 'done',
+              summary: script.summary ?? 'fake manager proposal',
+              artifacts,
+              checks: [],
+              blockers: [],
+              questions: [],
+            },
+            usage: script.usage,
+          },
+          script.delayMs ?? 0
+        );
+        break;
+      }
 
       case 'hang':
         // Never emit anything; the run only ends when stop()/destroy() is called.

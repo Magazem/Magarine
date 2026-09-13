@@ -229,6 +229,13 @@ export function setProjectDefaultModel(db: Db, projectId: string, defaultModel: 
   );
 }
 
+// Batch 9: the write site for `update_project_brief` (managerApply.ts) and
+// any future `project set --brief`. Same shape as setProjectDefaultModel --
+// no floor or format to enforce, a project's brief is free text.
+export function setProjectBrief(db: Db, projectId: string, brief: string): void {
+  db.prepare('UPDATE projects SET brief = ?, updated_at = ? WHERE id = ?').run(brief, new Date().toISOString(), projectId);
+}
+
 export function getProject(db: Db, id: string): Project | undefined {
   const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
   return row ? rowToProject(row) : undefined;
@@ -349,6 +356,14 @@ export function setTicketBudgetOverride(db: Db, ticketId: string, maxBudgetUsdOv
   );
 }
 
+// Batch 9: the write site for `change_priority` (managerApply.ts). No CLI
+// surface sets this directly yet (priority is otherwise fixed at `ticket
+// add --priority` time) -- this is the first setter for it, needed because
+// a Manager proposal must be able to reprioritize an EXISTING ticket.
+export function setTicketPriority(db: Db, ticketId: string, priority: number): void {
+  db.prepare('UPDATE tickets SET priority = ?, updated_at = ? WHERE id = ?').run(priority, new Date().toISOString(), ticketId);
+}
+
 export function getTicket(db: Db, id: string): Ticket | undefined {
   const row = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id) as TicketRow | undefined;
   return row ? rowToTicket(row) : undefined;
@@ -378,14 +393,36 @@ export function countTicketsByStatus(db: Db, status: TicketStatus): number {
   return row.n;
 }
 
+// Batch 9 (docs/strategy/batch-9-spec.md section 2): "Manager tickets never
+// block work tickets and work tickets never depend on them; the dependency
+// resolver refuses such edges." Enforced here, the one function that writes
+// `ticket_dependencies`, so EVERY caller is covered -- the CLI's `dep add`,
+// the API's `POST /deps`, and managerApply.ts's own calls alike -- not just
+// proposal.ts's validator, which only ever sees a Manager's own proposed
+// edges and cannot see a `dep add` invoked directly. Scoped to `dependencyType
+// === 'blocks'` (the default, and the only type the Manager's command schema
+// can ever produce): 'related'/'parent' create no scheduling coupling and
+// carry no deadlock risk, so the "never" in the ruling is read as about the
+// blocking relationship specifically, not every kind of link between two
+// tickets.
 export function addDependency(
   db: Db,
   input: { ticketId: string; dependsOnTicketId: string; dependencyType?: DependencyType }
 ): void {
+  const dependencyType = input.dependencyType ?? 'blocks';
+  if (dependencyType === 'blocks') {
+    const ticket = getTicket(db, input.ticketId);
+    const dependsOn = getTicket(db, input.dependsOnTicketId);
+    if (ticket && dependsOn && ticket.kind !== dependsOn.kind) {
+      throw new Error(
+        `refused: a manager ticket and a work ticket may never depend on each other (${input.ticketId} is ${ticket.kind}, ${input.dependsOnTicketId} is ${dependsOn.kind})`
+      );
+    }
+  }
   db.prepare(
     `INSERT OR IGNORE INTO ticket_dependencies (ticket_id, depends_on_ticket_id, dependency_type)
      VALUES (?, ?, ?)`
-  ).run(input.ticketId, input.dependsOnTicketId, input.dependencyType ?? 'blocks');
+  ).run(input.ticketId, input.dependsOnTicketId, dependencyType);
 }
 
 export function getDependencies(db: Db, ticketId: string): TicketDependency[] {

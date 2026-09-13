@@ -3,6 +3,8 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
+import { applyManagerProposal } from './managerApply.ts';
+import { buildManagerEnvelope } from './managerEnvelope.ts';
 import { classify } from './policy.ts';
 import { validateWorkerResult } from './resultContract.ts';
 import { recordTicketTransition } from './stateMachine.ts';
@@ -481,6 +483,56 @@ function raiseUnknownModelRateIfFlagged(db: Db, ticket: Ticket, run: Run, unknow
   });
 }
 
+// Batch 9: the post-success step for a manager ticket reporting "done" --
+// read its proposal.json (still on disk: this runs before this run's
+// workspace is cleaned up, see applyWorkerEvent), validate and apply it in
+// one transaction (managerApply.ts), and settle the run/ticket from the
+// outcome. A read failure (missing file, invalid JSON) becomes `undefined`,
+// which `validateProposal` (called inside applyManagerProposal) rejects the
+// same way it rejects any other malformed shape -- one code path for "the
+// file was never written" and "the file was written but is garbage", not
+// two.
+function applyManagerTicketDone(db: Db, ticket: Ticket, run: Run, ctx: ApplyEventContext): void {
+  const project = getProject(db, ticket.projectId)!;
+  let proposalRaw: unknown;
+  try {
+    proposalRaw = JSON.parse(readFileSync(join(ctx.workspacePath, '.orchestrator', 'proposal.json'), 'utf8'));
+  } catch {
+    proposalRaw = undefined;
+  }
+
+  const result = applyManagerProposal(db, ticket, project, run.id, proposalRaw);
+
+  if (result.outcome === 'malformed') {
+    // Same shape as an ordinary malformed WorkerResult (this function's own
+    // caller, a few lines up): retryable, reaching the inbox on exhaustion
+    // with the validation errors attached (batch-9-spec.md section 2: "one
+    // invalid command rejects the entire proposal as a malformed result,
+    // which is retryable and reaches the inbox on exhaustion with the
+    // validation errors"). `message` (not just the structured `errors`
+    // array) is what commands/inbox.ts's `reasonFor` actually reads to
+    // build the inbox line -- without it, an exhausted proposal reaches the
+    // inbox as the uninformative "failed: malformed_proposal", the errors
+    // present in the payload but never surfaced to the one place a person
+    // would see them.
+    finishRun(db, run.id, { status: 'failed', failureClass: 'malformed_proposal' });
+    recordTicketTransition(db, {
+      ticketId: ticket.id,
+      event: 'worker_failure',
+      idempotencyKey: `worker_failure:${run.id}`,
+      payload: { message: result.errors.join('; '), errors: result.errors, retryable: true, failureClass: 'malformed_proposal' },
+    });
+    return;
+  }
+
+  finishRun(db, run.id, { status: result.ticketStatus === 'BLOCKED' ? 'blocked' : 'succeeded' });
+  // No resolveReadiness call here, unlike the ordinary 'done' branch:
+  // managerApply.ts already ran it once, inside the SAME transaction that
+  // created the new tickets and dependency edges, before deciding DONE vs
+  // BLOCKED -- a second call out here would be redundant (idempotent, but
+  // pointless) rather than newly correct.
+}
+
 // This is the only place that turns an adapter event into a ticket
 // transition; it always goes through `recordTicketTransition`, never writes
 // status itself. Non-transition bookkeeping events (worker_progress,
@@ -625,6 +677,20 @@ async function applyWorkerEventInner(
 
       switch (result.status) {
         case 'done':
+          // Batch 9: a manager ticket's "done" does not mean "land on
+          // DONE and move on" the way a work ticket's does -- its artefact
+          // is a proposal, not a finished deliverable, and the daemon must
+          // validate and apply that proposal (in one transaction, per
+          // batch-9-spec.md section 2) before this run can be called
+          // settled at all. See managerApply.ts's doc comment for why this
+          // is a completely separate function rather than another branch
+          // inline here: the transaction boundary, the malformed-proposal
+          // path, and the request_user_decision->BLOCKED routing are all
+          // its own concern, not this dispatcher's.
+          if (ticket.kind === 'manager') {
+            applyManagerTicketDone(db, ticket, run, ctx);
+            break;
+          }
           finishRun(db, run.id, { status: 'succeeded' });
           recordTicketTransition(db, {
             ticketId: ticket.id,
@@ -816,7 +882,12 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       idempotencyKey: `run_started:${run.id}`,
     });
 
-    const envelope = buildEnvelope(deps.db, ticket, project);
+    // Batch 9: a manager ticket gets the Manager's own envelope (mission,
+    // compact board, decision log, recent failures, command schema -- see
+    // managerEnvelope.ts), never buildEnvelope's worker envelope. Same
+    // adapter call either way; startWorker has no idea which kind of ticket
+    // it just received.
+    const envelope = ticket.kind === 'manager' ? buildManagerEnvelope(deps.db, ticket, project) : buildEnvelope(deps.db, ticket, project);
     const handle = await deps.adapter.startWorker({
       ticket: envelope,
       workspace: { type: ticket.workspaceType, path: ws.path },

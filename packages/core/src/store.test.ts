@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from './db/index.ts';
 import {
+  addDependency,
   createArtifact,
   createProject,
   createRun,
@@ -90,6 +91,22 @@ test('resolveManagerModel prefers managerModel over defaultModel when set', () =
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', defaultModel: 'claude-sonnet-5', managerModel: 'claude-fable-5-1' });
   assert.equal(resolveManagerModel(project), 'claude-fable-5-1');
+});
+
+test('addDependency refuses a "blocks" edge between a manager ticket and a work ticket, in both directions, but allows work-to-work and manager-to-manager', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const work = createTicket(db, { projectId: project.id, title: 'work' });
+  const manager = createTicket(db, { projectId: project.id, title: 'mgr', kind: 'manager' });
+
+  assert.throws(() => addDependency(db, { ticketId: work.id, dependsOnTicketId: manager.id }), /manager ticket and a work ticket/);
+  assert.throws(() => addDependency(db, { ticketId: manager.id, dependsOnTicketId: work.id }), /manager ticket and a work ticket/);
+
+  const work2 = createTicket(db, { projectId: project.id, title: 'work2' });
+  assert.doesNotThrow(() => addDependency(db, { ticketId: work2.id, dependsOnTicketId: work.id }));
+
+  const manager2 = createTicket(db, { projectId: project.id, title: 'mgr2', kind: 'manager' });
+  assert.doesNotThrow(() => addDependency(db, { ticketId: manager2.id, dependsOnTicketId: manager.id }));
 });
 
 test('setProjectManagerModel sets and clears (null) the override', () => {

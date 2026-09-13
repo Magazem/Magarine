@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { FakeAdapter } from './fakeAdapter.ts';
 import type { TicketEnvelope, WorkerEvent } from '../types.ts';
 
@@ -140,4 +143,58 @@ test('destroy() is safe to call on an already-stopped handle', async () => {
   await adapter.observe(handle, () => {});
   await adapter.stop(handle);
   await assert.doesNotReject(() => adapter.destroy(handle));
+});
+
+// Batch 9: manager_proposal writes a real file into the real workspace it
+// was given -- proven against the actual filesystem, not just the returned
+// event, the same discipline claudeCli.test.ts's leak-detection test uses.
+test('manager_proposal script writes proposal.json into the real workspace and declares it as an artifact', async () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'magarine-fakeadapter-manager-'));
+  try {
+    const adapter = new FakeAdapter();
+    const proposal = { commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [] }], rationale: 'r' };
+    adapter.setScript('t1', { kind: 'manager_proposal', proposal });
+    const handle = await adapter.startWorker({ ticket: envelope('t1'), workspace: { type: 'NONE', path: workspace }, systemPolicy: 'p' });
+
+    const events: WorkerEvent[] = [];
+    await new Promise<void>((resolve) => {
+      adapter.observe(handle, (event) => {
+        events.push(event);
+        resolve();
+      });
+    });
+
+    const written = JSON.parse(readFileSync(join(workspace, '.orchestrator', 'proposal.json'), 'utf8'));
+    assert.deepEqual(written, proposal);
+
+    const terminal = events.at(-1)! as { type: string; raw: { status: string; artifacts: Array<{ kind: string; path: string }> } };
+    assert.equal(terminal.type, 'result_raw');
+    assert.equal(terminal.raw.status, 'done');
+    assert.deepEqual(terminal.raw.artifacts, [{ kind: 'file', path: '.orchestrator/proposal.json' }]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test('manager_proposal script with no proposal given writes nothing and declares no artifact', async () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'magarine-fakeadapter-manager-none-'));
+  try {
+    const adapter = new FakeAdapter();
+    adapter.setScript('t1', { kind: 'manager_proposal' });
+    const handle = await adapter.startWorker({ ticket: envelope('t1'), workspace: { type: 'NONE', path: workspace }, systemPolicy: 'p' });
+
+    const events: WorkerEvent[] = [];
+    await new Promise<void>((resolve) => {
+      adapter.observe(handle, (event) => {
+        events.push(event);
+        resolve();
+      });
+    });
+
+    assert.equal(existsSync(join(workspace, '.orchestrator', 'proposal.json')), false);
+    const terminal = events.at(-1)! as { type: string; raw: { artifacts: unknown[] } };
+    assert.deepEqual(terminal.raw.artifacts, []);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
 });
