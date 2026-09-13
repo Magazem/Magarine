@@ -270,19 +270,42 @@ function captureArtifacts(
   // outright), so there is nothing to capture for it here.
 }
 
-// Cancels one run/ticket pair without consuming an attempt: finishes the
-// run as 'cancelled' (only if it is still recorded as running, so a run
-// that already reached a real terminal state is never overwritten) and
-// applies `run_cancelled` (only if the ticket is still IN_PROGRESS, so a
-// ticket that already moved on is left alone). Shared by the
-// adapter_unavailable failure path, the per-run timeout, and
-// SIGINT/SIGTERM handling in runUntilIdle — the only three ways a run gets
-// cancelled by the daemon rather than by the worker's own result. A NONE
-// workspace is disposable temp storage, so it is reclaimed here too
+// Cancels one run/ticket pair: finishes the run as 'cancelled' (only if it
+// is still recorded as running, so a run that already reached a real
+// terminal state is never overwritten) and applies the given ticket
+// transition (only if the ticket is still IN_PROGRESS, so a ticket that
+// already moved on is left alone). Two transitions share this function
+// because they share every mechanical step (stop the worker, settle the
+// run, reclaim a NONE workspace) but encode different intents, per the
+// Strategist's batch 8 ruling:
+//
+// - `run_cancelled` (IN_PROGRESS -> READY, no attempt consumed) is for the
+//   DAEMON's own decisions -- adapter_unavailable, a per-run timeout, or a
+//   shutdown (SIGINT/SIGTERM, or the daemon's own stop()) -- where the
+//   daemon has not decided the ticket is unwanted, so returning it to READY
+//   for another attempt is correct.
+// - `cancel` (IN_PROGRESS -> CANCELLED, also no attempt consumed) is for a
+//   PERSON's decision, via the daemon's `POST /tickets/{id}/cancel`. A
+//   person who cancels has decided the ticket is unwanted; landing it back
+//   in READY would let the daemon's own next tick silently restart it
+//   moments later -- exactly the surprise the Strategist's close-out ruling
+//   exists to prevent. CANCELLED is terminal (see stateMachine.ts's
+//   TRANSITIONS table): tick() only ever looks at READY tickets, so a
+//   cancelled ticket simply cannot restart on its own. `retry` (its
+//   `manual_retry` transition, also updated for this ruling) is the
+//   explicit, one-command way back to READY.
+//
+// A NONE workspace is disposable temp storage, so it is reclaimed here too
 // (looked up from the run's own persisted workspace_ref, not from a
-// closure — cancelRun's callers, timeout and SIGINT, never went through
-// tick()'s per-run closures in the first place).
-function cancelTicketRun(db: Db, ticketId: string, runId: string, failureClass: string): void {
+// closure — cancelRun's callers never went through tick()'s per-run
+// closures in the first place).
+function cancelTicketRun(
+  db: Db,
+  ticketId: string,
+  runId: string,
+  failureClass: string,
+  transitionEvent: 'run_cancelled' | 'cancel'
+): void {
   const run = getRun(db, runId);
   if (run && run.status === 'running') {
     finishRun(db, runId, { status: 'cancelled', failureClass });
@@ -291,8 +314,8 @@ function cancelTicketRun(db: Db, ticketId: string, runId: string, failureClass: 
   if (ticket && ticket.status === 'IN_PROGRESS') {
     recordTicketTransition(db, {
       ticketId,
-      event: 'run_cancelled',
-      idempotencyKey: `run_cancelled:${runId}`,
+      event: transitionEvent,
+      idempotencyKey: `${transitionEvent}:${runId}`,
       visibility: 'activity',
     });
   }
@@ -301,20 +324,26 @@ function cancelTicketRun(db: Db, ticketId: string, runId: string, failureClass: 
   }
 }
 
-// Exported for daemon.ts (batch 8): shutting down the daemon needs to do
-// exactly this -- stop the adapter's live handle and force the run/ticket
-// back to a settled DB state -- for every worker it holds, the same as
-// runUntilIdle's own SIGINT path below. Typed on the two fields it actually
-// reads rather than the full SchedulerDeps, so a caller with no
-// projectId/maxParallelWorkers of its own (the daemon ticks many projects,
-// not one) doesn't have to fabricate placeholder values to call it.
+// Exported for daemon.ts (batch 8): shutting down the daemon, and cancelling
+// a ticket on a person's explicit request, both need to do exactly this --
+// stop the adapter's live handle and force the run/ticket back to a settled
+// DB state -- for the one worker each of those situations targets. Typed on
+// the two fields it actually reads rather than the full SchedulerDeps, so a
+// caller with no projectId/maxParallelWorkers of its own (the daemon ticks
+// many projects, not one) doesn't have to fabricate placeholder values to
+// call it. `transitionEvent` has no default: every call site must say
+// explicitly which of the two intents above it means, the same way
+// `requireRetryableFlag` (stateMachine.ts) refuses to default a
+// retryable/non-retryable choice that would otherwise be easy to get wrong
+// silently.
 export async function cancelRun(
   deps: Pick<SchedulerDeps, 'db' | 'adapter'>,
   sr: { ticketId: string; runId: string; handle: WorkerHandle },
-  failureClass: string
+  failureClass: string,
+  transitionEvent: 'run_cancelled' | 'cancel'
 ): Promise<void> {
   await deps.adapter.stop(sr.handle);
-  cancelTicketRun(deps.db, sr.ticketId, sr.runId, failureClass);
+  cancelTicketRun(deps.db, sr.ticketId, sr.runId, failureClass, transitionEvent);
 }
 
 interface ApplyEventContext {
@@ -541,7 +570,7 @@ async function applyWorkerEventInner(
       if (event.usage !== undefined) setRunUsage(db, run.id, event.usage);
 
       if (event.retryable === false && event.failureClass === 'adapter_unavailable') {
-        cancelTicketRun(db, ticket.id, run.id, 'adapter_unavailable');
+        cancelTicketRun(db, ticket.id, run.id, 'adapter_unavailable', 'run_cancelled');
         insertEvent(db, {
           projectId: ticket.projectId,
           eventType: 'adapter_unavailable',
@@ -819,7 +848,9 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     };
     if (deps.runTimeoutMs !== undefined) {
       timeoutTimer = setTimeout(() => {
-        void cancelRun(deps, { ticketId: ticket.id, runId: run.id, handle }, 'run_timeout').then(resolveDone);
+        void cancelRun(deps, { ticketId: ticket.id, runId: run.id, handle }, 'run_timeout', 'run_cancelled').then(
+          resolveDone
+        );
       }, deps.runTimeoutMs);
     }
 
@@ -923,7 +954,7 @@ export async function runUntilIdle(deps: SchedulerDeps): Promise<void> {
 
   if (signalled) {
     for (const sr of live.values()) {
-      await cancelRun(deps, sr, 'interrupted');
+      await cancelRun(deps, sr, 'interrupted', 'run_cancelled');
     }
   }
 }

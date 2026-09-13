@@ -96,3 +96,38 @@ test('calling resolveReadiness twice does not create duplicate events', () => {
   assert.deepEqual(second, { promoted: [], demoted: [] });
   assert.equal(getTicket(db, a.id)!.status, 'READY');
 });
+
+// Batch 8's ruling on `cancel --ticket`: "dependents of a cancelled ticket
+// stay OPEN and never become READY. No cascade." CANCELLED is simply not
+// DONE, so `isReady`'s existing check ("every blocking dependency is DONE")
+// already produces this by construction -- this is a regression test for
+// that property, not new dependencies.ts logic.
+test('a dependent of a CANCELLED ticket stays OPEN forever: no cascade, and no way back short of retrying the blocker', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const blocker = createTicket(db, { projectId: project.id, title: 'BLOCKER' });
+  const dependent = createTicket(db, { projectId: project.id, title: 'DEPENDENT' });
+  addDependency(db, { ticketId: dependent.id, dependsOnTicketId: blocker.id });
+  resolveReadiness(db, project.id);
+  assert.equal(getTicket(db, blocker.id)!.status, 'READY');
+  assert.equal(getTicket(db, dependent.id)!.status, 'OPEN');
+
+  recordTicketTransition(db, { ticketId: blocker.id, event: 'cancel', idempotencyKey: 'c1' });
+  assert.equal(getTicket(db, blocker.id)!.status, 'CANCELLED');
+  assert.equal(isReady(db, dependent.id), false);
+
+  const { promoted } = resolveReadiness(db, project.id);
+  assert.deepEqual(promoted, [], 'a cancelled blocker must never promote its dependent');
+  assert.equal(getTicket(db, dependent.id)!.status, 'OPEN');
+
+  // The blocker's own retry (batch 8: manual_retry also accepts CANCELLED)
+  // is the only way back -- once it reaches DONE, the dependent is
+  // promoted normally, same as any other completed blocker.
+  recordTicketTransition(db, { ticketId: blocker.id, event: 'manual_retry', idempotencyKey: 'c2' });
+  assert.equal(getTicket(db, blocker.id)!.status, 'READY');
+  recordTicketTransition(db, { ticketId: blocker.id, event: 'run_started', idempotencyKey: 'c3' });
+  recordTicketTransition(db, { ticketId: blocker.id, event: 'worker_done', idempotencyKey: 'c4' });
+
+  resolveReadiness(db, project.id);
+  assert.equal(getTicket(db, dependent.id)!.status, 'READY');
+});

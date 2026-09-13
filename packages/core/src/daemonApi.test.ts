@@ -206,7 +206,7 @@ test('POST /tickets creates a ticket (with the same attach-deps-before-resolving
   }
 });
 
-test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /tickets/{id}/cancel returns a hanging run to READY without consuming an attempt', async () => {
+test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /tickets/{id}/cancel lands a hanging run in CANCELLED (not READY) without consuming an attempt, reopenable only via retry', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'tick-cancel-'));
   try {
     const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
@@ -278,15 +278,127 @@ test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /
       const cancelRes = await call('POST', `/tickets/${hangTicket.id}/cancel`);
       assert.equal(cancelRes.status, 200);
       const cancelled = cancelRes.json as { status: string; attemptCount: number };
-      assert.equal(cancelled.status, 'READY');
-      assert.equal(cancelled.attemptCount, 0, 'a daemon-initiated cancel must not consume an attempt');
+      // Batch 8 ruling: terminal CANCELLED, not READY -- a person's cancel
+      // must not let the daemon's own next tick silently restart the run
+      // (the original design did exactly that; see daemon.test.ts's
+      // DaemonLoop.cancelTicket test for the regression check against a
+      // short, actually-firing interval).
+      assert.equal(cancelled.status, 'CANCELLED');
+      assert.equal(cancelled.attemptCount, 0, 'a cancel must not consume an attempt');
 
-      // Cancelling again: the ticket is READY now, not running -- 409, not
-      // a silent no-op that looks like a second successful cancel.
+      // Cancelling again: the ticket is CANCELLED now, not running -- 409,
+      // not a silent no-op that looks like a second successful cancel.
       const secondCancel = await call('POST', `/tickets/${hangTicket.id}/cancel`);
       assert.equal(secondCancel.status, 409);
+
+      // retry, the one explicit way back to READY ("cancel then retry" is
+      // two commands, not a separate reopen).
+      const retryRes = await call('POST', `/tickets/${hangTicket.id}/retry`);
+      assert.equal(retryRes.status, 200);
+      assert.equal((retryRes.json as { status: string }).status, 'READY');
     } finally {
       await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// Batch 8 step 5's headline acceptance item: kill the daemon mid-run,
+// restart it, and confirm the orphaned run is re-queued through the
+// existing recovery path -- "the one that tells us whether this thing is
+// safe to leave running." commands/serve.test.ts already proves this
+// end-to-end using CLI reads (`status`/`activity --json`) for verification;
+// this test proves the exact same property using the SECOND daemon's own
+// API (GET /board, GET /activity) instead, per the Orchestrator's explicit
+// ask once the API existed to verify it through. Not a duplicate: the
+// underlying recovery mechanism (recoverOrphanedRuns, called from
+// startDaemonLoop) is the same either way, but this is the first place that
+// mechanism's result is read back over HTTP rather than via a direct file
+// read.
+test('kill-and-restart, verified through the API: the second daemon\'s own GET /board and GET /activity show the orphaned run recovered and driven to completion', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'kill-restart-api-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+    const ticketRes = await runCli([
+      'ticket', 'add', '--project', project.id, '--title', 't', '--state-dir', stateDir, '--json',
+    ]);
+    const ticket = JSON.parse(ticketRes.stdout);
+
+    const first = spawnServe([
+      '--state-dir', stateDir, '--tick-interval', '0.1', '--json', '--fake-script', `${ticket.id}=hang`,
+    ]);
+    const firstInfo = await first.waitForListening();
+    const firstFileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+
+    const inProgressDeadline = Date.now() + 5000;
+    let inProgress = false;
+    while (Date.now() < inProgressDeadline) {
+      const board = (await api(firstInfo.port, firstFileInfo.token, 'GET', `/board?project=${project.id}`))
+        .json as { tickets: Array<{ id: string; status: string }> };
+      if (board.tickets.find((t) => t.id === ticket.id)?.status === 'IN_PROGRESS') {
+        inProgress = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    assert.ok(inProgress, "the first daemon's own board should show the ticket IN_PROGRESS");
+
+    // Hard-kill: the only reliable cross-process stop on this platform (see
+    // commands/serve.test.ts's header comment for the three experiments
+    // that established this). daemon.json is left behind, still naming the
+    // now-dead pid -- the second daemon below has to overwrite it to start
+    // at all.
+    await first.kill();
+
+    const second = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);
+    try {
+      const secondInfo = await second.waitForListening();
+      assert.notEqual(secondInfo.pid, firstInfo.pid);
+      const secondFileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const call = (method: 'GET' | 'POST', path: string) => api(secondInfo.port, secondFileInfo.token, method, path);
+
+      const doneDeadline = Date.now() + 5000;
+      let recoveredTicket: { status: string; attemptCount: number } | undefined;
+      while (Date.now() < doneDeadline) {
+        const board = (await call('GET', `/board?project=${project.id}`)).json as {
+          tickets: Array<{ id: string; status: string; attemptCount: number }>;
+        };
+        const t = board.tickets.find((tk) => tk.id === ticket.id);
+        if (t?.status === 'DONE') {
+          recoveredTicket = t;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      assert.ok(
+        recoveredTicket,
+        "the second daemon's own board should show the orphaned ticket re-queued and driven to DONE"
+      );
+      // Only recovery's one worker_failed_retryable ever bumps attempt_count
+      // here (worker_done never touches it -- see stateMachine.ts's static
+      // transition table), so this is the same "exactly one consumed
+      // attempt" signature commands/serve.test.ts's CLI-read version checks.
+      assert.equal(recoveredTicket!.attemptCount, 1);
+
+      const activity = (await call('GET', `/activity?ticket=${ticket.id}&all=true`)).json as Array<{
+        eventType: string;
+        payload: unknown;
+      }>;
+      const recoveryEvent = activity.find(
+        (e) =>
+          e.eventType === 'worker_failed_retryable' &&
+          typeof e.payload === 'object' &&
+          e.payload !== null &&
+          (e.payload as Record<string, unknown>).reason === 'orphaned_on_restart'
+      );
+      assert.ok(
+        recoveryEvent,
+        "the second daemon's own activity log, read over the API, should show the recovery path fired -- not a coincidental fresh success"
+      );
+    } finally {
+      await second.kill();
     }
   } finally {
     rmSync(stateDir, { recursive: true, force: true });

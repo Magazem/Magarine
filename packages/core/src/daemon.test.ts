@@ -337,18 +337,22 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
   const resultB = await loop.forceTick(projectB.id);
   assert.deepEqual(resultB.started, []);
 
-  // Cancel A's run to free its slot (returns ticketA itself to READY, no
-  // attempt consumed), then forceTick project A again: the freed ticket
-  // should start again, and forceTick must not have touched project B at
-  // all (it only ever tick()s the one project it was asked for).
+  // Cancel A's run to free its slot -- batch 8: this lands ticketA in the
+  // terminal CANCELLED, not READY (a person's cancel, distinct from the
+  // daemon's own run_cancelled), so a fresh ticket is what proves the slot
+  // is actually free. forceTick project A again: the fresh ticket should
+  // start, and forceTick must not have touched project B at all (it only
+  // ever tick()s the one project it was asked for).
   await loop.cancelTicket(ticketA.id);
+  assert.equal(getTicket(db, ticketA.id)!.status, 'CANCELLED');
+  const ticketA2 = createTicket(db, { projectId: projectA.id, title: 'ta2' });
   const resultA2 = await loop.forceTick(projectA.id);
   assert.deepEqual(
     resultA2.started.map((s) => s.ticketId),
-    [ticketA.id]
+    [ticketA2.id]
   );
   assert.ok(
-    [...loop.live.values()].some((s) => s.ticketId === ticketA.id),
+    [...loop.live.values()].some((s) => s.ticketId === ticketA2.id),
     'the run forceTick started must be registered in the shared live map'
   );
   assert.equal(getTicket(db, ticketB.id)!.status, 'IN_PROGRESS', "project B must be untouched by project A's forceTick");
@@ -391,8 +395,24 @@ test('DaemonLoop.cancelTicket cancels a live run for the given ticket, and repor
 
   const cancelled = await loop.cancelTicket(hangTicket.id);
   assert.equal(cancelled, 'cancelled');
-  assert.equal(getTicket(db, hangTicket.id)!.status, 'READY');
+  // Batch 8 ruling: a person's cancel lands the ticket in the terminal
+  // CANCELLED, not READY -- landing in READY was the original design this
+  // ruling replaced, because the daemon's own next tick would silently
+  // restart it moments later (found by hand: two runs, the second starting
+  // 0.8 seconds after the first was cancelled).
+  assert.equal(getTicket(db, hangTicket.id)!.status, 'CANCELLED');
   assert.equal(getTicket(db, hangTicket.id)!.attemptCount, 0);
+  assert.equal(loop.live.size, 0);
+
+  // The assertion that would have caught the original behaviour: with a
+  // live 20ms tick interval still running, give the loop several more
+  // passes to prove it does NOT silently restart the cancelled ticket --
+  // CANCELLED is simply invisible to tick() (which only ever looks at
+  // READY tickets), so this holds by construction, but the whole point of
+  // this ruling was that the previous design looked correct until this
+  // exact check was made.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(getTicket(db, hangTicket.id)!.status, 'CANCELLED', 'no second run may start on its own');
   assert.equal(loop.live.size, 0);
 
   // Cancelling the same ticket again once it is no longer live: 'not_running',

@@ -50,9 +50,18 @@ export type TransitionEvent =
   | 'worker_budget_stop'
   | 'worker_question'
   | 'worker_needs_user_decision'
+  // Batch 8: a PERSON's decision (the daemon's `cancel --ticket`/
+  // `POST /tickets/{id}/cancel`), landing the ticket in the terminal
+  // CANCELLED, per the Strategist's ruling -- distinct from `run_cancelled`
+  // below, which is the DAEMON's own decision (a timeout or a shutdown) and
+  // returns to READY instead. Unused by any command from batch 1 through
+  // batch 7; see scheduler.ts's cancelTicketRun doc comment for the full
+  // reasoning behind the split.
   | 'cancel'
-  // Batch 3, per docs/strategy/batch-3-spec.md Role F item 8:
-  | 'manual_retry' // FAILED -> READY, raises max_attempts by one
+  // Batch 3, per docs/strategy/batch-3-spec.md Role F item 8. Batch 8: also
+  // reachable from CANCELLED, not only FAILED -- "cancel, then retry" is the
+  // one explicit way back to READY, not a second reopen command.
+  | 'manual_retry' // FAILED|CANCELLED -> READY, raises max_attempts by one
   // Persisted event_type is literally 'user_decision', per the cross-role
   // contract in batch-3-spec.md section 2 ("A user decision is an event
   // with event_type = 'user_decision'"), so this transition's name IS the
@@ -122,6 +131,9 @@ const TRANSITIONS: Record<TicketStatus, Partial<Record<StaticTransitionEvent, Ti
     // SIGINT/SIGTERM during runUntilIdle): the ticket is not at fault, so
     // unlike worker_failure this never consumes an attempt.
     run_cancelled: 'READY',
+    // A PERSON's cancellation (batch 8's `cancel --ticket`): terminal, not
+    // READY -- see the TransitionEvent union's own comment on `cancel` for
+    // why the two must not share a destination.
     cancel: 'CANCELLED',
   },
   REVIEW: {
@@ -262,7 +274,13 @@ function computeNextState(ticket: Ticket, event: ReplayableEvent, payload: unkno
   }
 
   if (event === 'manual_retry') {
-    if (ticket.status !== 'FAILED') {
+    // Batch 8's ruling: a cancelled ticket goes back to READY through this
+    // same one command, not a separate "reopen" -- see cli.ts's `retry`
+    // wiring and commands/retry.ts. maxAttempts is still raised by one
+    // unconditionally, same as the FAILED case: harmless when the ticket
+    // was cancelled with attempts still remaining, and correct when it
+    // wasn't -- one rule, not two, for "one command."
+    if (ticket.status !== 'FAILED' && ticket.status !== 'CANCELLED') {
       throw new InvalidTransitionError(ticket.status, event);
     }
     return {

@@ -114,3 +114,7 @@ test('non-TransitionEvent rows for batch 4\'s project-level events', () => {
 test('non-TransitionEvent row for batch 6\'s unknown-model pricing fallback: visible, not silent', () => {
   assert.deepEqual(classify('unknown_model_rate'), { visibility: 'inbox', requiresUser: true });
 });
+
+test('spot check for batch 8\'s person-initiated cancel: activity, not internal and not inbox -- the owner did it themselves', () => {
+  assert.deepEqual(classify('cancel'), { visibility: 'activity', requiresUser: false });
+});

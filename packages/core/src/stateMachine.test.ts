@@ -298,11 +298,76 @@ test('manual_retry moves FAILED to READY and raises max_attempts by one', () => 
   assert.equal(retried.ticket.maxAttempts, 3, 'manual_retry raises max_attempts by one');
 });
 
-test('manual_retry refuses a ticket that is not FAILED', () => {
+test('manual_retry refuses a ticket that is not FAILED or CANCELLED', () => {
   const { db, ticket } = setup();
   assert.throws(() => {
     recordTicketTransition(db, { ticketId: ticket.id, event: 'manual_retry', idempotencyKey: 'a' });
   }, InvalidTransitionError);
+});
+
+// Batch 8: the `cancel` transition, unused by any command from batch 1
+// through batch 7 (see the TransitionEvent union's own comment on it),
+// wired up this batch to back `cancel --ticket`/`POST /tickets/{id}/cancel`.
+// Deliberately distinct from `run_cancelled` (tested elsewhere in this
+// file): that one is the daemon's own decision and returns to READY; this
+// one is a person's decision and is terminal.
+
+test('cancel moves IN_PROGRESS to CANCELLED without consuming an attempt', () => {
+  const { db, ticket } = setup();
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+
+  const result = recordTicketTransition(db, { ticketId: ticket.id, event: 'cancel', idempotencyKey: 'c' });
+
+  assert.equal(result.ticket.status, 'CANCELLED');
+  assert.equal(result.ticket.attemptCount, 0, 'a person cancelling a ticket must not consume an attempt');
+});
+
+test('cancel is also reachable from OPEN, READY and REVIEW, and refuses a ticket already in a terminal status', () => {
+  for (const events of [[], ['dependencies_resolved']]) {
+    const { db, ticket } = setup();
+    for (const [i, event] of events.entries()) {
+      recordTicketTransition(db, { ticketId: ticket.id, event: event as 'dependencies_resolved', idempotencyKey: `pre${i}` });
+    }
+    const result = recordTicketTransition(db, { ticketId: ticket.id, event: 'cancel', idempotencyKey: 'x' });
+    assert.equal(result.ticket.status, 'CANCELLED');
+  }
+
+  // REVIEW -> CANCELLED, via worker_needs_review first.
+  const { db: reviewDb, ticket: reviewTicket } = setup();
+  recordTicketTransition(reviewDb, { ticketId: reviewTicket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(reviewDb, { ticketId: reviewTicket.id, event: 'run_started', idempotencyKey: 'b' });
+  recordTicketTransition(reviewDb, { ticketId: reviewTicket.id, event: 'worker_needs_review', idempotencyKey: 'c' });
+  const reviewResult = recordTicketTransition(reviewDb, {
+    ticketId: reviewTicket.id,
+    event: 'cancel',
+    idempotencyKey: 'd',
+  });
+  assert.equal(reviewResult.ticket.status, 'CANCELLED');
+
+  // DONE is terminal: cancel has no edge out of it.
+  const { db: doneDb, ticket: doneTicket } = setup();
+  recordTicketTransition(doneDb, { ticketId: doneTicket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(doneDb, { ticketId: doneTicket.id, event: 'run_started', idempotencyKey: 'b' });
+  recordTicketTransition(doneDb, { ticketId: doneTicket.id, event: 'worker_done', idempotencyKey: 'c' });
+  assert.throws(() => {
+    recordTicketTransition(doneDb, { ticketId: doneTicket.id, event: 'cancel', idempotencyKey: 'd' });
+  }, InvalidTransitionError);
+});
+
+test('manual_retry also moves CANCELLED back to READY, raising max_attempts by one, with attempt_count untouched -- "cancel then retry" is one command, not a separate reopen', () => {
+  const { db, ticket } = setup(); // maxAttempts: 2
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+  const cancelled = recordTicketTransition(db, { ticketId: ticket.id, event: 'cancel', idempotencyKey: 'c' });
+  assert.equal(cancelled.ticket.status, 'CANCELLED');
+  assert.equal(cancelled.ticket.attemptCount, 0);
+
+  const retried = recordTicketTransition(db, { ticketId: ticket.id, event: 'manual_retry', idempotencyKey: 'd' });
+
+  assert.equal(retried.ticket.status, 'READY');
+  assert.equal(retried.ticket.attemptCount, 0, 'a cancel never consumed an attempt, so retry does not either');
+  assert.equal(retried.ticket.maxAttempts, 3, 'manual_retry still raises max_attempts by one, same as the FAILED case');
 });
 
 test("user_decision moves BLOCKED to READY and its event_type is literally 'user_decision', per the cross-role contract", () => {

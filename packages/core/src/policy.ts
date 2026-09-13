@@ -98,9 +98,15 @@ const POLICY: Record<string, EventPolicy> = {
   // should never have been observed as READY; nothing for a user to act on.
   dependency_not_satisfied: { visibility: 'internal', requiresUser: false },
 
-  // Not in the doc. Currently unused by any command (reserved for a future
-  // explicit cancel). Silent by default.
-  cancel: { visibility: 'internal', requiresUser: false },
+  // Not in the doc. Batch 8: this row was "reserved for a future explicit
+  // cancel" through batch 7; that future is `cancel --ticket` /
+  // `POST /tickets/{id}/cancel`. The Strategist's ruling is explicit: "the
+  // activity log records the cancel; no inbox item, because the owner did
+  // it themselves" -- activity, not internal (a person acting on their own
+  // command already knows it happened, so it's not silent bookkeeping the
+  // way `manual_retry` below is), and not inbox (nothing for them to be
+  // notified about).
+  cancel: { visibility: 'activity', requiresUser: false },
 
   // --- Rows added ahead of Role F's stateMachine.ts landing, part 1 ---
   // The architecture document does not name any of these event types; they

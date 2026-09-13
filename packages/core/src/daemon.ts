@@ -136,7 +136,7 @@ export interface DaemonLoop {
   stop(): Promise<void>;
   /** The API's `POST /tick`: forces one scheduling pass for a single project, right now, outside the regular interval. Registers any newly-started runs into the same `live` map the periodic loop uses, so a run started this way is cancellable and gets swept up on shutdown exactly like any other. */
   forceTick(projectId: string): Promise<{ started: Array<{ ticketId: string; runId: string }> }>;
-  /** The API's `POST /tickets/{id}/cancel`: stops the live run for `ticketId` (adapter.stop() + return to READY, no attempt consumed) and removes it from `live`. Returns 'not_running' without touching anything if this daemon holds no live run for that ticket -- the caller (daemonApi.ts) turns that into a 409, not a silent no-op. */
+  /** The API's `POST /tickets/{id}/cancel`: stops the live run for `ticketId` (adapter.stop() + the `cancel` transition to the terminal CANCELLED, no attempt consumed -- not `run_cancelled`/READY, per the Strategist's batch 8 ruling: a person's cancel must not let the daemon's own next tick silently restart it) and removes it from `live`. Returns 'not_running' without touching anything if this daemon holds no live run for that ticket -- the caller (daemonApi.ts) turns that into a 409, not a silent no-op. */
   cancelTicket(ticketId: string): Promise<'cancelled' | 'not_running'>;
 }
 
@@ -210,7 +210,11 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
       stopped = true;
       clearInterval(timer);
       for (const sr of live.values()) {
-        await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'daemon_shutdown');
+        // The daemon's own decision (shutting down), not the ticket's fault
+        // and not a person cancelling it -- run_cancelled, back to READY,
+        // per the Strategist's batch 8 ruling (see scheduler.ts's
+        // cancelTicketRun doc comment for the full distinction).
+        await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'daemon_shutdown', 'run_cancelled');
       }
       live.clear();
     },
@@ -226,7 +230,12 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
     async cancelTicket(ticketId) {
       const sr = [...live.values()].find((s) => s.ticketId === ticketId);
       if (!sr) return 'not_running';
-      await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'user_cancelled');
+      // A person's decision, via POST /tickets/{id}/cancel -- the `cancel`
+      // transition (IN_PROGRESS -> CANCELLED, terminal), not run_cancelled:
+      // the Strategist's ruling is explicit that landing back in READY would
+      // let the daemon's own next tick silently restart it. See
+      // scheduler.ts's cancelTicketRun doc comment for the full reasoning.
+      await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'user_cancelled', 'cancel');
       live.delete(sr.runId);
       return 'cancelled';
     },

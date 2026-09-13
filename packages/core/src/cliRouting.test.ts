@@ -43,6 +43,23 @@ function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code:
   });
 }
 
+// `status --json` is a plain, direct sqlite read (reads stay direct even
+// while a daemon is running -- see cli.ts's liveDaemonFor comment), and
+// node:sqlite sets no busy_timeout: under heavy concurrent load (the full
+// suite running many test files at once), this CLI invocation can race the
+// daemon's own in-flight write and come back with an empty/errored stdout
+// rather than a parseable JSON array. Retried rather than parsed once, the
+// same defensive pattern commands/serve.test.ts's own status() helper
+// already uses for exactly this reason.
+async function pollStatusOrEmpty(projectId: string, stateDir: string): Promise<Array<{ id: string; status: string }>> {
+  try {
+    const res = await runCli(['status', '--project', projectId, '--state-dir', stateDir, '--json']);
+    return JSON.parse(res.stdout) as Array<{ id: string; status: string }>;
+  } catch {
+    return [];
+  }
+}
+
 interface ListeningInfo {
   pid: number;
   port: number;
@@ -125,7 +142,7 @@ test('a live daemon whose recorded dbPath does not match --db is not routed to: 
   }
 });
 
-test('cancel: refuses with no daemon running, refuses against a daemon for a different --db, and succeeds end to end against a live matching daemon', async () => {
+test('cancel: refuses with no daemon running, refuses against a daemon for a different --db, lands a live matching run in CANCELLED (not READY), and retry reopens it', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'cancel-'));
   try {
     // No daemon at all yet.
@@ -158,8 +175,7 @@ test('cancel: refuses with no daemon running, refuses against a daemon for a dif
       const deadline = Date.now() + 3000;
       let inProgress = false;
       while (Date.now() < deadline) {
-        const statusRes = await runCli(['status', '--project', project.id, '--state-dir', stateDir, '--json']);
-        const tickets = JSON.parse(statusRes.stdout) as Array<{ id: string; status: string }>;
+        const tickets = await pollStatusOrEmpty(project.id, stateDir);
         if (tickets.find((t) => t.id === ticket.id)?.status === 'IN_PROGRESS') {
           inProgress = true;
           break;
@@ -171,8 +187,21 @@ test('cancel: refuses with no daemon running, refuses against a daemon for a dif
       const cancelRes = await runCli(['cancel', '--ticket', ticket.id, '--state-dir', stateDir, '--json']);
       assert.equal(cancelRes.code, 0, cancelRes.stderr);
       const cancelled = JSON.parse(cancelRes.stdout) as { status: string; attemptCount: number };
-      assert.equal(cancelled.status, 'READY');
+      // Batch 8 ruling: terminal CANCELLED, not READY -- a person's cancel
+      // must not let the daemon's own next tick silently restart the run.
+      assert.equal(cancelled.status, 'CANCELLED');
       assert.equal(cancelled.attemptCount, 0, 'a cancel must not consume an attempt');
+
+      // No second run starts on its own: give the daemon a beat, then
+      // confirm the ticket is still exactly where cancel left it.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const afterWait = await pollStatusOrEmpty(project.id, stateDir);
+      assert.equal(afterWait.find((t) => t.id === ticket.id)?.status, 'CANCELLED');
+
+      // retry is the one explicit way back to READY.
+      const retryRes = await runCli(['retry', '--ticket', ticket.id, '--state-dir', stateDir, '--json']);
+      assert.equal(retryRes.code, 0, retryRes.stderr);
+      assert.equal(JSON.parse(retryRes.stdout).status, 'READY');
     } finally {
       await handle.kill();
     }
@@ -266,8 +295,7 @@ test('ticket add and decide route through a live matching daemon end to end (req
       const deadline = Date.now() + 3000;
       let blocked = false;
       while (Date.now() < deadline) {
-        const statusRes = await runCli(['status', '--project', project.id, '--state-dir', stateDir, '--json']);
-        const tickets = JSON.parse(statusRes.stdout) as Array<{ id: string; status: string }>;
+        const tickets = await pollStatusOrEmpty(project.id, stateDir);
         if (tickets.find((t) => t.id === blockedTicket.id)?.status === 'BLOCKED') {
           blocked = true;
           break;
