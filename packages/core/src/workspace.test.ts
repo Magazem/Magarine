@@ -15,10 +15,15 @@ test('NONE gives a fresh temp directory that is removed after cleanup()', async 
   assert.equal(existsSync(ws.path), false, 'NONE workspace must be removed after the run');
 });
 
-test('NONE gives a distinct directory per call', () => {
+test('NONE gives a distinct directory per call', async () => {
   const a = prepareWorkspace('NONE', 'tkt_none_2');
   const b = prepareWorkspace('NONE', 'tkt_none_2');
-  assert.notEqual(a.path, b.path);
+  try {
+    assert.notEqual(a.path, b.path);
+  } finally {
+    await a.cleanup();
+    await b.cleanup();
+  }
 });
 
 test('DIRECTORY gives the project workspaceRoot itself (one shared directory), and it persists after cleanup()', async () => {

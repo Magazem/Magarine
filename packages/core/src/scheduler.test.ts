@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from './db/index.ts';
@@ -162,6 +162,18 @@ test('the concurrency cap holds even when workers hang', async () => {
   const secondTick = await tick(deps);
   assert.equal(secondTick.started.length, 0, 'no room left; T3 stays READY, not started');
   assert.equal(getTicket(db, t3.id)!.status, 'READY');
+
+  // T1 and T2 are deliberately left hanging (that is the point of this
+  // test) and are never cancelled through the scheduler, so their NONE
+  // workspaces are never reclaimed by product code either — a genuinely
+  // hung run's temp directory is meant to persist until the daemon decides
+  // to cancel it. Removed directly here purely as test hygiene, not as a
+  // stand-in for exercising cancellation (see the SIGINT and runTimeoutMs
+  // tests below for that).
+  for (const started of firstTick.started) {
+    const run = getRun(db, started.runId)!;
+    if (run.workspaceRef) rmSync(run.workspaceRef, { recursive: true, force: true });
+  }
 });
 
 test('retry exhaustion reaches FAILED after max_attempts retryable failures', async () => {
@@ -303,143 +315,155 @@ test("a NONE dependent finds its dependency's file under .orchestrator/inputs/<d
   addDependency(db, { ticketId: dependent.id, dependsOnTicketId: dep.id });
 
   const artifactsDir = mkdtempSync(join(tmpdir(), 'magarine-artifacts-'));
-  const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, artifactsDir };
+  try {
+    const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, artifactsDir };
 
-  const firstTick = await tick(deps);
-  assert.deepEqual(firstTick.started.map((s) => s.ticketId), [dep.id]);
-  const depStarted = firstTick.started[0];
-  const depRun = getRun(db, depStarted.runId)!;
-  writeFileSync(join(depRun.workspaceRef!, 'out.txt'), 'hello from dep');
+    const firstTick = await tick(deps);
+    assert.deepEqual(firstTick.started.map((s) => s.ticketId), [dep.id]);
+    const depStarted = firstTick.started[0];
+    const depRun = getRun(db, depStarted.runId)!;
+    writeFileSync(join(depRun.workspaceRef!, 'out.txt'), 'hello from dep');
 
-  adapter.emit(depStarted.handle.id, {
-    type: 'result_raw',
-    raw: {
-      status: 'done',
-      summary: 'produced a file',
-      artifacts: [{ kind: 'file', path: 'out.txt' }],
-      checks: [],
-      blockers: [],
-      questions: [],
-    },
-  });
-  await depStarted.done;
-  assert.equal(getTicket(db, dep.id)!.status, 'DONE');
+    adapter.emit(depStarted.handle.id, {
+      type: 'result_raw',
+      raw: {
+        status: 'done',
+        summary: 'produced a file',
+        artifacts: [{ kind: 'file', path: 'out.txt' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      },
+    });
+    await depStarted.done;
+    assert.equal(getTicket(db, dep.id)!.status, 'DONE');
 
-  const secondTick = await tick(deps);
-  assert.deepEqual(secondTick.started.map((s) => s.ticketId), [dependent.id]);
-  const dependentStarted = secondTick.started[0];
-  const dependentRun = getRun(db, dependentStarted.runId)!;
+    const secondTick = await tick(deps);
+    assert.deepEqual(secondTick.started.map((s) => s.ticketId), [dependent.id]);
+    const dependentStarted = secondTick.started[0];
+    const dependentRun = getRun(db, dependentStarted.runId)!;
 
-  const expectedInputPath = join(dependentRun.workspaceRef!, '.orchestrator', 'inputs', dep.id, 'out.txt');
-  assert.ok(existsSync(expectedInputPath), 'the dependency file must be copied into inputs/ before the worker starts');
-  assert.equal(readFileSync(expectedInputPath, 'utf8'), 'hello from dep');
+    const expectedInputPath = join(dependentRun.workspaceRef!, '.orchestrator', 'inputs', dep.id, 'out.txt');
+    assert.ok(existsSync(expectedInputPath), 'the dependency file must be copied into inputs/ before the worker starts');
+    assert.equal(readFileSync(expectedInputPath, 'utf8'), 'hello from dep');
 
-  const envelope = adapter.startedWith.get(dependentStarted.handle.id)!.ticket;
-  assert.equal(envelope.completedDependencies.length, 1);
-  assert.equal(
-    envelope.completedDependencies[0].artifacts[0].path,
-    join('.orchestrator', 'inputs', dep.id, 'out.txt')
-  );
+    const envelope = adapter.startedWith.get(dependentStarted.handle.id)!.ticket;
+    assert.equal(envelope.completedDependencies.length, 1);
+    assert.equal(
+      envelope.completedDependencies[0].artifacts[0].path,
+      join('.orchestrator', 'inputs', dep.id, 'out.txt')
+    );
 
-  adapter.emit(dependentStarted.handle.id, {
-    type: 'result_raw',
-    raw: { status: 'done', summary: 'consumed it', artifacts: [], checks: [], blockers: [], questions: [] },
-  });
-  await dependentStarted.done;
+    adapter.emit(dependentStarted.handle.id, {
+      type: 'result_raw',
+      raw: { status: 'done', summary: 'consumed it', artifacts: [], checks: [], blockers: [], questions: [] },
+    });
+    await dependentStarted.done;
+  } finally {
+    rmSync(artifactsDir, { recursive: true, force: true });
+  }
 });
 
 test("a shared-directory (DIRECTORY) dependent's envelope lists the dependency's artefact path", async () => {
   const db = openDb(':memory:');
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-directory-'));
-  const project = createProject(db, { name: 'p', maxParallelWorkers: 2, workspaceRoot });
-  const adapter = new TestAdapter();
-  const dep = createTicket(db, { projectId: project.id, title: 'producer', workspaceType: 'DIRECTORY' });
-  const dependent = createTicket(db, { projectId: project.id, title: 'consumer', workspaceType: 'DIRECTORY' });
-  addDependency(db, { ticketId: dependent.id, dependsOnTicketId: dep.id });
+  try {
+    const project = createProject(db, { name: 'p', maxParallelWorkers: 2, workspaceRoot });
+    const adapter = new TestAdapter();
+    const dep = createTicket(db, { projectId: project.id, title: 'producer', workspaceType: 'DIRECTORY' });
+    const dependent = createTicket(db, { projectId: project.id, title: 'consumer', workspaceType: 'DIRECTORY' });
+    addDependency(db, { ticketId: dependent.id, dependsOnTicketId: dep.id });
 
-  const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id };
+    const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id };
 
-  const firstTick = await tick(deps);
-  const depStarted = firstTick.started[0];
-  writeFileSync(join(workspaceRoot, 'alpha.txt'), 'alpha contents');
-  adapter.emit(depStarted.handle.id, {
-    type: 'result_raw',
-    raw: {
-      status: 'done',
-      summary: 'wrote alpha',
-      artifacts: [{ kind: 'file', path: 'alpha.txt' }],
-      checks: [],
-      blockers: [],
-      questions: [],
-    },
-  });
-  await depStarted.done;
+    const firstTick = await tick(deps);
+    const depStarted = firstTick.started[0];
+    writeFileSync(join(workspaceRoot, 'alpha.txt'), 'alpha contents');
+    adapter.emit(depStarted.handle.id, {
+      type: 'result_raw',
+      raw: {
+        status: 'done',
+        summary: 'wrote alpha',
+        artifacts: [{ kind: 'file', path: 'alpha.txt' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      },
+    });
+    await depStarted.done;
 
-  const secondTick = await tick(deps);
-  const dependentStarted = secondTick.started[0];
-  const envelope = adapter.startedWith.get(dependentStarted.handle.id)!.ticket;
+    const secondTick = await tick(deps);
+    const dependentStarted = secondTick.started[0];
+    const envelope = adapter.startedWith.get(dependentStarted.handle.id)!.ticket;
 
-  assert.equal(envelope.completedDependencies.length, 1);
-  assert.equal(envelope.completedDependencies[0].artifacts.length, 1);
-  assert.equal(envelope.completedDependencies[0].artifacts[0].path, join(workspaceRoot, 'alpha.txt'));
-  assert.equal(envelope.completedDependencies[0].summary, 'wrote alpha');
+    assert.equal(envelope.completedDependencies.length, 1);
+    assert.equal(envelope.completedDependencies[0].artifacts.length, 1);
+    assert.equal(envelope.completedDependencies[0].artifacts[0].path, join(workspaceRoot, 'alpha.txt'));
+    assert.equal(envelope.completedDependencies[0].summary, 'wrote alpha');
 
-  adapter.emit(dependentStarted.handle.id, {
-    type: 'result_raw',
-    raw: { status: 'done', summary: 'done', artifacts: [], checks: [], blockers: [], questions: [] },
-  });
-  await dependentStarted.done;
+    adapter.emit(dependentStarted.handle.id, {
+      type: 'result_raw',
+      raw: { status: 'done', summary: 'done', artifacts: [], checks: [], blockers: [], questions: [] },
+    });
+    await dependentStarted.done;
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 test('two concurrent runs declaring the same path in a shared DIRECTORY workspace produce an artifact_collision event, and both artifact rows are kept', async () => {
   const db = openDb(':memory:');
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-collision-'));
-  const project = createProject(db, { name: 'p', maxParallelWorkers: 2, workspaceRoot });
-  const adapter = new TestAdapter();
-  const t1 = createTicket(db, { projectId: project.id, title: 'writer 1', workspaceType: 'DIRECTORY' });
-  const t2 = createTicket(db, { projectId: project.id, title: 'writer 2', workspaceType: 'DIRECTORY' });
+  try {
+    const project = createProject(db, { name: 'p', maxParallelWorkers: 2, workspaceRoot });
+    const adapter = new TestAdapter();
+    const t1 = createTicket(db, { projectId: project.id, title: 'writer 1', workspaceType: 'DIRECTORY' });
+    const t2 = createTicket(db, { projectId: project.id, title: 'writer 2', workspaceType: 'DIRECTORY' });
 
-  const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id };
-  const { started } = await tick(deps);
-  assert.equal(started.length, 2, 'both writers start in the same tick, proving they are genuinely concurrent');
+    const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id };
+    const { started } = await tick(deps);
+    assert.equal(started.length, 2, 'both writers start in the same tick, proving they are genuinely concurrent');
 
-  writeFileSync(join(workspaceRoot, 'shared.txt'), 'first writer');
-  const s1 = started.find((s) => s.ticketId === t1.id)!;
-  const s2 = started.find((s) => s.ticketId === t2.id)!;
+    writeFileSync(join(workspaceRoot, 'shared.txt'), 'first writer');
+    const s1 = started.find((s) => s.ticketId === t1.id)!;
+    const s2 = started.find((s) => s.ticketId === t2.id)!;
 
-  adapter.emit(s1.handle.id, {
-    type: 'result_raw',
-    raw: {
-      status: 'done',
-      summary: 'wrote shared',
-      artifacts: [{ kind: 'file', path: 'shared.txt' }],
-      checks: [],
-      blockers: [],
-      questions: [],
-    },
-  });
-  await s1.done;
+    adapter.emit(s1.handle.id, {
+      type: 'result_raw',
+      raw: {
+        status: 'done',
+        summary: 'wrote shared',
+        artifacts: [{ kind: 'file', path: 'shared.txt' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      },
+    });
+    await s1.done;
 
-  adapter.emit(s2.handle.id, {
-    type: 'result_raw',
-    raw: {
-      status: 'done',
-      summary: 'also wrote shared',
-      artifacts: [{ kind: 'file', path: 'shared.txt' }],
-      checks: [],
-      blockers: [],
-      questions: [],
-    },
-  });
-  await s2.done;
+    adapter.emit(s2.handle.id, {
+      type: 'result_raw',
+      raw: {
+        status: 'done',
+        summary: 'also wrote shared',
+        artifacts: [{ kind: 'file', path: 'shared.txt' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      },
+    });
+    await s2.done;
 
-  const events = listEventsForEntity(db, 'ticket', t2.id);
-  const collision = events.find((e) => e.eventType === 'artifact_collision');
-  assert.ok(collision, 'the second declaration of the same path must raise an artifact_collision event');
-  assert.equal((collision!.payload as { conflictingTicketId: string }).conflictingTicketId, t1.id);
+    const events = listEventsForEntity(db, 'ticket', t2.id);
+    const collision = events.find((e) => e.eventType === 'artifact_collision');
+    assert.ok(collision, 'the second declaration of the same path must raise an artifact_collision event');
+    assert.equal((collision!.payload as { conflictingTicketId: string }).conflictingTicketId, t1.id);
 
-  assert.equal(listArtifactsForTicket(db, t1.id).length, 1, 'the collision is logged, not prevented');
-  assert.equal(listArtifactsForTicket(db, t2.id).length, 1);
+    assert.equal(listArtifactsForTicket(db, t1.id).length, 1, 'the collision is logged, not prevented');
+    assert.equal(listArtifactsForTicket(db, t2.id).length, 1);
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 test('SIGINT during a hanging fake run stops the worker, cancels the run without consuming an attempt, and leaves no ticket stuck IN_PROGRESS', async () => {
