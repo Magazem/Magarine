@@ -1,11 +1,17 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from './index.ts';
 import { rmSyncResilient } from './testSupport.ts';
+import { testTempRoot } from '../testSupport.ts';
+
+// Batch 6 item 5: this file's own private root under the OS temp directory
+// (testSupport.ts's testTempRoot), rather than creating a prefixed directory
+// directly inside the shared tmpdir() -- see that function's doc comment.
+const testRoot = testTempRoot('batch3migration');
+after(testRoot.cleanup);
 
 interface Snapshot {
   appliedMigrationIds: string[];
@@ -79,7 +85,7 @@ function exerciseMigration0004(file: string): Snapshot {
 }
 
 test('a database migrated only to 0001+0002+0003 picks up 0004 (batch 3 fields) on next open', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'magarine-migrate-0004-'));
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-migrate-0004-'));
   const file = join(dir, 'db.sqlite');
   let snapshot: Snapshot;
   try {

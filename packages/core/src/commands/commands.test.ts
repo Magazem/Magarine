@@ -1,17 +1,26 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rmSyncResilient } from '../db/testSupport.ts';
 import { spawnManaged } from '../process.ts';
+import { testTempRoot } from '../testSupport.ts';
 
 // Every test here drives the real `magarine` CLI entry point against a
 // temporary sqlite file, per this role's working method: a command that
 // only works when called as a function has not been tested.
 
 const cliPath = fileURLToPath(new URL('../cli.ts', import.meta.url));
+
+// Batch 6 item 5: this file's own private root under the OS temp directory
+// (testSupport.ts's testTempRoot), rather than every `withTempDb` call
+// creating its own prefixed directory directly inside the shared tmpdir() --
+// see that function's doc comment. Each call still gets its own mkdtemp'd
+// subdirectory and its own cleanup; this only changes where in the
+// filesystem hierarchy that subdirectory lives.
+const testRoot = testTempRoot('commands');
+after(testRoot.cleanup);
 
 async function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args] });
@@ -24,7 +33,7 @@ async function run(args: string[]): Promise<{ code: number | null; stdout: strin
 }
 
 function withTempDb<T>(prefix: string, fn: (dbFile: string) => Promise<T>): Promise<T> {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = mkdtempSync(join(testRoot.root, prefix));
   const dbFile = join(dir, 'magarine.db');
   return fn(dbFile).finally(() => rmSyncResilient(dir));
 }

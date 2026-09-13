@@ -1,11 +1,17 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from './index.ts';
 import { rmSyncResilient } from './testSupport.ts';
+import { testTempRoot } from '../testSupport.ts';
+
+// Batch 6 item 5: this file's own private root under the OS temp directory
+// (testSupport.ts's testTempRoot), rather than creating a prefixed directory
+// directly inside the shared tmpdir() -- see that function's doc comment.
+const testRoot = testTempRoot('budgetmigration');
+after(testRoot.cleanup);
 
 interface Snapshot {
   appliedMigrationIds: string[];
@@ -78,7 +84,7 @@ function exerciseMigration0003(file: string): Snapshot {
 // open, without re-running the earlier migrations, and existing project
 // rows get the default max_budget_usd rather than NULL or an error.
 test('a database migrated only to 0001+0002 picks up 0003 (budget fields) on next open, with the default applied to existing rows', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'magarine-migrate-0003-'));
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-migrate-0003-'));
   const file = join(dir, 'db.sqlite');
   let snapshot: Snapshot;
   try {

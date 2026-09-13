@@ -1,12 +1,22 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
+import { testTempRoot } from './testSupport.ts';
 
 const cliPath = fileURLToPath(new URL('./cli.ts', import.meta.url));
+
+// Batch 6 item 5: this file's own private root under the OS temp directory
+// (testSupport.ts's testTempRoot), rather than every test creating its own
+// prefixed directory directly inside the shared tmpdir() -- see that
+// function's doc comment for why (batch-4-closeout.md section 5 item 2's
+// flake). Every individual test below still gets its own mkdtemp'd
+// subdirectory and its own try/finally cleanup; this only changes where in
+// the filesystem hierarchy that subdirectory lives.
+const testRoot = testTempRoot('cli');
+after(testRoot.cleanup);
 
 async function run(
   args: string[],
@@ -22,7 +32,7 @@ async function run(
 }
 
 test('CLI drives a project through project create, ticket add, dep add, and run --until-idle', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'magarine-cli-'));
+  const dir = mkdtempSync(join(testRoot.root,'magarine-cli-'));
   const dbFile = join(dir, 'magarine.db');
   try {
     const projectRes = await run(['project', 'create', '--name', 'Demo', '--json', '--db', dbFile]);
@@ -69,7 +79,7 @@ test('regression: a dependent ticket created before its blocker never runs ahead
   // ticket in a dependency before it exists), then the blocker, then wire
   // the dependency. The dependent must not be runnable until the blocker
   // is DONE, regardless of creation order.
-  const dir = mkdtempSync(join(tmpdir(), 'magarine-cli-order-'));
+  const dir = mkdtempSync(join(testRoot.root,'magarine-cli-order-'));
   const dbFile = join(dir, 'magarine.db');
   try {
     const projectRes = await run(['project', 'create', '--name', 'ordertest', '--json', '--db', dbFile]);
@@ -147,7 +157,7 @@ test('regression: a dependent ticket created before its blocker never runs ahead
 });
 
 test('an unknown flag is reported by name instead of failing deep inside a DB constraint', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'magarine-cli-flag-'));
+  const dir = mkdtempSync(join(testRoot.root,'magarine-cli-flag-'));
   const dbFile = join(dir, 'magarine.db');
   try {
     const projectRes = await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile]);
@@ -187,7 +197,7 @@ test('an unknown flag is reported by name instead of failing deep inside a DB co
 // working directory unless the user asked for it.
 
 test('--state-dir places the database under <state-dir>/magarine.db, not the current working directory', async () => {
-  const stateDir = mkdtempSync(join(tmpdir(), 'magarine-statedir-'));
+  const stateDir = mkdtempSync(join(testRoot.root,'magarine-statedir-'));
   try {
     const res = await run(['project', 'create', '--name', 'P', '--state-dir', stateDir, '--json']);
     assert.equal(res.code, 0, res.stderr);
@@ -198,7 +208,7 @@ test('--state-dir places the database under <state-dir>/magarine.db, not the cur
 });
 
 test('MAGARINE_HOME places the database under <MAGARINE_HOME>/magarine.db when --state-dir and --db are both absent', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'magarine-magarinehome-'));
+  const home = mkdtempSync(join(testRoot.root,'magarine-magarinehome-'));
   try {
     const res = await run(['project', 'create', '--name', 'P', '--json'], {
       env: { ...process.env, MAGARINE_HOME: home },
@@ -211,7 +221,7 @@ test('MAGARINE_HOME places the database under <MAGARINE_HOME>/magarine.db when -
 });
 
 test('--db still overrides --state-dir as an explicit path', async () => {
-  const stateDir = mkdtempSync(join(tmpdir(), 'magarine-statedir-override-'));
+  const stateDir = mkdtempSync(join(testRoot.root,'magarine-statedir-override-'));
   const dbFile = join(stateDir, 'custom.db');
   try {
     const res = await run(['project', 'create', '--name', 'P', '--state-dir', stateDir, '--db', dbFile, '--json']);
@@ -227,8 +237,8 @@ test('--db still overrides --state-dir as an explicit path', async () => {
 });
 
 test('with no --state-dir, no MAGARINE_HOME, and no --db, the daemon falls back to <home>/.magarine and never writes under the process cwd', async () => {
-  const fakeHome = mkdtempSync(join(tmpdir(), 'magarine-fakehome-'));
-  const scratchCwd = mkdtempSync(join(tmpdir(), 'magarine-scratchcwd-'));
+  const fakeHome = mkdtempSync(join(testRoot.root,'magarine-fakehome-'));
+  const scratchCwd = mkdtempSync(join(testRoot.root,'magarine-scratchcwd-'));
   try {
     const res = await run(['project', 'create', '--name', 'P', '--json'], {
       cwd: scratchCwd,

@@ -1,11 +1,17 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb, runMigrations } from './index.ts';
 import { rmSyncResilient } from './testSupport.ts';
+import { testTempRoot } from '../testSupport.ts';
+
+// Batch 6 item 5: this file's own private root under the OS temp directory
+// (testSupport.ts's testTempRoot), rather than creating a prefixed directory
+// directly inside the shared tmpdir() -- see that function's doc comment.
+const testRoot = testTempRoot('dbindex');
+after(testRoot.cleanup);
 
 test('runMigrations is idempotent: applying twice does not error or duplicate rows', () => {
   const db = openDb(':memory:');
@@ -69,7 +75,7 @@ function exerciseMigration0002(file: string): Snapshot {
 }
 
 test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, without re-running 0001', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'magarine-migrate-'));
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-migrate-'));
   const file = join(dir, 'db.sqlite');
   let snapshot: Snapshot;
   try {

@@ -1,11 +1,17 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDb } from './index.ts';
 import { rmSyncResilient } from './testSupport.ts';
+import { testTempRoot } from '../testSupport.ts';
+
+// Batch 6 item 5: this file's own private root under the OS temp directory
+// (testSupport.ts's testTempRoot), rather than creating a prefixed directory
+// directly inside the shared tmpdir() -- see that function's doc comment.
+const testRoot = testTempRoot('modelpinningmigration');
+after(testRoot.cleanup);
 
 interface Snapshot {
   appliedMigrationIds: string[];
@@ -90,7 +96,7 @@ function exerciseMigration0006(file: string): Snapshot {
 // existing ticket rows get NULL (no override, unlike the project default --
 // same NULL-means-"use the project's" shape as max_budget_usd_override).
 test("a database migrated only to 0001-0005 picks up 0006 (model pinning) on next open, with existing projects defaulting to 'claude-sonnet-5' and existing tickets defaulting to NULL (no override)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'magarine-migrate-0006-'));
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-migrate-0006-'));
   const file = join(dir, 'db.sqlite');
   let snapshot: Snapshot;
   try {
