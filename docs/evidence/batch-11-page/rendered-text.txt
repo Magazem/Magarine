@@ -1,0 +1,29 @@
+Magarine
+Daemon token: 
+Save
+token set for this tab
+Project: 
+-- select --
+UI Walk (proj_393c405c-25ac-4220-a95d-21cf66838c6a)
+Refresh projects
+Refresh now
+last refreshed 8:45:17 AM
+Board
+id	status	title	attempts	cost	blocked by	
+tkt_ed46cad3-6810-4de4-a54e-7f913acdd19f	BLOCKED	Needs a decision from the owner	0/3	$0.00		
+tkt_72f34caf-f94c-489f-ab8a-4a4c30ee24af	DONE	Write the introduction section	0/3	$0.00		
+Inbox
+tkt_ed46cad3-6810-4de4-a54e-7f913acdd19f [worker_needs_user_decision]
+fake needs a decision -- magarine decide --ticket tkt_ed46cad3-6810-4de4-a54e-7f913acdd19f --answer "..."
+Answer
+Activity
+2026-09-14T06:44:21.126Z worker_needs_user_decision tkt_ed46cad3-6810-4de4-a54e-7f913acdd19f
+2026-09-14T06:44:21.117Z run_started tkt_ed46cad3-6810-4de4-a54e-7f913acdd19f
+2026-09-14T06:44:21.108Z worker_done tkt_72f34caf-f94c-489f-ab8a-4a4c30ee24af
+2026-09-14T06:44:21.097Z run_started tkt_72f34caf-f94c-489f-ab8a-4a4c30ee24af
+2026-09-14T06:44:21.089Z dependencies_resolved tkt_ed46cad3-6810-4de4-a54e-7f913acdd19f
+2026-09-14T06:44:21.074Z dependencies_resolved tkt_72f34caf-f94c-489f-ab8a-4a4c30ee24af
+Conversation
+Scope document (read-only here):
+(no scope document set for this project yet)
+Send
