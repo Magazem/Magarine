@@ -9,6 +9,7 @@ import {
   addDependency,
   createProject,
   createTicket,
+  getProject,
   getRun,
   getTicket,
   isProjectAdapterPaused,
@@ -793,28 +794,79 @@ test("batch 6 item 4: a completed run's terminal result_raw event flagging unkno
   assert.deepEqual(unknownModelEvents[0].payload, { model: 'claude-mystery-9' });
 });
 
-test('a project spend cap that admits one run refuses the second at spawn time, pauses the project, and emits project_spend_cap_reached exactly once', async () => {
+// Batch 11 ruling 1 rule e replaces the old refuse-outright behaviour with
+// shrink-to-fit: a ticket's own ceiling is capped to whatever the project's
+// remaining spend allows, and only refused (pausing the project, one
+// project_spend_cap_reached event) when that shrunk amount would fall below
+// MIN_BUDGET_USD. This is finding 5's actual fix -- a $1 cap with a $2
+// default used to refuse forever, silently, because 0.6+0.6 > 1.0 was
+// treated the same as "there's nothing left at all".
+test('a project spend cap shrinks a ticket\'s ceiling to what remains, rather than refusing, as long as the shrunk amount is still above the floor -- proven by driving the shrunk ceiling through the real spawned pipeline with the fake adapter', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 0.6, maxSpendUsd: 1.0 });
   const adapter = new FakeAdapter();
   const first = createTicket(db, { projectId: project.id, title: 'first' });
   const second = createTicket(db, { projectId: project.id, title: 'second' });
   adapter.setScript(first.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
-  adapter.setScript(second.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
+  // 0.5 sits BELOW the ticket's own 0.6 ceiling but ABOVE the 0.4 the cap
+  // has left (1.0 - 0.6). If the shrunk ceiling actually reached the
+  // envelope (and so ctx.ceilingUsd), the scheduler's own live-estimate
+  // stop fires on this progress report; if the shrink were a no-op (the
+  // bug this replaces), 0.5 would pass unnoticed under the un-shrunk 0.6
+  // and the ticket would sit IN_PROGRESS forever.
+  adapter.setScript(second.id, { kind: 'progress', costUsd: 0.5 });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
 
-  // First run: 0 recorded so far + 0.6 ceiling = 0.6, under the 1.0 cap.
   const firstTick = await tick(deps);
   assert.deepEqual(firstTick.started.map((s) => s.ticketId), [first.id]);
   await Promise.all(firstTick.started.map((s) => s.done));
   assert.equal(getTicket(db, first.id)!.status, 'DONE');
 
-  // Second run: 0.6 recorded + 0.6 ceiling = 1.2, over the 1.0 cap -- refused.
   const secondTick = await tick(deps);
-  assert.equal(secondTick.started.length, 0, 'the cap must refuse to spawn the second ticket');
+  assert.equal(secondTick.started.length, 1, '0.4 remains under the cap, still above the $0.25 floor -- must spawn, not refuse');
+  assert.equal(isProjectAdapterPaused(db, project.id), false, 'shrinking is not a refusal; the project stays unpaused');
+  await Promise.all(secondTick.started.map((s) => s.done));
+
+  const after = getTicket(db, second.id)!;
+  assert.equal(after.status, 'FAILED', 'the scheduler must have stopped the run itself once the shrunk 0.4 ceiling was crossed');
+  const run = getRun(db, secondTick.started[0].runId)!;
+  assert.equal(run.failureClass, 'budget_exceeded');
+  const finalEvent = listEventsForEntity(db, 'ticket', second.id).find((e) => e.eventType === 'worker_failed_final')!;
+  assert.equal(
+    (finalEvent.payload as { ceiling: number }).ceiling,
+    0.4,
+    'the enforced ceiling must be the shrunk 0.4, not the ticket\'s own 0.6 -- proves envelope.maxBudgetUsd carried the override'
+  );
+
+  assert.equal(
+    listEventsForProject(db, project.id).filter((e) => e.eventType === 'project_spend_cap_reached').length,
+    0,
+    'a shrink is not a cap-reached refusal'
+  );
+});
+
+test('a project spend cap refuses to spawn, pausing the project with reason spend_cap and emitting project_spend_cap_reached exactly once, when what the cap allows would shrink the ceiling below the floor', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 0.6, maxSpendUsd: 1.0 });
+  const adapter = new FakeAdapter();
+  const first = createTicket(db, { projectId: project.id, title: 'first' });
+  const second = createTicket(db, { projectId: project.id, title: 'second' });
+  adapter.setScript(first.id, { kind: 'succeed', usage: { total_cost_usd: 0.8 } });
+  adapter.setScript(second.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+
+  // First run: 0.8 recorded, leaving 0.2 -- below the $0.25 floor.
+  const firstTick = await tick(deps);
+  await Promise.all(firstTick.started.map((s) => s.done));
+  assert.equal(getTicket(db, first.id)!.status, 'DONE');
+
+  const secondTick = await tick(deps);
+  assert.equal(secondTick.started.length, 0, 'a shrunk ceiling below the floor must refuse, not spawn a sub-floor run');
   assert.equal(getTicket(db, second.id)!.status, 'READY', 'left READY, not started, not failed');
   assert.equal(isProjectAdapterPaused(db, project.id), true);
+  assert.equal(getProject(db, project.id)!.pauseReason, 'spend_cap');
 
   const events = listEventsForProject(db, project.id);
   const capEvents = events.filter((e) => e.eventType === 'project_spend_cap_reached');

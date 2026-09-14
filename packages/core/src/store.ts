@@ -46,6 +46,8 @@ interface ProjectRow {
   workspace_root: string | null;
   adapter_paused_at: string | null;
   manager_model: string | null;
+  scope_path: string | null;
+  pause_reason: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -64,6 +66,8 @@ function rowToProject(row: ProjectRow): Project {
     workspaceRoot: row.workspace_root,
     adapterPausedAt: row.adapter_paused_at,
     managerModel: row.manager_model,
+    scopePath: row.scope_path,
+    pauseReason: row.pause_reason === 'spend_cap' || row.pause_reason === 'adapter_unavailable' ? row.pause_reason : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -82,6 +86,7 @@ export function createProject(
     brief?: string | null;
     workspaceRoot?: string | null;
     managerModel?: string | null;
+    scopePath?: string | null;
   }
 ): Project {
   const maxBudgetUsd = input.maxBudgetUsd ?? 2.0;
@@ -100,8 +105,8 @@ export function createProject(
   const now = new Date().toISOString();
   const id = newId('proj');
   db.prepare(
-    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, default_model, brief, workspace_root, manager_model, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, default_model, brief, workspace_root, manager_model, scope_path, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.name,
@@ -114,10 +119,25 @@ export function createProject(
     input.brief ?? null,
     input.workspaceRoot ?? null,
     input.managerModel ?? null,
+    input.scopePath ?? null,
     now,
     now
   );
   return getProject(db, id)!;
+}
+
+// Batch 11: the write site for `project create --scope`/a future `project
+// set --scope` (Role Q's CLI surface) and for `writeScopeText` below the
+// first time it needs to persist a path. `null` clears it (falls back to
+// "no scope file", per readScopeText's own doc comment -- this project has
+// no default-location convention to fall back to instead, see this
+// function's migration comment in db/schema.ts).
+export function setProjectScopePath(db: Db, projectId: string, scopePath: string | null): void {
+  db.prepare('UPDATE projects SET scope_path = ?, updated_at = ? WHERE id = ?').run(
+    scopePath,
+    new Date().toISOString(),
+    projectId
+  );
 }
 
 // Setter for a future `project set --manager-model` to call, matching
@@ -143,9 +163,21 @@ export function setProjectMaxBudgetUsd(db: Db, projectId: string, maxBudgetUsd: 
   );
 }
 
-// Setter for a future `project set --max-spend`/`project create --max-spend`
-// to call. `null` clears the cap.
-export function setProjectMaxSpendUsd(db: Db, projectId: string, maxSpendUsd: number | null): void {
+// Setter for `project set --max-spend`/`project create --max-spend` to call.
+// `null` clears the cap.
+//
+// Batch 11 ruling 1 rule b: raising the cap on a project paused for
+// `spend_cap` must clear that pause BY ITSELF, not merely permit a future
+// tick to succeed. Living here (rather than in cli.ts or daemonApi.ts) means
+// both call sites -- the direct-write CLI path and the daemon-routed path --
+// get the fix for free from the one place that already owns "the cap
+// changed". An `adapter_unavailable` pause is untouched: it needs a login,
+// not a bigger number, so it is never auto-cleared by this setter.
+export function setProjectMaxSpendUsd(
+  db: Db,
+  projectId: string,
+  maxSpendUsd: number | null
+): { unpaused: boolean } {
   if (maxSpendUsd != null) {
     assertAboveFloor(maxSpendUsd, 'a project\'s max_spend_usd');
   }
@@ -154,14 +186,24 @@ export function setProjectMaxSpendUsd(db: Db, projectId: string, maxSpendUsd: nu
     new Date().toISOString(),
     projectId
   );
+  const project = getProject(db, projectId);
+  if (project && project.adapterPausedAt != null && project.pauseReason === 'spend_cap') {
+    resumeProject(db, projectId);
+    return { unpaused: true };
+  }
+  return { unpaused: false };
 }
 
-export function pauseProjectAdapter(db: Db, projectId: string): void {
-  db.prepare('UPDATE projects SET adapter_paused_at = ? WHERE id = ?').run(new Date().toISOString(), projectId);
+export function pauseProjectAdapter(db: Db, projectId: string, reason: 'spend_cap' | 'adapter_unavailable'): void {
+  db.prepare('UPDATE projects SET adapter_paused_at = ?, pause_reason = ? WHERE id = ?').run(
+    new Date().toISOString(),
+    reason,
+    projectId
+  );
 }
 
 export function resumeProjectAdapter(db: Db, projectId: string): void {
-  db.prepare('UPDATE projects SET adapter_paused_at = NULL WHERE id = ?').run(projectId);
+  db.prepare('UPDATE projects SET adapter_paused_at = NULL, pause_reason = NULL WHERE id = ?').run(projectId);
 }
 
 // The `project_resume` transition named in docs/strategy/batch-4-spec.md
@@ -364,6 +406,57 @@ export function setTicketPriority(db: Db, ticketId: string, priority: number): v
   db.prepare('UPDATE tickets SET priority = ?, updated_at = ? WHERE id = ?').run(priority, new Date().toISOString(), ticketId);
 }
 
+// Batch 11: the write site for `update_ticket` (managerApply.ts). Every
+// field is optional -- only the ones present are written -- and there is no
+// `status` parameter at all: a Manager proposal may never touch it, and
+// status has exactly one write site regardless (stateMachine.ts). Mirrors
+// setTicketBudgetOverride's floor enforcement for the one field that has a
+// floor.
+export function updateTicketFields(
+  db: Db,
+  ticketId: string,
+  fields: {
+    title?: string;
+    description?: string;
+    acceptanceCriteria?: string[];
+    maxBudgetUsdOverride?: number;
+    model?: string;
+  }
+): void {
+  if (fields.maxBudgetUsdOverride != null) {
+    assertAboveFloor(fields.maxBudgetUsdOverride, 'a ticket\'s max_budget_usd_override');
+  }
+
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (fields.title !== undefined) {
+    sets.push('title = ?');
+    values.push(fields.title);
+  }
+  if (fields.description !== undefined) {
+    sets.push('description = ?');
+    values.push(fields.description);
+  }
+  if (fields.acceptanceCriteria !== undefined) {
+    sets.push('acceptance_criteria_json = ?');
+    values.push(JSON.stringify(fields.acceptanceCriteria));
+  }
+  if (fields.maxBudgetUsdOverride !== undefined) {
+    sets.push('max_budget_usd_override = ?');
+    values.push(fields.maxBudgetUsdOverride);
+  }
+  if (fields.model !== undefined) {
+    sets.push('model = ?');
+    values.push(fields.model);
+  }
+  if (sets.length === 0) return;
+
+  sets.push('updated_at = ?');
+  values.push(new Date().toISOString());
+  values.push(ticketId);
+  db.prepare(`UPDATE tickets SET ${sets.join(', ')} WHERE id = ?`).run(...(values as []));
+}
+
 export function getTicket(db: Db, id: string): Ticket | undefined {
   const row = db.prepare('SELECT * FROM tickets WHERE id = ?').get(id) as TicketRow | undefined;
   return row ? rowToTicket(row) : undefined;
@@ -496,6 +589,26 @@ export function getRun(db: Db, id: string): Run | undefined {
 export function listRunsByStatus(db: Db, status: RunStatus): Run[] {
   const rows = db.prepare('SELECT * FROM runs WHERE status = ?').all(status) as RunRow[];
   return rows.map(rowToRun);
+}
+
+// Batch 11 item 3: counts every run started on a manager-kind ticket in this
+// project since `sinceIso`, regardless of that run's outcome -- each such
+// run IS a Manager invocation (a spawn, a cost), whether it landed DONE,
+// BLOCKED or FAILED, and whether the ticket that ran was newly created by
+// `planProject`/`discussProject` or an existing one re-run after `decide`
+// unblocked it (manager.ts's own callers never see that second case --
+// scheduler.ts's spawn-time cap gate is what makes counting RUNS rather than
+// ticket creations necessary; see manager.ts's doc comment for the full
+// reasoning).
+export function countManagerRunsSince(db: Db, projectId: string, sinceIso: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM runs r
+       JOIN tickets t ON t.id = r.ticket_id
+       WHERE t.project_id = ? AND t.kind = 'manager' AND r.started_at >= ?`
+    )
+    .get(projectId, sinceIso) as { n: number };
+  return row.n;
 }
 
 // Batch 4 section 2's cross-role contract: "Ticket spend is the sum of

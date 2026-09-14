@@ -1,6 +1,7 @@
 import type { Db } from '../db/index.ts';
 import { getDependencies, getProject, getTicket, listTickets } from '../store.ts';
 import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
+import { describeProjectPause } from './inbox.ts';
 
 // `board`: every ticket in a project, its attempts, its cost, and what is
 // still blocking it. Read-only; touches no other role's files.
@@ -26,6 +27,8 @@ export interface BoardResult {
   projectSpendIsEstimate: boolean;
   /** `projects.max_spend_usd`, or null when no cap is set. */
   projectMaxSpendUsd: number | null;
+  /** Batch 11 rule a: null when not paused. Same wording commands/inbox.ts uses for this pause's inbox line -- see describeProjectPause, this field's one composer -- so the board and the inbox never say two different things about the same pause. */
+  pauseMessage: string | null;
   tickets: BoardTicket[];
 }
 
@@ -107,11 +110,15 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
     .sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status));
 
   const projectSpend = projectSpendUsd(db, tickets);
+  const project = getProject(db, projectId);
+  const pauseMessage =
+    project && project.adapterPausedAt != null ? describeProjectPause(db, project, project.pauseReason).message : null;
 
   return {
     projectSpendUsd: projectSpend.costUsd,
     projectSpendIsEstimate: projectSpend.isEstimate,
-    projectMaxSpendUsd: getProject(db, projectId)?.maxSpendUsd ?? null,
+    projectMaxSpendUsd: project?.maxSpendUsd ?? null,
+    pauseMessage,
     tickets: tickets.map((t) => {
       const c = ticketCostUsd(db, t.id);
       return {
@@ -160,6 +167,16 @@ export function truncateTitleForDisplay(title: string): string {
   return `${firstNonEmpty.slice(0, MAX_DISPLAY_TITLE_LENGTH)}…`;
 }
 
+// Batch 11 rule a: a paused project's board must say so before anything
+// else. A ticket still reading READY while paused is not about to run --
+// nothing starts again until the reason is addressed -- so burying that fact
+// below the ticket rows would let a reader mistake READY for "queued to go."
+// Same wording as this pause's inbox line (describeProjectPause, board.ts's
+// buildBoard), so the two surfaces never disagree about the same pause.
+function pausedLine(pauseMessage: string): string {
+  return `PAUSED: ${pauseMessage}`;
+}
+
 // Project spend against its cap comes first, since it is the one number
 // that tells a reader whether anything here needs their attention before
 // they read a single ticket row. Ticket id first on every ticket line, per
@@ -167,7 +184,8 @@ export function truncateTitleForDisplay(title: string): string {
 export function formatBoard(result: BoardResult): string {
   const spend = formatSpend(result.projectSpendUsd, result.projectSpendIsEstimate);
   const cap = result.projectMaxSpendUsd === null ? 'no cap set' : `cap $${result.projectMaxSpendUsd.toFixed(2)}`;
-  const header = `Project spend: ${spend} (${cap})`;
+  const spendHeader = `Project spend: ${spend} (${cap})`;
+  const header = result.pauseMessage !== null ? `${pausedLine(result.pauseMessage)}\n${spendHeader}` : spendHeader;
 
   if (result.tickets.length === 0) return `${header}\n(no tickets)`;
 

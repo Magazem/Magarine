@@ -110,6 +110,8 @@ test("a database migrated only to 0001-0006 picks up 0007 (manager kind) on next
     '0005_project_spend_cap',
     '0006_model_pinning',
     '0007_manager_kind',
+    '0008_project_scope_path',
+    '0009_pause_reason',
   ]);
   assert.equal(
     snapshot.ticketKindBeforeUpdate,

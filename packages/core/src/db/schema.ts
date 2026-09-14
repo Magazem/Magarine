@@ -200,4 +200,35 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN manager_model TEXT;
     `,
   },
+  {
+    // Batch 11 (docs/strategy/batch-11-spec.md section 2, Role R item 1):
+    // the scope document the Manager reads on every invocation and the
+    // owner can hand-edit between turns. NULL (every existing project's
+    // value after this migration, and any project created without an
+    // explicit path) means "no scope file yet" -- store.ts's
+    // readScopeText/writeScopeText below treat that as empty text rather
+    // than resolving a default location. This project has no existing
+    // notion of "a project's own directory" independent of the DIRECTORY
+    // workspace type's project.workspace_root (which is itself optional,
+    // required only for DIRECTORY-mode tickets) -- see this migration's
+    // sibling comment in store.ts for why no default path is invented here.
+    id: '0008_project_scope_path',
+    sql: `
+      ALTER TABLE projects ADD COLUMN scope_path TEXT;
+    `,
+  },
+  {
+    // Batch 11 (docs/strategy/batch-11-spec.md section 1, ruling 1): a pause
+    // was one nullable timestamp column with no record of what caused it, so
+    // the board and inbox had to guess or stay silent. NULL (every existing
+    // project's value after this migration) means "not paused for a reason
+    // this column tracks" -- store.ts's isProjectAdapterPaused still reads
+    // adapter_paused_at as the source of truth for "is it paused at all";
+    // this column only disambiguates why, for the two causes that currently
+    // exist (`spend_cap`, `adapter_unavailable`).
+    id: '0009_pause_reason',
+    sql: `
+      ALTER TABLE projects ADD COLUMN pause_reason TEXT;
+    `,
+  },
 ];

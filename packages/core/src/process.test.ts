@@ -231,6 +231,7 @@ test(
       const resolved = withFixtureOnPath(dir, () => resolveCommand('mytool'));
       assert.match(resolved.executable, /mytool\.exe$/i);
       assert.deepEqual(resolved.prefixArgs, []);
+      assert.equal(resolved.strategy, 'windows_shim_native_exe');
 
       const proc = spawnManaged({ executable: resolved.executable, args: [...resolved.prefixArgs, '--version'] });
       const result = await proc.wait();
@@ -279,6 +280,7 @@ test(
       assert.equal(resolved.executable, process.execPath);
       assert.equal(resolved.prefixArgs.length, 1);
       assert.match(resolved.prefixArgs[0], /mytool2-cli\.cjs$/i);
+      assert.equal(resolved.strategy, 'windows_shim_script');
 
       const proc = spawnManaged({ executable: resolved.executable, args: [...resolved.prefixArgs] });
       const result = await proc.wait();
@@ -342,6 +344,7 @@ test(
       assert.equal(resolved.prefixArgs.length, 1);
       assert.match(resolved.prefixArgs[0], /mytool2-cli\.cjs$/i);
       assert.doesNotMatch(resolved.prefixArgs[0], /(?<!-cli)\.exe$/i);
+      assert.equal(resolved.strategy, 'windows_shim_script');
 
       const proc = spawnManaged({ executable: resolved.executable, args: [...resolved.prefixArgs] });
       const result = await proc.wait();
@@ -397,6 +400,7 @@ test(
       assert.equal(resolved.prefixArgs.length, 1);
       assert.match(resolved.prefixArgs[0], /mytool3-cli\.js$/i);
       assert.doesNotMatch(resolved.prefixArgs[0], /node\.exe/i);
+      assert.equal(resolved.strategy, 'windows_shim_script');
 
       const proc = spawnManaged({ executable: resolved.executable, args: [...resolved.prefixArgs] });
       const result = await proc.wait();
@@ -407,6 +411,22 @@ test(
     }
   }
 );
+
+test('resolveCommand: a bare executable on PATH with no .cmd/.bat shim to unwrap resolves with strategy \'direct\'', () => {
+  // node itself, wherever this test is running (either platform): no shim
+  // involved at all, the case every POSIX tool and every Windows tool
+  // installed as a bare .exe actually hits.
+  const dir = mkdtempSync(join(tmpdir(), 'magarine-direct-'));
+  try {
+    const name = isWindows ? 'mytool5.exe' : 'mytool5';
+    copyFileSync(process.execPath, join(dir, name));
+    const resolved = withFixtureOnPath(dir, () => resolveCommand('mytool5'));
+    assert.equal(resolved.strategy, 'direct');
+    assert.deepEqual(resolved.prefixArgs, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test(
   'resolveCommand: no matching shape throws naming the shim, rather than falling back to a shell',

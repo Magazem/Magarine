@@ -2,7 +2,10 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { openDb } from './db/index.ts';
-import { createProject, createTicket, getTicket, listEventsForEntity, listTickets } from './store.ts';
+import { MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
+import { buildManagerBriefing } from './managerEnvelope.ts';
+import { createProject, createRun, createTicket, getProject, getTicket, listEventsForEntity, listTickets } from './store.ts';
+import { decide } from './commands/decide.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { tick } from './scheduler.ts';
 import { buildInbox } from './commands/inbox.ts';
@@ -152,4 +155,101 @@ test('replay: after a real tick() applies a proposal, the recorded event alone r
   const yCommand = payload.commands.find((c) => c.title === 'Y') as { depends_on: string[] };
   const reconstructedDependsOn = (yCommand.depends_on ?? []).map((ref) => titleToId.get(ref) ?? ref);
   assert.deepEqual(reconstructedDependsOn, [xId]);
+});
+
+// --- Batch 11 item 3: the daily Manager-invocation cap ---
+
+test('a manager ticket at the daily cap is skipped (continue), not spawned, but an ordinary work ticket later in the SAME tick still spawns and completes -- mutating the gate\'s continue to a break makes this go red', async () => {
+  const { db, project, adapter } = setupProject();
+
+  // Fill the cap with MANAGER_DAILY_CAP_DEFAULT manager-ticket runs already
+  // recorded as started "now" (within the 24h window). Marked DONE directly
+  // (fixture setup, not a transition under test) so tick()'s own
+  // resolveReadiness call does not also promote these to READY and crowd
+  // out the two tickets this test actually cares about, which would
+  // otherwise be selected first by created_at ASC ordering.
+  for (let i = 0; i < MANAGER_DAILY_CAP_DEFAULT; i++) {
+    const filler = createTicket(db, { projectId: project.id, title: `Filler ${i}`, kind: 'manager', workspaceType: 'NONE' });
+    createRun(db, { ticketId: filler.id, attempt: 1, adapter: 'fake' });
+    db.prepare("UPDATE tickets SET status = 'DONE' WHERE id = ?").run(filler.id);
+  }
+
+  const cappedManagerTicket = makeManagerTicket(db, project.id);
+  const workTicket = createTicket(db, { projectId: project.id, title: 'Ordinary work' });
+  adapter.setScript(workTicket.id, { kind: 'succeed' });
+
+  // maxParallelWorkers=2 so BOTH tickets are considered in the SAME tick's
+  // readyTickets batch (created_at ASC ordering would otherwise mean a
+  // cap of 1 only ever looks at the manager ticket).
+  const result = await tick({ db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(
+    result.started.some((s) => s.ticketId === cappedManagerTicket.id),
+    false,
+    'a capped manager ticket must not spawn this tick'
+  );
+  assert.equal(getTicket(db, cappedManagerTicket.id)!.status, 'READY', 'it stays READY, eligible again once the 24h window rolls forward');
+
+  assert.equal(
+    result.started.some((s) => s.ticketId === workTicket.id),
+    true,
+    'an ordinary work ticket later in the same readyTickets batch must still spawn -- the cap gate must skip, not stop the whole tick'
+  );
+  assert.equal(getTicket(db, workTicket.id)!.status, 'DONE');
+
+  const capEvents = listEventsForEntity(db, 'ticket', cappedManagerTicket.id).filter((e) => e.eventType === 'manager_daily_cap_reached');
+  assert.equal(capEvents.length, 1, 'exactly one cap-reached event, not one per tick');
+});
+
+test('a manager ticket below the cap spawns normally, and the same project is unaffected by another project\'s cap usage', async () => {
+  const { db, project, adapter } = setupProject();
+  const otherProject = createProject(db, { name: 'other' });
+  for (let i = 0; i < MANAGER_DAILY_CAP_DEFAULT; i++) {
+    const filler = createTicket(db, { projectId: otherProject.id, title: `Filler ${i}`, kind: 'manager', workspaceType: 'NONE' });
+    createRun(db, { ticketId: filler.id, attempt: 1, adapter: 'fake' });
+  }
+
+  const managerTicket = makeManagerTicket(db, project.id);
+  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(result.started.some((s) => s.ticketId === managerTicket.id), true, 'another project\'s cap usage must not affect this one');
+});
+
+// --- Batch 11 item 3: `decide` during the interview re-invokes once ---
+
+test('decide on a manager ticket BLOCKED by request_user_decision re-invokes the Manager exactly once on the next tick, with the answer now in its decision log', async () => {
+  const { db, project, adapter } = setupProject();
+  const managerTicket = makeManagerTicket(db, project.id);
+  adapter.setScript(managerTicket.id, {
+    kind: 'manager_proposal',
+    proposal: { rationale: 'r', commands: [{ type: 'request_user_decision', question: 'Which library?', context: 'c' }] },
+  });
+
+  const firstTick = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(firstTick.started.map((s) => s.done));
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'BLOCKED');
+
+  decide(db, { ticketId: managerTicket.id, answer: 'Use library X.' });
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'READY');
+
+  adapter.setScript(managerTicket.id, { kind: 'manager_proposal', proposal: { rationale: 'done deciding', commands: [] } });
+  const secondTick = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(secondTick.started.map((s) => s.done));
+
+  assert.equal(secondTick.started.length, 1, 'exactly one new run must start for the re-invoked manager ticket');
+  assert.equal(secondTick.started[0].ticketId, managerTicket.id);
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
+
+  const runs = db.prepare('SELECT id FROM runs WHERE ticket_id = ?').all(managerTicket.id) as Array<{ id: string }>;
+  assert.equal(runs.length, 2, 'exactly one re-invocation total -- the original BLOCKED run plus one, not more');
+
+  const briefing = buildManagerBriefing(db, getProject(db, project.id)!, getTicket(db, managerTicket.id)!);
+  // decide.ts reads `blockers` before `summary` when composing the question
+  // it records (see managerApply.ts's own doc comment on why both fields
+  // must carry the real question) -- managerApply.ts's request_user_decision
+  // handling puts "question (context)" into `blockers`, so that is what
+  // ends up in the decision log, not the bare question text.
+  assert.deepEqual(briefing.decisionLog, ['Q: Which library? (c) — A: Use library X.']);
 });

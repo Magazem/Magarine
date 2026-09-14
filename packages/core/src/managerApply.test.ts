@@ -1,8 +1,10 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import { applyManagerProposal, type ManagerProposalAppliedPayload } from './managerApply.ts';
 import { decide } from './commands/decide.ts';
+import { readScopeText } from './manager.ts';
 import {
   createProject,
   createTicket,
@@ -10,10 +12,15 @@ import {
   getProject,
   getTicket,
   listEventsForEntity,
+  listEventsForProject,
   listTickets,
 } from './store.ts';
 import { recordTicketTransition } from './stateMachine.ts';
+import { testTempRoot } from './testSupport.ts';
 import type { Ticket } from './types.ts';
+
+const testRoot = testTempRoot('managerapply');
+after(testRoot.cleanup);
 
 function makeManagerTicket(db: ReturnType<typeof openDb>, projectId: string): Ticket {
   const ticket = createTicket(db, {
@@ -248,4 +255,123 @@ test('replay: the manager_proposal_applied event payload carries enough to recon
   const realEdgesForB = getDependencies(db, bId).map((d) => d.dependsOnTicketId).sort();
   assert.deepEqual(realEdgesForB, [aId, existingTicket.id].sort());
   assert.equal(getTicket(db, existingTicket.id)!.priority, 9);
+});
+
+// --- Batch 11 item 1: update_scope ---
+
+test('update_scope writes the scope file whole and records a scope_updated event with a one-line summary', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'update-scope', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+  const managerTicket = makeManagerTicket(db, project.id);
+
+  const proposal = { rationale: 'wrote down the assessment', commands: [{ type: 'update_scope', content: 'Line one.\nLine two.' }] };
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', proposal);
+
+  assert.equal(result.outcome, 'applied');
+  assert.equal(readScopeText(getProject(db, project.id)!), 'Line one.\nLine two.');
+
+  const scopeEvent = listEventsForProject(db, project.id).find((e) => e.eventType === 'scope_updated');
+  assert.ok(scopeEvent, 'expected a scope_updated event');
+  const payload = scopeEvent!.payload as { summary: string };
+  assert.match(payload.summary, /written|updated/);
+});
+
+test('update_scope replaces the WHOLE file, not an append -- a second update_scope in a later proposal overwrites the first', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'update-scope-replace', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+  const firstTicket = makeManagerTicket(db, project.id);
+
+  applyManagerProposal(db, firstTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [{ type: 'update_scope', content: 'First version.' }],
+  });
+
+  const secondTicket = makeManagerTicket(db, project.id);
+  applyManagerProposal(db, secondTicket, getProject(db, project.id)!, 'run_2', {
+    rationale: 'r',
+    commands: [{ type: 'update_scope', content: 'Second version.' }],
+  });
+
+  assert.equal(readScopeText(getProject(db, project.id)!), 'Second version.', 'the file must be fully replaced, not appended to');
+});
+
+// --- Batch 11 item 4: cancel_ticket / update_ticket ---
+
+test('cancel_ticket cancels an existing work ticket through the single write site, under the same transaction as the rest of the proposal', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const toCancel = createTicket(db, { projectId: project.id, title: 'Cancel me' });
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'no longer needed',
+    commands: [{ type: 'cancel_ticket', ticket_id: toCancel.id }],
+  });
+
+  assert.equal(result.outcome, 'applied');
+  assert.equal(getTicket(db, toCancel.id)!.status, 'CANCELLED');
+});
+
+test('update_ticket updates the named fields on an existing work ticket and never touches its status', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const target = createTicket(db, { projectId: project.id, title: 'Old title', description: 'Old description' });
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'refine the ticket',
+    commands: [
+      {
+        type: 'update_ticket',
+        ticket_id: target.id,
+        title: 'New title',
+        description: 'New description',
+        acceptance_criteria: ['a'],
+        max_budget_usd: 1.0,
+        model: 'claude-fable-5-1',
+      },
+    ],
+  });
+
+  assert.equal(result.outcome, 'applied');
+  const updated = getTicket(db, target.id)!;
+  assert.equal(updated.title, 'New title');
+  assert.equal(updated.description, 'New description');
+  assert.deepEqual(updated.acceptanceCriteria, ['a']);
+  assert.equal(updated.maxBudgetUsdOverride, 1.0);
+  assert.equal(updated.model, 'claude-fable-5-1');
+  // READY, not OPEN: applyManagerProposal's own resolveReadiness call
+  // promotes a dependency-free ticket the same as it always does -- that is
+  // ordinary readiness resolution, not update_ticket itself touching
+  // status. The claim this test makes is narrower: update_ticket's own
+  // field list has no `status` key at all (see UpdateTicketCommand), so
+  // nothing about THIS command could have set it to some other value, e.g.
+  // DONE.
+  assert.equal(updated.status, 'READY');
+});
+
+test('rollback: cancel_ticket and update_ticket both roll back with the rest of the transaction on a later synthetic failure', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const toCancel = createTicket(db, { projectId: project.id, title: 'Cancel me' });
+  const toUpdate = createTicket(db, { projectId: project.id, title: 'Update me' });
+
+  const proposal = {
+    rationale: 'r',
+    commands: [
+      { type: 'cancel_ticket', ticket_id: toCancel.id },
+      { type: 'update_ticket', ticket_id: toUpdate.id, title: 'Should not stick' },
+      { type: 'create_ticket', title: 'Never created', description: 'd', acceptance_criteria: [] },
+    ],
+  };
+
+  assert.throws(() =>
+    applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', proposal, { failAfterCommand: 2 })
+  );
+
+  assert.equal(getTicket(db, toCancel.id)!.status, 'OPEN', 'cancel_ticket must roll back along with the rest of the transaction');
+  assert.equal(getTicket(db, toUpdate.id)!.title, 'Update me', 'update_ticket must roll back along with the rest of the transaction');
 });

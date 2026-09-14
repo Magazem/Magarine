@@ -1,5 +1,5 @@
 import type { Db } from '../db/index.ts';
-import { getTicket, isProjectAdapterPaused, listEventsForProject } from '../store.ts';
+import { getProject, getTicket, listEventsForProject } from '../store.ts';
 import type { EventRow, TicketStatus } from '../types.ts';
 
 // `inbox`: events that require the user's attention and have not yet been
@@ -62,7 +62,20 @@ export function reasonFor(eventType: string, payload: unknown): string {
     const ticketId = typeof p.ticketId === 'string' ? p.ticketId : 'a run';
     const projected = typeof p.projectedSpend === 'number' ? `$${p.projectedSpend.toFixed(2)}` : 'its spend';
     const cap = typeof p.maxSpendUsd === 'number' ? `$${p.maxSpendUsd.toFixed(2)}` : 'the project cap';
-    return `project spend cap reached: starting ${ticketId} would bring the project to ${projected} (cap ${cap})`;
+    // Batch 11 ruling 1 rule c: the line must NAME the fix, not just state
+    // the number -- a reader should never have to already know the CLI to
+    // clear their own pause. projectId is threaded through by buildPauseItem
+    // below, which is the only caller that reaches this branch now.
+    const projectId = typeof p.projectId === 'string' ? p.projectId : '<id>';
+    return `project spend cap reached: starting ${ticketId} would bring the project to ${projected} (cap ${cap}) -- raise it with \`magarine project set --project ${projectId} --max-spend <usd>\``;
+  }
+
+  if (eventType === 'adapter_unavailable_pause') {
+    // Batch 11 ruling 1 rule d: unlike a cap, this pause cannot be cleared
+    // by a bigger number -- it needs a real login -- so the fix is a fixed
+    // two-step line rather than one composed from payload numbers.
+    const projectId = typeof p.projectId === 'string' ? p.projectId : '<id>';
+    return `the adapter is unavailable (worker could not start) -- log in with \`claude\`, then run \`magarine resume --project ${projectId}\``;
   }
 
   if (typeof p.summary === 'string' && p.summary.length > 0) return p.summary;
@@ -94,31 +107,89 @@ export function reasonFor(eventType: string, payload: unknown): string {
   return eventType;
 }
 
+// Batch 11 ruling 1: a pause is now read from the project's OWN current
+// state (adapterPausedAt/pauseReason), not filtered out of the stored event
+// log, for two reasons found in the same sitting. First, an
+// `adapter_unavailable` pause's triggering event is entityType 'ticket' and
+// was never in PENDING_TICKET_STATUS, so it was silently invisible in the
+// inbox -- a real gap, not a display choice. Second, this makes "is the
+// project still paused" the single source of truth for whether the item
+// shows at all, exactly the same "still pending" contract every ticket-scoped
+// item already gets, rather than the previous project-scoped branch's
+// bespoke isProjectAdapterPaused check bolted onto raw event iteration.
+// The most recent project_spend_cap_reached event (if any survives -- there
+// always is one when the current pause reason is 'spend_cap', since nothing
+// else sets that reason) supplies the real projectedSpend/maxSpendUsd
+// numbers for reasonFor's message; its own payload gets projectId merged in
+// so reasonFor can name the fix command without changing its signature.
+function mostRecent(events: EventRow[], eventType: string): EventRow | undefined {
+  // listEventsForProject orders ascending by sequence; the pause in effect
+  // right now was caused by the LAST matching event, not the first (an
+  // earlier pause-then-resume cycle can leave older events of the same type
+  // behind).
+  return events.filter((e) => e.eventType === eventType).pop();
+}
+
+// Exported so board.ts's "PAUSED: <reason>" header (batch 11 rule a) shows
+// the exact same wording as this file's own inbox line for the same pause --
+// one composer, not two independently-worded copies that could drift.
+export function describeProjectPause(
+  db: Db,
+  project: { id: string; updatedAt: string },
+  pauseReason: 'spend_cap' | 'adapter_unavailable' | null
+): { eventType: string; message: string; createdAt: string } {
+  const pausedEvents = listEventsForProject(db, project.id);
+  if (pauseReason === 'adapter_unavailable') {
+    const triggering = mostRecent(pausedEvents, 'adapter_unavailable');
+    return {
+      eventType: 'adapter_unavailable_pause',
+      message: reasonFor('adapter_unavailable_pause', { projectId: project.id }),
+      createdAt: triggering?.createdAt ?? project.updatedAt,
+    };
+  }
+  if (pauseReason === 'spend_cap') {
+    const triggering = mostRecent(pausedEvents, 'project_spend_cap_reached');
+    const payload = triggering && typeof triggering.payload === 'object' && triggering.payload !== null ? triggering.payload : {};
+    return {
+      eventType: 'project_spend_cap_reached',
+      message: reasonFor('project_spend_cap_reached', { ...payload, projectId: project.id }),
+      createdAt: triggering?.createdAt ?? project.updatedAt,
+    };
+  }
+  // pauseReason === null: a pause recorded before the 0009_pause_reason
+  // migration, or by a cause this file doesn't yet know. Still surfaced,
+  // generically, rather than silently dropped -- "READY under a pause is a
+  // lie" per the board's own header, whatever caused it.
+  return {
+    eventType: 'adapter_paused',
+    message: `project is paused for an unrecorded reason -- run \`magarine resume --project ${project.id}\` once you've addressed it`,
+    createdAt: project.updatedAt,
+  };
+}
+
 export function buildInbox(db: Db, projectId: string): InboxItem[] {
   const events: EventRow[] = listEventsForProject(db, projectId).filter((e) => e.requiresUser);
 
   const items: InboxItem[] = [];
   for (const event of events) {
-    if (event.entityType === 'ticket') {
-      const ticket = getTicket(db, event.entityId);
-      const pendingStatus = PENDING_TICKET_STATUS[event.eventType];
-      if (!ticket || !pendingStatus || ticket.status !== pendingStatus) continue;
-      items.push({
-        ticketId: event.entityId,
-        eventType: event.eventType,
-        message: reasonFor(event.eventType, event.payload),
-        createdAt: event.createdAt,
-      });
-    } else if (event.entityType === 'project') {
-      if (!isProjectAdapterPaused(db, event.entityId)) continue;
-      items.push({
-        projectId: event.entityId,
-        eventType: event.eventType,
-        message: reasonFor(event.eventType, event.payload),
-        createdAt: event.createdAt,
-      });
-    }
+    if (event.entityType !== 'ticket') continue;
+    const ticket = getTicket(db, event.entityId);
+    const pendingStatus = PENDING_TICKET_STATUS[event.eventType];
+    if (!ticket || !pendingStatus || ticket.status !== pendingStatus) continue;
+    items.push({
+      ticketId: event.entityId,
+      eventType: event.eventType,
+      message: reasonFor(event.eventType, event.payload),
+      createdAt: event.createdAt,
+    });
   }
+
+  const project = getProject(db, projectId);
+  if (project && project.adapterPausedAt != null) {
+    const pause = describeProjectPause(db, project, project.pauseReason);
+    items.push({ projectId: project.id, ...pause });
+  }
+
   return items;
 }
 

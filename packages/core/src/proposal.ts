@@ -1,10 +1,16 @@
 import { MIN_BUDGET_USD } from './store.ts';
-import type { WorkspaceType } from './types.ts';
+import type { TicketStatus, WorkspaceType } from './types.ts';
 
 // The Manager's typed command schema, per docs/strategy/batch-9-spec.md
 // section 2 ("The command schema, exactly the document's list") -- FIVE
-// commands, no more. If a sixth would be useful, that is a decision for the
-// Strategist, not something this file grows on its own.
+// commands originally. If a sixth would be useful, that is a decision for
+// the Strategist, not something this file grows on its own -- which is
+// exactly what happened for batch 11 (docs/strategy/batch-11-spec.md section
+// 2, Role R items 1 and 4): `update_project_brief` is REMOVED (the scope
+// document, written whole via `update_scope`, replaces it -- see
+// route-revision-scope-document.md section 4 item 2's "`update_project_brief`
+// ... becomes this command"), and `update_scope`, `cancel_ticket` and
+// `update_ticket` are ADDED, for seven total.
 //
 // This is the security boundary of the whole Manager feature: an LLM's own
 // output is untrusted input, no different in kind from a form submission,
@@ -52,9 +58,46 @@ export interface RequestUserDecisionCommand {
   context: string;
 }
 
-export interface UpdateProjectBriefCommand {
-  type: 'update_project_brief';
-  brief: string;
+// Batch 11: replaces `update_project_brief`. Writes the scope document
+// (SCOPE.md, or wherever `projects.scope_path` points) WHOLE -- there is no
+// patch/diff shape, matching `update_project_brief`'s own all-or-nothing
+// semantics before it. See managerApply.ts's applier for the
+// `scope_updated` decision event this also records.
+export interface UpdateScopeCommand {
+  type: 'update_scope';
+  content: string;
+}
+
+// Batch 11 item 4: targets an EXISTING ticket by id, never a title and
+// never a same-proposal create_ticket (same resolution rule
+// add_dependency/change_priority already use). May not target a manager
+// ticket (this file's own extension of the existing manager/work security
+// boundary -- see validateSemantics) or a ticket already in a terminal or
+// otherwise non-cancellable state (see the `cancel` transition's own
+// TRANSITIONS table in stateMachine.ts: only OPEN, READY, IN_PROGRESS and
+// REVIEW accept it) -- caught here, at validation time, rather than left to
+// throw an InvalidTransitionError out of the application transaction.
+export interface CancelTicketCommand {
+  type: 'cancel_ticket';
+  ticket_id: string;
+}
+
+// Batch 11 item 4: every field optional, and there is deliberately no
+// `status` field on this type at all -- "never status" (this role's brief,
+// verbatim) is enforced by the shape itself, not by a runtime check that
+// could be forgotten. validateCommandShape still rejects a raw payload that
+// smuggles a `status` key in anyway, so a hallucinating Manager gets a
+// validation error back to correct from, rather than the key being silently
+// ignored. May not target a manager ticket, same boundary as
+// `cancel_ticket` above.
+export interface UpdateTicketCommand {
+  type: 'update_ticket';
+  ticket_id: string;
+  title?: string;
+  description?: string;
+  acceptance_criteria?: string[];
+  max_budget_usd?: number;
+  model?: string;
 }
 
 export type ManagerCommand =
@@ -62,7 +105,9 @@ export type ManagerCommand =
   | AddDependencyCommand
   | ChangePriorityCommand
   | RequestUserDecisionCommand
-  | UpdateProjectBriefCommand;
+  | UpdateScopeCommand
+  | CancelTicketCommand
+  | UpdateTicketCommand;
 
 export interface Proposal {
   commands: ManagerCommand[];
@@ -83,23 +128,37 @@ export const MAX_CREATE_TICKET_COMMANDS = 15;
 // change to one of the five commands has one obvious place its prompt text
 // needs to change too.
 export const MANAGER_COMMAND_SCHEMA_DESCRIPTION = `A proposal is a JSON object: { "commands": [...], "rationale": "<string>" }.
-At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of them "create_ticket". Every command must be one of exactly these five shapes -- no others exist:
+At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of them "create_ticket". Every command must be one of exactly these seven shapes -- no others exist:
 
 - { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "workspace_type"?: "NONE"|"DIRECTORY"|"GIT_WORKTREE", "model"?: "<string>", "max_budget_usd"?: <number> }
 - { "type": "add_dependency", "ticket_id": "<existing ticket id>", "depends_on_ticket_id": "<existing ticket id>" }
 - { "type": "change_priority", "ticket_id": "<existing ticket id>", "priority": <number> }
 - { "type": "request_user_decision", "question": "<string>", "context": "<string>" }
-- { "type": "update_project_brief", "brief": "<string>" }
+- { "type": "update_scope", "content": "<string, the WHOLE scope document, replacing what is there now>" }
+- { "type": "cancel_ticket", "ticket_id": "<existing, non-manager ticket id>" }
+- { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>" } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
 
-"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency" and "change_priority" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
+"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
 
 const COMMAND_TYPES = new Set<ManagerCommand['type']>([
   'create_ticket',
   'add_dependency',
   'change_priority',
   'request_user_decision',
-  'update_project_brief',
+  'update_scope',
+  'cancel_ticket',
+  'update_ticket',
 ]);
+
+// Statuses the `cancel` transition actually accepts, per stateMachine.ts's
+// TRANSITIONS table -- DONE, FAILED and CANCELLED have no `cancel` entry at
+// all, so recordTicketTransition would throw InvalidTransitionError for any
+// of them. Duplicated here (rather than imported) deliberately: this file
+// validates a Manager's OWN typed command schema and must not depend on
+// stateMachine.ts's transition table shape to stay in sync automatically --
+// a change to that table is a decision for whoever edits it, not something
+// this validator should silently follow.
+const CANCELLABLE_STATUSES = new Set<TicketStatus>(['OPEN', 'READY', 'IN_PROGRESS', 'REVIEW']);
 
 // The board data validateProposal needs, deliberately narrow (the compact
 // shape scheduler.ts's envelope builder already produces for the Manager's
@@ -111,6 +170,8 @@ export interface ProposalBoardTicket {
   id: string;
   title: string;
   kind: 'work' | 'manager';
+  /** Batch 11: needed for `cancel_ticket`'s own status check (see CANCELLABLE_STATUSES) -- the one field this board shape gained beyond batch 9's original id/title/kind. */
+  status: TicketStatus;
 }
 
 export interface ProposalBoardDependency {
@@ -121,6 +182,8 @@ export interface ProposalBoardDependency {
 export interface ProposalBoard {
   tickets: ProposalBoardTicket[];
   dependencies: ProposalBoardDependency[];
+  /** Batch 11 item 1: whether `projects.scope_path` is set. `update_scope`'s applier (managerApply.ts) writes straight to that path and throws if it is null -- checked here, at validation time, so a project with no scope file yet produces a clean, retryable validation error instead of an unhandled throw escaping the application transaction. */
+  hasScopePath: boolean;
 }
 
 export type ProposalValidationResult =
@@ -211,9 +274,50 @@ function validateCommandShape(command: unknown, index: number): string[] {
       }
       break;
     }
-    case 'update_project_brief': {
-      if (typeof command.brief !== 'string') {
-        errors.push(`${prefix}.brief must be a string`);
+    case 'update_scope': {
+      if (typeof command.content !== 'string') {
+        errors.push(`${prefix}.content must be a string`);
+      }
+      break;
+    }
+    case 'cancel_ticket': {
+      if (typeof command.ticket_id !== 'string' || command.ticket_id.length === 0) {
+        errors.push(`${prefix}.ticket_id must be a non-empty string`);
+      }
+      break;
+    }
+    case 'update_ticket': {
+      if (typeof command.ticket_id !== 'string' || command.ticket_id.length === 0) {
+        errors.push(`${prefix}.ticket_id must be a non-empty string`);
+      }
+      if (command.title !== undefined && typeof command.title !== 'string') {
+        errors.push(`${prefix}.title must be a string when present`);
+      }
+      if (command.description !== undefined && typeof command.description !== 'string') {
+        errors.push(`${prefix}.description must be a string when present`);
+      }
+      if (command.acceptance_criteria !== undefined && !isStringArray(command.acceptance_criteria)) {
+        errors.push(`${prefix}.acceptance_criteria must be an array of strings when present`);
+      }
+      if (command.model !== undefined && typeof command.model !== 'string') {
+        errors.push(`${prefix}.model must be a string when present`);
+      }
+      if (command.max_budget_usd !== undefined) {
+        if (typeof command.max_budget_usd !== 'number') {
+          errors.push(`${prefix}.max_budget_usd must be a number when present`);
+        } else if (command.max_budget_usd < MIN_BUDGET_USD) {
+          errors.push(`${prefix}.max_budget_usd must be at least $${MIN_BUDGET_USD.toFixed(2)}, got $${command.max_budget_usd.toFixed(2)}`);
+        }
+      }
+      // "never status" (this role's brief, verbatim): rejected here even
+      // though UpdateTicketCommand's own type has no such field, since a raw
+      // proposal (validated as `unknown`) could still smuggle one in --
+      // caught explicitly so a hallucinating Manager gets told why, rather
+      // than the key silently being ignored at application time.
+      if (command.status !== undefined) {
+        errors.push(
+          `${prefix}.status must not be set -- a ticket's status has exactly one write site and update_ticket may never set it directly`
+        );
       }
       break;
     }
@@ -279,6 +383,12 @@ function validateSemantics(commands: ManagerCommand[], board: ProposalBoard): st
   const existingById = new Map(board.tickets.map((t) => [t.id, t]));
   const existingTitles = new Set(board.tickets.map((t) => t.title));
   const createCommands = commands.filter((c): c is CreateTicketCommand => c.type === 'create_ticket');
+
+  if (!board.hasScopePath && commands.some((c) => c.type === 'update_scope')) {
+    errors.push(
+      'update_scope cannot be applied: this project has no scope_path set yet (see project create --scope / setProjectScopePath)'
+    );
+  }
 
   // Title uniqueness: within the proposal, and against the existing board.
   const seenNewTitles = new Set<string>();
@@ -361,6 +471,36 @@ function validateSemantics(commands: ManagerCommand[], board: ProposalBoard): st
     }
     if (c.type === 'change_priority' && !existingById.has(c.ticket_id)) {
       errors.push(`change_priority.ticket_id "${c.ticket_id}" is not an existing ticket on this board`);
+    }
+
+    // Batch 11 item 4: cancel_ticket/update_ticket both resolve ticket_id
+    // against the EXISTING board only (same rule as add_dependency/
+    // change_priority above -- never a title, never a same-proposal
+    // create_ticket), may never target a manager ticket (this file's own
+    // extension of the existing manager/work security boundary), and
+    // cancel_ticket additionally requires the ticket's CURRENT status to be
+    // one the `cancel` transition actually accepts -- checked here so an
+    // un-cancellable target is a clean validation error, not an
+    // InvalidTransitionError escaping the application transaction.
+    if (c.type === 'cancel_ticket') {
+      const ticket = existingById.get(c.ticket_id);
+      if (!ticket) {
+        errors.push(`cancel_ticket.ticket_id "${c.ticket_id}" is not an existing ticket on this board`);
+      } else if (ticket.kind === 'manager') {
+        errors.push(`cancel_ticket.ticket_id "${c.ticket_id}" is a manager ticket -- cancel_ticket may never target a manager ticket`);
+      } else if (!CANCELLABLE_STATUSES.has(ticket.status)) {
+        errors.push(
+          `cancel_ticket.ticket_id "${c.ticket_id}" is ${ticket.status}, which cannot be cancelled (only OPEN, READY, IN_PROGRESS and REVIEW can)`
+        );
+      }
+    }
+    if (c.type === 'update_ticket') {
+      const ticket = existingById.get(c.ticket_id);
+      if (!ticket) {
+        errors.push(`update_ticket.ticket_id "${c.ticket_id}" is not an existing ticket on this board`);
+      } else if (ticket.kind === 'manager') {
+        errors.push(`update_ticket.ticket_id "${c.ticket_id}" is a manager ticket -- update_ticket may never target a manager ticket`);
+      }
     }
   }
 

@@ -242,6 +242,33 @@ const POLICY: Record<string, EventPolicy> = {
   // created, same reasoning as worker_done/review_approved -- nothing here
   // needs a person's attention beyond what is already visible.
   manager_proposal_applied: { visibility: 'activity', requiresUser: false },
+
+  // --- Batch 11: the Manager learns to be interviewed ---
+  // Not a TransitionEvent member (entityType 'project', never changes
+  // tickets.status), so not exercised by the completeness test below --
+  // same shape as project_resume/discuss's own sibling rows above. The
+  // owner's own message, recorded by manager.ts's discussProject --
+  // user-initiated, so silent by default, same reasoning as
+  // manual_retry/user_decision/cancel: the owner already knows they said it.
+  discuss: { visibility: 'activity', requiresUser: false },
+  // The Manager's own `update_scope` command, applied by managerApply.ts.
+  // Not user-initiated in the same direct sense as `discuss`, but it is the
+  // OWNER'S plan taking effect (a proposal they asked for or are reviewing),
+  // and the board/page already show the resulting file -- same "nothing
+  // here needs a person's attention beyond what's already visible" reasoning
+  // as manager_proposal_applied/worker_done above, not an inbox item.
+  scope_updated: { visibility: 'activity', requiresUser: false },
+  // Batch 11 item 3: the per-project daily Manager-invocation cap
+  // (manager.ts's isManagerDailyCapReached), raised by scheduler.ts's
+  // tick() spawn-time gate for a READY manager ticket it will not start
+  // this cycle. Inbox per the spec ("with an inbox item when reached"),
+  // matching project_spend_cap_reached's own treatment -- but see this
+  // event's own doc comment in scheduler.ts: it is ticket-scoped, and
+  // actually SURFACING it through commands/inbox.ts's buildInbox needs a
+  // `PENDING_TICKET_STATUS['manager_daily_cap_reached'] = 'READY'` row in
+  // that file, which is Role Q's (commands/) and outside this role's brief
+  // to edit -- recorded here as a finding, not fixed silently.
+  manager_daily_cap_reached: { visibility: 'inbox', requiresUser: true },
 };
 
 export function classify(eventType: string): EventPolicy {

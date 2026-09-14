@@ -1,9 +1,26 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import { buildManagerBriefing, buildManagerEnvelope, renderManagerBrief } from './managerEnvelope.ts';
-import { addDependency, createProject, createRun, createTicket, getProject, getTicket, insertEvent, setRunUsage } from './store.ts';
+import { discussProject } from './manager.ts';
+import {
+  addDependency,
+  createArtifact,
+  createProject,
+  createRun,
+  createTicket,
+  getProject,
+  getTicket,
+  insertEvent,
+  setRunUsage,
+} from './store.ts';
 import { recordTicketTransition } from './stateMachine.ts';
+import { testTempRoot } from './testSupport.ts';
+
+const testRoot = testTempRoot('managerenvelope');
+after(testRoot.cleanup);
 
 // The negative test is the one that matters for this file (per the
 // Orchestrator's framing for this step): proving nothing from a WORK
@@ -111,7 +128,7 @@ test('the decision log renders every recorded user_decision as "Q: ... — A: ..
   assert.deepEqual(briefing.decisionLog, ['Q: Which library? — A: Use library X.']);
 });
 
-test('renderManagerBrief includes the mission, board, decision log, failures and the command schema, and names every one of the five commands', () => {
+test('renderManagerBrief includes the mission, board, decision log, failures and the command schema, and names every one of the seven commands', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });
   const managerTicket = makeManagerTicket(db, project.id, 'A distinctive mission statement.');
@@ -120,7 +137,15 @@ test('renderManagerBrief includes the mission, board, decision log, failures and
   const rendered = renderManagerBrief(briefing);
 
   assert.match(rendered, /A distinctive mission statement\./);
-  for (const commandName of ['create_ticket', 'add_dependency', 'change_priority', 'request_user_decision', 'update_project_brief']) {
+  for (const commandName of [
+    'create_ticket',
+    'add_dependency',
+    'change_priority',
+    'request_user_decision',
+    'update_scope',
+    'cancel_ticket',
+    'update_ticket',
+  ]) {
     assert.match(rendered, new RegExp(commandName), `expected the command schema to name "${commandName}"`);
   }
 });
@@ -208,4 +233,146 @@ test('buildManagerEnvelope resolves maxBudgetUsd and model the same way any tick
 
   assert.equal(envelope.maxBudgetUsd, 3);
   assert.equal(envelope.model, 'claude-fable-5-1');
+});
+
+// --- Batch 11 item 1: the scope document ---
+
+test('the envelope carries the CURRENT scope text, read fresh off disk on every invocation', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'scope-present', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+  const SCOPE_MARKER = 'MARKER_SCOPE_TEXT_MUST_APPEAR_2a91';
+  mkdirSync(join(testRoot.root, 'scope-present'), { recursive: true });
+  writeFileSync(scopePath, SCOPE_MARKER, 'utf8');
+
+  const managerTicket = makeManagerTicket(db, project.id, 'mission');
+  const briefing = buildManagerBriefing(db, getProject(db, project.id)!, managerTicket);
+  assert.equal(briefing.scopeText, SCOPE_MARKER);
+
+  const envelope = buildManagerEnvelope(db, managerTicket, getProject(db, project.id)!);
+  assert.ok(envelope.description.includes(SCOPE_MARKER), 'the rendered envelope must include the current scope text');
+});
+
+// --- The negative test, split per its own two claims: nothing from a
+// worker prompt or transcript, checked separately from the positive
+// "scope text is present" claim above, so a name naming both halves is
+// actually covering both. ---
+
+test('buildManagerEnvelope never carries the scope text of another kind of content -- specifically, nothing from a worker prompt or transcript', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', brief: 'legitimate brief' });
+
+  const WORKER_DESCRIPTION_MARKER = 'MARKER_WORKER_DESCRIPTION_MUST_NOT_LEAK_9f3a_2';
+  const WORKER_SUMMARY_MARKER = 'MARKER_WORKER_SUMMARY_MUST_NOT_LEAK_7c21_2';
+
+  const completedDependency = createTicket(db, {
+    projectId: project.id,
+    title: 'Completed dependency',
+    description: WORKER_DESCRIPTION_MARKER,
+  });
+  recordTicketTransition(db, { ticketId: completedDependency.id, event: 'dependencies_resolved', idempotencyKey: 'r1x' });
+  recordTicketTransition(db, { ticketId: completedDependency.id, event: 'run_started', idempotencyKey: 's1x' });
+  recordTicketTransition(db, {
+    ticketId: completedDependency.id,
+    event: 'worker_done',
+    idempotencyKey: 'done1x',
+    payload: { status: 'done', summary: WORKER_SUMMARY_MARKER, artifacts: [], checks: [], blockers: [], questions: [] },
+  });
+
+  const managerTicket = makeManagerTicket(db, project.id, 'Plan the next phase.');
+  const envelope = buildManagerEnvelope(db, managerTicket, getProject(db, project.id)!);
+  const serialized = JSON.stringify(envelope);
+
+  assert.ok(!serialized.includes(WORKER_DESCRIPTION_MARKER));
+  assert.ok(!serialized.includes(WORKER_SUMMARY_MARKER));
+});
+
+// --- Batch 11 item 2: interview-mode framing (the OR condition) ---
+
+test('isFreshProject is true when the scope is empty, even with a work ticket already on the board (clause 1 of the OR)', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' }); // no scope_path -> empty scope text
+  createTicket(db, { projectId: project.id, title: 'Some work' });
+  const managerTicket = makeManagerTicket(db, project.id, 'mission');
+
+  const briefing = buildManagerBriefing(db, getProject(db, project.id)!, managerTicket);
+  assert.equal(briefing.isFreshProject, true);
+  assert.match(renderManagerBrief(briefing), /INTERVIEW MODE/);
+});
+
+test('isFreshProject is true when there are no work tickets, even with real scope text (clause 2 of the OR)', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'fresh-no-work', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+  mkdirSync(join(testRoot.root, 'fresh-no-work'), { recursive: true });
+  writeFileSync(scopePath, 'A real scope document.', 'utf8');
+  const managerTicket = makeManagerTicket(db, project.id, 'mission'); // the manager ticket itself is on the board, but it is not 'work'
+
+  const briefing = buildManagerBriefing(db, getProject(db, project.id)!, managerTicket);
+  assert.equal(briefing.isFreshProject, true);
+  assert.match(renderManagerBrief(briefing), /INTERVIEW MODE/);
+});
+
+test('isFreshProject is false once the scope has real text AND a work ticket exists', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'not-fresh', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+  mkdirSync(join(testRoot.root, 'not-fresh'), { recursive: true });
+  writeFileSync(scopePath, 'A real scope document.', 'utf8');
+  createTicket(db, { projectId: project.id, title: 'Some work' });
+  const managerTicket = makeManagerTicket(db, project.id, 'mission');
+
+  const briefing = buildManagerBriefing(db, getProject(db, project.id)!, managerTicket);
+  assert.equal(briefing.isFreshProject, false);
+  const rendered = renderManagerBrief(briefing);
+  assert.doesNotMatch(rendered, /INTERVIEW MODE/);
+});
+
+// --- Batch 11 item 3: the conversation ---
+
+// createdAt timestamps are millisecond-resolution (ISO strings); in
+// production a Manager's reply is always causally well after the owner's
+// message that triggered it (a real invocation takes seconds to minutes),
+// but this test's three steps run back-to-back in-process and can otherwise
+// collide on the same millisecond, making the true creation order
+// ambiguous to the tie-broken sort under test. A short real delay between
+// steps is simpler and more honest than injecting a fake clock into two
+// otherwise-unrelated store.ts insert paths just for this one ordering test.
+const tick = () => new Promise((resolve) => setTimeout(resolve, 2));
+
+test('the conversation interleaves discuss events and manager_reply/manager_assessment artifacts in chronological order', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+
+  discussProject(db, project.id, 'First owner message.');
+  await tick();
+  const firstManagerTicket = createTicket(db, { projectId: project.id, title: 'Manager: plan', kind: 'manager', workspaceType: 'NONE' });
+  const firstRun = createRun(db, { ticketId: firstManagerTicket.id, attempt: 1, adapter: 'fake' });
+  createArtifact(db, {
+    ticketId: firstManagerTicket.id,
+    runId: firstRun.id,
+    projectId: project.id,
+    kind: 'manager_reply',
+    pathOrUri: 'First manager reply.',
+  });
+  await tick();
+
+  discussProject(db, project.id, 'Second owner message.');
+
+  const currentManagerTicket = makeManagerTicket(db, project.id, 'mission');
+  const briefing = buildManagerBriefing(db, getProject(db, project.id)!, currentManagerTicket);
+
+  assert.deepEqual(
+    briefing.conversation.map((c) => [c.speaker, c.text]),
+    [
+      ['owner', 'First owner message.'],
+      ['manager', 'First manager reply.'],
+      ['owner', 'Second owner message.'],
+    ]
+  );
+
+  const rendered = renderManagerBrief(briefing);
+  assert.match(rendered, /Owner: First owner message\./);
+  assert.match(rendered, /Manager: First manager reply\./);
+  assert.match(rendered, /Owner: Second owner message\./);
 });

@@ -25,9 +25,11 @@ import {
   setProjectManagerModel,
   setProjectMaxBudgetUsd,
   setProjectMaxSpendUsd,
+  setProjectScopePath,
   setRunUsage,
   setTicketBudgetOverride,
   ticketSpendUsd,
+  updateTicketFields,
 } from './store.ts';
 
 test('createProject defaults maxBudgetUsd, brief and workspaceRoot, and accepts overrides', () => {
@@ -119,6 +121,63 @@ test('setProjectManagerModel sets and clears (null) the override', () => {
   assert.equal(getProject(db, project.id)!.managerModel, null);
 });
 
+test('createProject defaults scopePath to null and accepts an explicit path', () => {
+  const db = openDb(':memory:');
+  const withDefault = createProject(db, { name: 'p' });
+  assert.equal(withDefault.scopePath, null);
+
+  const withScope = createProject(db, { name: 'p2', scopePath: '/tmp/p2/SCOPE.md' });
+  assert.equal(withScope.scopePath, '/tmp/p2/SCOPE.md');
+});
+
+test('setProjectScopePath sets and clears (null) the path', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  setProjectScopePath(db, project.id, '/tmp/p/SCOPE.md');
+  assert.equal(getProject(db, project.id)!.scopePath, '/tmp/p/SCOPE.md');
+
+  setProjectScopePath(db, project.id, null);
+  assert.equal(getProject(db, project.id)!.scopePath, null);
+});
+
+test('updateTicketFields updates only the fields provided, and never touches status', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, {
+    projectId: project.id,
+    title: 'Original title',
+    description: 'Original description',
+    acceptanceCriteria: ['original criterion'],
+  });
+
+  updateTicketFields(db, ticket.id, { title: 'New title' });
+  const afterTitle = getTicket(db, ticket.id)!;
+  assert.equal(afterTitle.title, 'New title');
+  assert.equal(afterTitle.description, 'Original description', 'untouched fields must not change');
+  assert.equal(afterTitle.status, 'OPEN', 'update_ticket must never touch status');
+
+  updateTicketFields(db, ticket.id, {
+    description: 'New description',
+    acceptanceCriteria: ['a', 'b'],
+    maxBudgetUsdOverride: 1.0,
+    model: 'claude-fable-5-1',
+  });
+  const after = getTicket(db, ticket.id)!;
+  assert.equal(after.title, 'New title', 'a later partial update must not revert an earlier field');
+  assert.equal(after.description, 'New description');
+  assert.deepEqual(after.acceptanceCriteria, ['a', 'b']);
+  assert.equal(after.maxBudgetUsdOverride, 1.0);
+  assert.equal(after.model, 'claude-fable-5-1');
+  assert.equal(after.status, 'OPEN');
+});
+
+test('updateTicketFields rejects a maxBudgetUsdOverride below the floor', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'T' });
+  assert.throws(() => updateTicketFields(db, ticket.id, { maxBudgetUsdOverride: 0.01 }), /at least/);
+});
+
 test('resolveMaxBudgetUsd falls back to the project default when no ticket override is set', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxBudgetUsd: 3 });
@@ -137,14 +196,17 @@ test('a project adapter starts unpaused, can be paused, and can be resumed', () 
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });
   assert.equal(isProjectAdapterPaused(db, project.id), false);
+  assert.equal(getProject(db, project.id)!.pauseReason, null);
 
-  pauseProjectAdapter(db, project.id);
+  pauseProjectAdapter(db, project.id, 'adapter_unavailable');
   assert.equal(isProjectAdapterPaused(db, project.id), true);
   assert.notEqual(getProject(db, project.id)!.adapterPausedAt, null);
+  assert.equal(getProject(db, project.id)!.pauseReason, 'adapter_unavailable');
 
   resumeProjectAdapter(db, project.id);
   assert.equal(isProjectAdapterPaused(db, project.id), false);
   assert.equal(getProject(db, project.id)!.adapterPausedAt, null);
+  assert.equal(getProject(db, project.id)!.pauseReason, null);
 });
 
 test('createArtifact persists kind, path, checksum and the declaring run/ticket', () => {
@@ -255,6 +317,24 @@ test('setProjectMaxSpendUsd sets, clears (null), and enforces the floor when non
   assert.throws(() => setProjectMaxSpendUsd(db, project.id, 0.01), new RegExp(`\\$${MIN_BUDGET_USD.toFixed(2)}`));
 });
 
+test('setProjectMaxSpendUsd raising the cap clears a spend_cap pause by itself and reports it, but leaves an adapter_unavailable pause alone', () => {
+  const db = openDb(':memory:');
+  const capped = createProject(db, { name: 'capped' });
+  pauseProjectAdapter(db, capped.id, 'spend_cap');
+  assert.equal(setProjectMaxSpendUsd(db, capped.id, 5).unpaused, true, 'raising the cap must clear a spend_cap pause');
+  assert.equal(isProjectAdapterPaused(db, capped.id), false);
+  assert.equal(getProject(db, capped.id)!.pauseReason, null);
+
+  const loggedOut = createProject(db, { name: 'logged-out' });
+  pauseProjectAdapter(db, loggedOut.id, 'adapter_unavailable');
+  assert.equal(setProjectMaxSpendUsd(db, loggedOut.id, 5).unpaused, false, 'an adapter pause needs a login, not a bigger cap');
+  assert.equal(isProjectAdapterPaused(db, loggedOut.id), true);
+  assert.equal(getProject(db, loggedOut.id)!.pauseReason, 'adapter_unavailable');
+
+  const notPaused = createProject(db, { name: 'not-paused' });
+  assert.equal(setProjectMaxSpendUsd(db, notPaused.id, 5).unpaused, false);
+});
+
 test('setTicketBudgetOverride sets, clears (null), and enforces the floor when non-null', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });
@@ -272,7 +352,7 @@ test('setTicketBudgetOverride sets, clears (null), and enforces the floor when n
 test('resumeProject clears the pause (whatever its cause) and records a project_resume event', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });
-  pauseProjectAdapter(db, project.id);
+  pauseProjectAdapter(db, project.id, 'spend_cap');
   assert.equal(isProjectAdapterPaused(db, project.id), true);
 
   resumeProject(db, project.id);

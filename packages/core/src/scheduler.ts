@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
+import { isManagerDailyCapReached, MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
 import { applyManagerProposal } from './managerApply.ts';
 import { buildManagerEnvelope } from './managerEnvelope.ts';
 import { classify } from './policy.ts';
@@ -24,6 +25,7 @@ import {
   listEventsForEntity,
   listEventsForProject,
   listTicketsByStatus,
+  MIN_BUDGET_USD,
   pauseProjectAdapter,
   projectSpendUsd,
   resolveMaxBudgetUsd,
@@ -633,7 +635,7 @@ async function applyWorkerEventInner(
           requiresUser: true,
           idempotencyKey: `adapter_unavailable:${run.id}`,
         });
-        pauseProjectAdapter(db, ticket.projectId);
+        pauseProjectAdapter(db, ticket.projectId, 'adapter_unavailable');
         return true;
       }
 
@@ -789,6 +791,10 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
   const artifactsDir = deps.artifactsDir ?? join(process.cwd(), '.magarine', 'artifacts');
   const readyTickets = listTicketsByStatus(deps.db, deps.projectId, 'READY').slice(0, available);
   const started: StartedRun[] = [];
+  // Batch 11 item 3: one fixed instant for the whole tick, so every
+  // manager-kind ticket considered in this pass is measured against the
+  // exact same daily-cap window.
+  const now = new Date();
 
   // Batch 4 section 1 ruling 1, layer 1: the hard control is at spawn time,
   // because declining to start a worker is the only cost decision the
@@ -816,20 +822,32 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       continue;
     }
 
+    // Batch 11 ruling 1 rule e: the old behaviour refused outright the
+    // moment a ticket's own ceiling wouldn't fit under the remaining cap,
+    // which meant a $1 cap with a $2 default refused forever, silently, on
+    // every tick (finding 5). The fix shrinks the ceiling to whatever the
+    // cap still allows and only refuses -- pausing, with one inbox item --
+    // when that shrunk amount would fall below MIN_BUDGET_USD, since a run
+    // below the floor isn't a real run. `ceilingOverrideUsd` stays
+    // `undefined` when the ticket's own ceiling already fits, so an
+    // uncapped or generously-capped project never has its envelope touched.
+    let ceilingOverrideUsd: number | undefined;
     if (project.maxSpendUsd != null) {
-      const ceiling = resolveMaxBudgetUsd(project, ticket);
-      if (projectedSpend + ceiling > project.maxSpendUsd) {
+      const ownCeiling = resolveMaxBudgetUsd(project, ticket);
+      const remainingCap = project.maxSpendUsd - projectedSpend;
+      const effectiveCeiling = Math.min(ownCeiling, remainingCap);
+      if (effectiveCeiling < MIN_BUDGET_USD) {
         insertEvent(deps.db, {
           projectId: project.id,
           eventType: 'project_spend_cap_reached',
           entityType: 'project',
           entityId: project.id,
-          payload: { ticketId: ticket.id, projectedSpend: projectedSpend + ceiling, maxSpendUsd: project.maxSpendUsd },
+          payload: { ticketId: ticket.id, projectedSpend: projectedSpend + ownCeiling, maxSpendUsd: project.maxSpendUsd },
           visibility: 'inbox',
           requiresUser: true,
           idempotencyKey: `project_spend_cap_reached:${randomUUID()}`,
         });
-        pauseProjectAdapter(deps.db, project.id);
+        pauseProjectAdapter(deps.db, project.id, 'spend_cap');
         // Stop considering further READY tickets this tick: the project is
         // now paused, and `isProjectAdapterPaused` at the top of the next
         // tick() call is what actually prevents any further spawn -- this
@@ -837,7 +855,38 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         // cap-reached events for) the rest of this tick's own batch.
         break;
       }
-      projectedSpend += ceiling;
+      projectedSpend += effectiveCeiling;
+      if (effectiveCeiling < ownCeiling) ceilingOverrideUsd = effectiveCeiling;
+    }
+
+    // Batch 11 item 3: the per-project daily Manager-invocation cap
+    // (manager.ts's isManagerDailyCapReached/MANAGER_DAILY_CAP_DEFAULT).
+    // This is the ONLY enforcement point -- not manager.ts's own
+    // planProject/discussProject -- because tick() is where every path that
+    // can produce a READY manager ticket converges: a fresh plan/discuss
+    // call, and a `decide` that unblocked an existing manager ticket sitting
+    // BLOCKED from its own request_user_decision (managerApply.ts's
+    // comment: answering it returns the ticket to READY for "the next tick"
+    // to re-run -- manager.ts's two entry points never see that second
+    // path). Skips (`continue`) rather than pausing/`break`ing the whole
+    // project: a Manager invocation cap is not a spend cap, and must not
+    // stop ordinary WORK tickets later in this same readyTickets batch from
+    // spawning. Idempotency key is per ticket per UTC day, so a
+    // project sitting at the cap for hours does not mint a new inbox event
+    // on every tick.
+    if (ticket.kind === 'manager' && isManagerDailyCapReached(deps.db, project.id, now)) {
+      const policy = classify('manager_daily_cap_reached');
+      insertEvent(deps.db, {
+        projectId: project.id,
+        eventType: 'manager_daily_cap_reached',
+        entityType: 'ticket',
+        entityId: ticket.id,
+        payload: { cap: MANAGER_DAILY_CAP_DEFAULT },
+        visibility: policy.visibility,
+        requiresUser: policy.requiresUser,
+        idempotencyKey: `manager_daily_cap_reached:${ticket.id}:${now.toISOString().slice(0, 10)}`,
+      });
+      continue;
     }
 
     let ws;
@@ -888,6 +937,12 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     // adapter call either way; startWorker has no idea which kind of ticket
     // it just received.
     const envelope = ticket.kind === 'manager' ? buildManagerEnvelope(deps.db, ticket, project) : buildEnvelope(deps.db, ticket, project);
+    // Batch 11 rule e: a cap-shrunk ceiling must reach both consumers that
+    // read envelope.maxBudgetUsd -- the adapter's own --max-budget-usd (via
+    // startWorker below) and this tick's own live-estimate stop-check
+    // (ctx.ceilingUsd, assigned from this same envelope a few lines down) --
+    // so it is applied once, here, before either reads it.
+    if (ceilingOverrideUsd !== undefined) envelope.maxBudgetUsd = ceilingOverrideUsd;
     const handle = await deps.adapter.startWorker({
       ticket: envelope,
       workspace: { type: ticket.workspaceType, path: ws.path },

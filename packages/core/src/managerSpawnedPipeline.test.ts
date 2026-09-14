@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
 import { openDb } from './db/index.ts';
-import { createProject, createTicket, getTicket, listEventsForEntity, listTickets } from './store.ts';
+import { readScopeText } from './manager.ts';
+import { createProject, createTicket, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listTickets } from './store.ts';
 import { tick } from './scheduler.ts';
 import { testTempRoot } from './testSupport.ts';
 
@@ -242,4 +243,161 @@ test('a real spawned process producing an invalid proposal (a dependency cycle) 
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'READY', 'a malformed (cyclic) proposal is retryable');
   assert.equal(listTickets(db, project.id).length, 1, 'a rejected proposal must create nothing, even through the real spawned pipeline');
+});
+
+// --- Batch 11: new artefact kinds and commands, driven through the REAL
+// spawned pipeline (ClaudeCliAdapter + the fake `claude` executable), so
+// claudeCli.ts's own classifyOutcome/verifyArtifacts see them, not just
+// FakeAdapter's in-process publish. SYNTHETIC: unlike the batch-9 tests
+// above (which replay a real recorded stream, docs/spikes/claude-cli-
+// adapter.md), this repo has no recorded transcript of an actual Manager
+// discuss/interview turn to replay -- the `.orchestrator/result.json` and
+// `.orchestrator/proposal.json` file CONTENTS below are hand-constructed
+// from the shapes documented in resultContract.ts/proposal.ts, not captured
+// from a real run. What IS real: the spawned child process, its stdout
+// parsing, and verifyArtifacts's own filesystem check -- exactly the gap a
+// FakeAdapter-only test (managerScheduler.test.ts) cannot close, per this
+// file's own header comment.
+
+test('SYNTHETIC: a manager_reply artifact survives the real verifyArtifacts pipeline (the exact case that needed the kind === \'file\' fix)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = createTicket(db, {
+    projectId: project.id,
+    title: 'Manager: discuss',
+    description: 'Please drop the export feature.',
+    kind: 'manager',
+    workspaceType: 'NONE',
+  });
+
+  const adapter = buildAdapter({
+    stdoutFile: recordedStreamStdout,
+    exitCode: 0,
+    createFiles: {
+      '.orchestrator/result.json': JSON.stringify({
+        status: 'done',
+        summary: 'replied to the owner',
+        artifacts: [{ kind: 'manager_reply', path: 'Dropping the export feature -- done, see updated scope.' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      }),
+      '.orchestrator/proposal.json': JSON.stringify({ rationale: 'no board changes needed', commands: [] }),
+    },
+  });
+
+  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
+  const artifacts = listArtifactsForTicket(db, managerTicket.id);
+  const reply = artifacts.find((a) => a.kind === 'manager_reply');
+  assert.ok(reply, 'expected a manager_reply artifact to survive verifyArtifacts and be captured');
+  assert.equal(reply!.pathOrUri, 'Dropping the export feature -- done, see updated scope.');
+});
+
+test('SYNTHETIC: a manager_assessment artifact survives the real verifyArtifacts pipeline, alongside a request_user_decision proposal (interview mode)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = createTicket(db, {
+    projectId: project.id,
+    title: 'Manager: plan',
+    kind: 'manager',
+    workspaceType: 'NONE',
+  });
+
+  const adapter = buildAdapter({
+    stdoutFile: recordedStreamStdout,
+    exitCode: 0,
+    createFiles: {
+      '.orchestrator/result.json': JSON.stringify({
+        status: 'done',
+        summary: 'assessed the fresh project',
+        artifacts: [{ kind: 'manager_assessment', path: 'The scope is thin; I need to know which platforms to target.' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      }),
+      '.orchestrator/proposal.json': JSON.stringify({
+        rationale: 'questions only -- interview mode',
+        commands: [{ type: 'request_user_decision', question: 'Which platforms?', context: 'the scope does not say' }],
+      }),
+    },
+  });
+
+  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'BLOCKED', 'questions only is a valid outcome, landing BLOCKED same as any request_user_decision');
+  const assessment = listArtifactsForTicket(db, managerTicket.id).find((a) => a.kind === 'manager_assessment');
+  assert.ok(assessment, 'expected a manager_assessment artifact to survive verifyArtifacts and be captured');
+});
+
+test('SYNTHETIC: an update_scope command, driven through the real spawned pipeline, writes the scope file', async () => {
+  const db = openDb(':memory:');
+  const scopePath = join(workspaceBaseDir, 'update-scope-spawned', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'Manager: discuss', kind: 'manager', workspaceType: 'NONE' });
+
+  const adapter = buildAdapter({
+    stdoutFile: recordedStreamStdout,
+    exitCode: 0,
+    createFiles: {
+      '.orchestrator/result.json': JSON.stringify({
+        status: 'done',
+        summary: 'updated the scope',
+        artifacts: [{ kind: 'file', path: '.orchestrator/proposal.json' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      }),
+      '.orchestrator/proposal.json': JSON.stringify({
+        rationale: 'wrote down the assessment',
+        commands: [{ type: 'update_scope', content: 'Assessed scope, written by the real spawned pipeline.' }],
+      }),
+    },
+  });
+
+  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
+  assert.equal(readScopeText(getProject(db, project.id)!), 'Assessed scope, written by the real spawned pipeline.');
+});
+
+test('SYNTHETIC: a cancel_ticket + update_ticket proposal, driven through the real spawned pipeline, applies both under the same transaction', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'Manager: plan', kind: 'manager', workspaceType: 'NONE' });
+  const toCancel = createTicket(db, { projectId: project.id, title: 'Old approach' });
+  const toUpdate = createTicket(db, { projectId: project.id, title: 'Keep, but refine' });
+
+  const adapter = buildAdapter({
+    stdoutFile: recordedStreamStdout,
+    exitCode: 0,
+    createFiles: {
+      '.orchestrator/result.json': JSON.stringify({
+        status: 'done',
+        summary: 're-planned the board',
+        artifacts: [{ kind: 'file', path: '.orchestrator/proposal.json' }],
+        checks: [],
+        blockers: [],
+        questions: [],
+      }),
+      '.orchestrator/proposal.json': JSON.stringify({
+        rationale: 're-plan against the board',
+        commands: [
+          { type: 'cancel_ticket', ticket_id: toCancel.id },
+          { type: 'update_ticket', ticket_id: toUpdate.id, title: 'Refined title' },
+        ],
+      }),
+    },
+  });
+
+  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
+  assert.equal(getTicket(db, toCancel.id)!.status, 'CANCELLED');
+  assert.equal(getTicket(db, toUpdate.id)!.title, 'Refined title');
 });

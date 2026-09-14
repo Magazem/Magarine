@@ -31,6 +31,8 @@ test('runMigrations is idempotent: applying twice does not error or duplicate ro
     '0005_project_spend_cap',
     '0006_model_pinning',
     '0007_manager_kind',
+    '0008_project_scope_path',
+    '0009_pause_reason',
   ]);
 });
 
@@ -95,6 +97,8 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     '0005_project_spend_cap',
     '0006_model_pinning',
     '0007_manager_kind',
+    '0008_project_scope_path',
+    '0009_pause_reason',
   ]);
   assert.equal(snapshot.usageJsonInputTokens, 1);
 });

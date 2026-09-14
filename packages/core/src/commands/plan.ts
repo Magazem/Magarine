@@ -34,7 +34,7 @@ export function deriveManagerTitle(mission: string): string {
   return `Plan: ${truncated}…`;
 }
 
-export function planMission(db: Db, input: { projectId: string; mission: string }): Ticket {
+export function planMission(db: Db, input: { projectId: string; mission: string; budgetUsd?: number | null }): Ticket {
   const project = getProject(db, input.projectId);
   if (!project) {
     throw new PlanError(`no such project: ${input.projectId}`);
@@ -44,16 +44,25 @@ export function planMission(db: Db, input: { projectId: string; mission: string 
   }
 
   // Workspace NONE, per batch-9-spec.md section 2: "A manager ticket is a
-  // ticket... Its workspace is NONE." Model/budget are resolved later, at
-  // envelope-build time (store.ts's resolveManagerModel/resolveMaxBudgetUsd
-  // read the project's CURRENT settings, not a value frozen at `plan` time)
-  // -- so a later `project set --manager-model` change is honoured even by
-  // a manager ticket that was already sitting OPEN/READY before that change.
+  // ticket... Its workspace is NONE." Model is resolved later, at
+  // envelope-build time (store.ts's resolveManagerModel reads the project's
+  // CURRENT setting, not a value frozen at `plan` time) -- so a later
+  // `project set --manager-model` change is honoured even by a manager
+  // ticket that was already sitting OPEN/READY before that change.
+  //
+  // Batch 11 ruling 1 rule e: `--budget` sets this ticket's OWN ceiling
+  // override, the same mechanism `ticket add --budget` already uses --
+  // resolveMaxBudgetUsd (store.ts) prefers it over the project default, and
+  // scheduler.ts's cap check shrinks it further still if the project's
+  // remaining spend cap is tighter than even this. createTicket enforces
+  // MIN_BUDGET_USD itself when budgetUsd is set, the same floor `ticket add
+  // --budget` already gets for free.
   return createTicket(db, {
     projectId: input.projectId,
     title: deriveManagerTitle(input.mission),
     description: input.mission,
     kind: 'manager',
     workspaceType: 'NONE',
+    maxBudgetUsdOverride: input.budgetUsd ?? null,
   });
 }

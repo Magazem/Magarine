@@ -176,6 +176,16 @@ export interface ResolvedCommand {
    * [...prefixArgs, ...callerArgs])`.
    */
   prefixArgs: string[];
+  /**
+   * Batch 11 ruling 2: which of the three real shapes this codebase knows
+   * (see `resolveWindowsShimCommand`'s doc comment) actually produced
+   * `executable`, so a caller like `doctor.ts` can tell the owner not just
+   * a path but HOW it was found -- the difference matters because the two
+   * shim strategies are exactly where batch 10's owner-walk findings lived.
+   * 'direct': found on PATH with no `.cmd`/`.bat` shim to unwrap (every
+   * POSIX binary, and a Windows tool installed as a bare `.exe`).
+   */
+  strategy: 'direct' | 'windows_shim_native_exe' | 'windows_shim_script';
 }
 
 // Resolves `name` to something directly spawnable with `shell: false`,
@@ -199,7 +209,7 @@ export function resolveCommand(name: string): ResolvedCommand {
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(hit)) {
     return resolveWindowsShimCommand(hit, name);
   }
-  return { executable: hit, prefixArgs: [] };
+  return { executable: hit, prefixArgs: [], strategy: 'direct' };
 }
 
 // Kept for every existing caller that only ever needs one spawnable path --
@@ -282,12 +292,12 @@ function resolveWindowsShimCommand(shimPath: string, name: string): ResolvedComm
 
   const nativeExe = findSiblingNativeExecutable(text, name, expand);
   if (nativeExe) {
-    return { executable: nativeExe, prefixArgs: [] };
+    return { executable: nativeExe, prefixArgs: [], strategy: 'windows_shim_native_exe' };
   }
 
   const scriptPath = findShimScriptPath(text, expand);
   if (scriptPath) {
-    return { executable: process.execPath, prefixArgs: [scriptPath] };
+    return { executable: process.execPath, prefixArgs: [scriptPath], strategy: 'windows_shim_script' };
   }
 
   throw new Error(`could not find a real executable or script inside shim: ${shimPath}`);

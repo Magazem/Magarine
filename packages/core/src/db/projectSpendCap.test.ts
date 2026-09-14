@@ -88,6 +88,13 @@ test('a database migrated only to 0001-0004 picks up 0005 (project spend cap) on
     '0005_project_spend_cap',
     '0006_model_pinning',
     '0007_manager_kind',
+    // Batch 11: this snapshot re-opens a fresh :memory: db and runs every
+    // migration up to whatever HEAD currently is, so it must list the two
+    // that landed after 0007 too -- 0008_project_scope_path was already
+    // missing here before this batch touched this file (found, not caused,
+    // while fixing this test for 0009_pause_reason).
+    '0008_project_scope_path',
+    '0009_pause_reason',
   ]);
   assert.equal(snapshot.maxSpendUsdBeforeUpdate, null, 'existing project rows must get NULL (no cap), not a numeric default');
   assert.equal(snapshot.maxSpendUsdAfterUpdate, 10);

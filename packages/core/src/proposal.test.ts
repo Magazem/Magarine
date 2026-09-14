@@ -11,11 +11,11 @@ import { MIN_BUDGET_USD } from './store.ts';
 // proves it is rejected WHOLE, with a reason, never partially applied.
 
 function emptyBoard(): ProposalBoard {
-  return { tickets: [], dependencies: [] };
+  return { tickets: [], dependencies: [], hasScopePath: true };
 }
 
 function boardWith(tickets: ProposalBoard['tickets'], dependencies: ProposalBoard['dependencies'] = []): ProposalBoard {
-  return { tickets, dependencies };
+  return { tickets, dependencies, hasScopePath: true };
 }
 
 test('a minimal valid proposal (one create_ticket) is accepted', () => {
@@ -28,8 +28,12 @@ test('a minimal valid proposal (one create_ticket) is accepted', () => {
   assert.equal(result.valid, true);
 });
 
-test('a proposal exercising all five commands together, with a legitimate cross-title dependency, is accepted', () => {
-  const board = boardWith([{ id: 'tkt_existing', title: 'Existing work', kind: 'work' }]);
+test('a proposal exercising all seven commands together, with a legitimate cross-title dependency, is accepted', () => {
+  const board = boardWith([
+    { id: 'tkt_existing', title: 'Existing work', kind: 'work', status: 'OPEN' },
+    { id: 'tkt_cancel_me', title: 'Cancel me', kind: 'work', status: 'READY' },
+    { id: 'tkt_update_me', title: 'Update me', kind: 'work', status: 'OPEN' },
+  ]);
   const result = validateProposal(
     {
       rationale: 'plan the mission',
@@ -38,7 +42,9 @@ test('a proposal exercising all five commands together, with a legitimate cross-
         { type: 'create_ticket', title: 'B', description: 'b', acceptance_criteria: [], depends_on: ['A', 'tkt_existing'] },
         { type: 'change_priority', ticket_id: 'tkt_existing', priority: 5 },
         { type: 'request_user_decision', question: 'Which library?', context: 'two options look equivalent' },
-        { type: 'update_project_brief', brief: 'Updated brief text.' },
+        { type: 'update_scope', content: 'Updated scope text.' },
+        { type: 'cancel_ticket', ticket_id: 'tkt_cancel_me' },
+        { type: 'update_ticket', ticket_id: 'tkt_update_me', title: 'New title' },
       ],
     },
     board
@@ -135,7 +141,15 @@ test('add_dependency missing fields, change_priority with a non-number priority,
     validateProposal({ rationale: 'r', commands: [{ type: 'request_user_decision', context: 'c' }] }, emptyBoard()).valid,
     false
   );
-  assert.equal(validateProposal({ rationale: 'r', commands: [{ type: 'update_project_brief' }] }, emptyBoard()).valid, false);
+  assert.equal(validateProposal({ rationale: 'r', commands: [{ type: 'update_scope' }] }, emptyBoard()).valid, false);
+  assert.equal(validateProposal({ rationale: 'r', commands: [{ type: 'cancel_ticket' }] }, emptyBoard()).valid, false);
+  assert.equal(validateProposal({ rationale: 'r', commands: [{ type: 'update_ticket' }] }, emptyBoard()).valid, false);
+});
+
+test('update_project_brief is no longer a recognized command (removed in favour of update_scope, batch 11)', () => {
+  const result = validateProposal({ rationale: 'r', commands: [{ type: 'update_project_brief', brief: 'x' }] }, emptyBoard());
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /type must be one of/);
 });
 
 test('create_ticket.max_budget_usd below MIN_BUDGET_USD is rejected, naming the floor; exactly at the floor is accepted', () => {
@@ -375,6 +389,104 @@ test('a legitimate diamond-shaped dependency graph (no cycle) is accepted, provi
     emptyBoard()
   );
   assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+});
+
+// --- Batch 11 item 4: cancel_ticket / update_ticket ---
+
+test('update_scope with a valid string content is accepted', () => {
+  const result = validateProposal({ rationale: 'r', commands: [{ type: 'update_scope', content: 'New scope text.' }] }, emptyBoard());
+  assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+});
+
+test('update_scope is rejected as a clean validation error, not an unhandled write failure, when the project has no scope_path set yet', () => {
+  const board: ProposalBoard = { tickets: [], dependencies: [], hasScopePath: false };
+  const result = validateProposal({ rationale: 'r', commands: [{ type: 'update_scope', content: 'x' }] }, board);
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /no scope_path set/);
+});
+
+test('cancel_ticket targeting an existing, cancellable work ticket is accepted', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'READY' }]);
+  const result = validateProposal({ rationale: 'r', commands: [{ type: 'cancel_ticket', ticket_id: 'tkt_x' }] }, board);
+  assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+});
+
+test('cancel_ticket targeting a ticket that does not exist on the board is rejected', () => {
+  const result = validateProposal({ rationale: 'r', commands: [{ type: 'cancel_ticket', ticket_id: 'tkt_ghost' }] }, emptyBoard());
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /not an existing ticket/);
+});
+
+test('cancel_ticket targeting a manager ticket is rejected', () => {
+  const board = boardWith([{ id: 'tkt_mgr', title: 'Manager run', kind: 'manager', status: 'READY' }]);
+  const result = validateProposal({ rationale: 'r', commands: [{ type: 'cancel_ticket', ticket_id: 'tkt_mgr' }] }, board);
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /manager ticket/);
+});
+
+for (const terminalStatus of ['DONE', 'FAILED', 'CANCELLED']) {
+  test(`cancel_ticket targeting a ticket already ${terminalStatus} is rejected, not left to throw at apply time`, () => {
+    const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: terminalStatus as never }]);
+    const result = validateProposal({ rationale: 'r', commands: [{ type: 'cancel_ticket', ticket_id: 'tkt_x' }] }, board);
+    assert.equal(result.valid, false);
+    assert.match((result as { errors: string[] }).errors.join(' '), /cannot be cancelled/);
+  });
+}
+
+for (const cancellableStatus of ['OPEN', 'READY', 'IN_PROGRESS', 'REVIEW']) {
+  test(`cancel_ticket targeting a ${cancellableStatus} ticket is accepted`, () => {
+    const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: cancellableStatus as never }]);
+    const result = validateProposal({ rationale: 'r', commands: [{ type: 'cancel_ticket', ticket_id: 'tkt_x' }] }, board);
+    assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+  });
+}
+
+test('update_ticket with a partial set of fields (title only) targeting an existing work ticket is accepted', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }]);
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', title: 'New title' }] },
+    board
+  );
+  assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+});
+
+test('update_ticket targeting a ticket that does not exist on the board is rejected', () => {
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_ghost', title: 'New title' }] },
+    emptyBoard()
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /not an existing ticket/);
+});
+
+test('update_ticket targeting a manager ticket is rejected', () => {
+  const board = boardWith([{ id: 'tkt_mgr', title: 'Manager run', kind: 'manager', status: 'READY' }]);
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_mgr', title: 'New title' }] },
+    board
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /manager ticket/);
+});
+
+test('update_ticket with an invalid field type (max_budget_usd below the floor) is rejected, naming the floor', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }]);
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', max_budget_usd: 0.01 }] },
+    board
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /at least/);
+});
+
+test('update_ticket carrying a "status" field is rejected outright -- a proposal may never set status directly, even if the field is present in the raw JSON', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }]);
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', status: 'DONE' }] },
+    board
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /never set it directly/);
 });
 
 test('every error is reported together, not just the first one found', () => {

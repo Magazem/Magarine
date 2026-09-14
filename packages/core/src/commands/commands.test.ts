@@ -612,7 +612,7 @@ test('resume clears a project adapter pause', async () => {
     // the seeding is direct; `resume` itself is exercised through the real
     // CLI below.
     const seedDb = openDb(dbFile);
-    pauseProjectAdapter(seedDb, project.id);
+    pauseProjectAdapter(seedDb, project.id, 'adapter_unavailable');
     assert.ok(isProjectAdapterPaused(seedDb, project.id));
     seedDb.close();
 
@@ -1022,7 +1022,7 @@ test('inbox shows a project-scoped project_spend_cap_reached item with the reaso
       requiresUser: true,
       idempotencyKey: 'test-cap-event-1',
     });
-    pauseProjectAdapter(db, project.id);
+    pauseProjectAdapter(db, project.id, 'spend_cap');
     db.close();
 
     const inboxBefore = JSON.parse(
@@ -1033,6 +1033,11 @@ test('inbox shows a project-scoped project_spend_cap_reached item with the reaso
     assert.equal(item!.projectId, project.id);
     assert.match(item!.message, /\$1\.20/, 'the reason must state the spend the cap refused');
     assert.match(item!.message, /\$1\.00/, 'the reason must state the cap itself');
+    assert.match(
+      item!.message,
+      new RegExp(`magarine project set --project ${project.id} --max-spend <usd>`),
+      'batch 11 rule c: the line must name the exact fix command, not just the numbers'
+    );
 
     const humanInbox = await run(['inbox', '--project', project.id, '--db', dbFile]);
     assert.match(humanInbox.stdout, new RegExp(`^${project.id}\\t`, 'm'), 'project id must be first on its inbox line');
@@ -1046,6 +1051,49 @@ test('inbox shows a project-scoped project_spend_cap_reached item with the reaso
     assert.ok(
       !inboxAfter.some((i) => i.eventType === 'project_spend_cap_reached'),
       'resume must clear the cap item from the inbox, the same way decide/retry clear a ticket item'
+    );
+  });
+});
+
+// Batch 11 ruling 1 rules a/d: before this fix, an adapter_unavailable
+// pause's triggering event was entityType 'ticket' with no
+// PENDING_TICKET_STATUS row, so it was filtered out of the inbox entirely --
+// a project could sit paused, invisible, forever. buildInbox now derives the
+// item from the project's own current pauseReason instead of the raw event.
+test('inbox surfaces an adapter_unavailable pause (previously invisible), naming the login-then-resume fix, and resume clears it', async () => {
+  const { openDb } = await import('../db/index.ts');
+  const { pauseProjectAdapter } = await import('../store.ts');
+
+  await withTempDb('magarine-inbox-adapterpause-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'AdapterPauseP', '--json', '--db', dbFile])).stdout
+    );
+
+    const db = openDb(dbFile);
+    pauseProjectAdapter(db, project.id, 'adapter_unavailable');
+    db.close();
+
+    const inboxBefore = JSON.parse(
+      (await run(['inbox', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ projectId?: string; eventType: string; message: string }>;
+    const item = inboxBefore.find((i) => i.projectId === project.id);
+    assert.ok(item, 'an adapter_unavailable pause must appear in the inbox, not be silently dropped');
+    assert.match(item!.message, /`claude`/, 'rule d: must say to log in with claude');
+    assert.match(
+      item!.message,
+      new RegExp(`magarine resume --project ${project.id}`),
+      'rule d: must name the exact resume command'
+    );
+
+    const resumeRes = await run(['resume', '--project', project.id, '--db', dbFile]);
+    assert.equal(resumeRes.code, 0, resumeRes.stderr);
+
+    const inboxAfter = JSON.parse(
+      (await run(['inbox', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ projectId?: string }>;
+    assert.ok(
+      !inboxAfter.some((i) => i.projectId === project.id),
+      'resume must clear the adapter-pause item from the inbox'
     );
   });
 });
@@ -1135,6 +1183,47 @@ test('plan creates a manager ticket that shows up tagged on the board, and proje
       (await run(['project', 'set', '--project', project.id, '--manager-model', 'claude-opus-5', '--json', '--db', dbFile])).stdout
     );
     assert.equal(updated.managerModel, 'claude-opus-5');
+  });
+});
+
+// Batch 11 ruling 1 rule e: `plan --budget` sets the manager ticket's own
+// ceiling override, the same mechanism `ticket add --budget` already uses,
+// so a mission that needs a tighter (or looser) per-run ceiling than the
+// project default doesn't have to wait for a separate `ticket set` surface
+// that doesn't exist.
+test('plan --budget sets the manager ticket\'s maxBudgetUsdOverride, and enforces the floor the same way ticket add --budget does', async () => {
+  await withTempDb('magarine-plan-budget-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+
+    const planRes = await run([
+      'plan',
+      '--project',
+      project.id,
+      '--mission',
+      'a mission with its own tighter ceiling',
+      '--budget',
+      '0.5',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(planRes.code, 0, planRes.stderr);
+    const planned = JSON.parse(planRes.stdout);
+    assert.equal(planned.maxBudgetUsdOverride, 0.5);
+
+    const belowFloor = await run([
+      'plan',
+      '--project',
+      project.id,
+      '--mission',
+      'another mission',
+      '--budget',
+      '0.01',
+      '--db',
+      dbFile,
+    ]);
+    assert.notEqual(belowFloor.code, 0);
+    assert.match(belowFloor.stderr, /\$0\.25/);
   });
 });
 

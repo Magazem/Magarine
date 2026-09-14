@@ -6,12 +6,12 @@ import { approve, ApproveError } from './commands/approve.ts';
 import { buildBoard } from './commands/board.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { buildInbox } from './commands/inbox.ts';
-import { planMission, PlanError } from './commands/plan.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import type { DaemonLoop } from './daemon.ts';
 import { resolveReadiness } from './dependencies.ts';
+import { discussProject, ManagerError, planProject } from './manager.ts';
 import {
   addDependency,
   createTicket,
@@ -124,6 +124,7 @@ function toApiError(err: unknown): ApiError {
     err instanceof ApproveError ||
     err instanceof RejectError ||
     err instanceof ResumeError ||
+    err instanceof ManagerError ||
     err instanceof Error
   ) {
     return new ApiError(400, err.message);
@@ -218,19 +219,32 @@ async function handleCancel(db: Db, loop: DaemonLoop, ticketId: string): Promise
   return { status: 200, body: getTicket(db, ticketId) };
 }
 
-// Batch 9: `plan` creates the manager ticket only -- it never forces a tick
-// itself, same as `POST /tickets` for an ordinary ticket. A live daemon
-// picks it up on its own next periodic pass (batch-9-spec.md section 2:
-// "if a daemon is up, it runs on the next tick").
+// Batch 11 (docs/strategy/batch-11-spec.md section 2, Role R item -- the
+// cross-role contract with Role Q): this route now calls `planProject`
+// (manager.ts), not batch 9's mission-string `planMission`
+// (commands/plan.ts, Role Q's file and unowned by this route any more) --
+// `plan` runs the Manager against the project's CURRENT scope document and
+// board, in interview mode on a fresh project, re-plan mode once tickets
+// exist. Creates the manager ticket only, same as before: it never forces a
+// tick itself; a live daemon picks it up on its own next periodic pass.
 function handlePlan(db: Db, projectId: string, body: unknown): RouteResult {
-  const b = body as { mission?: string };
-  if (!b.mission) throw new ApiError(400, '"mission" is required');
-  const ticket = planMission(db, { projectId, mission: b.mission });
-  return { status: 201, body: ticket };
+  const b = body as { budgetUsd?: number };
+  const ticketId = planProject(db, projectId, { budgetUsd: b.budgetUsd });
+  return { status: 201, body: getTicket(db, ticketId) };
+}
+
+// Batch 11 item 3: `discussProject` records the owner's message as a
+// `discuss` event, then creates a manager ticket exactly like `plan` does --
+// same "creates only, never ticks" contract.
+function handleDiscuss(db: Db, projectId: string, body: unknown): RouteResult {
+  const b = body as { message?: string; budgetUsd?: number };
+  if (!b.message) throw new ApiError(400, '"message" is required');
+  const ticketId = discussProject(db, projectId, b.message, { budgetUsd: b.budgetUsd });
+  return { status: 201, body: getTicket(db, ticketId) };
 }
 
 const TICKET_ACTION_PATH = /^\/tickets\/([^/]+)\/(decide|retry|approve|reject|cancel)$/;
-const PROJECT_ACTION_PATH = /^\/projects\/([^/]+)\/(resume|set|plan)$/;
+const PROJECT_ACTION_PATH = /^\/projects\/([^/]+)\/(resume|set|plan|discuss)$/;
 
 async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: unknown): Promise<RouteResult> {
   const method = req.method ?? 'GET';
@@ -304,6 +318,7 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     if (action === 'resume') return { status: 200, body: resume(deps.db, { projectId }) };
     if (action === 'set') return handleSetProject(deps.db, projectId, body);
     if (action === 'plan') return handlePlan(deps.db, projectId, body);
+    if (action === 'discuss') return handleDiscuss(deps.db, projectId, body);
   }
 
   throw new ApiError(404, 'not found');

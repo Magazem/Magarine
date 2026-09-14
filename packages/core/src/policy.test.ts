@@ -118,3 +118,9 @@ test('non-TransitionEvent row for batch 6\'s unknown-model pricing fallback: vis
 test('spot check for batch 8\'s person-initiated cancel: activity, not internal and not inbox -- the owner did it themselves', () => {
   assert.deepEqual(classify('cancel'), { visibility: 'activity', requiresUser: false });
 });
+
+test('batch 11: discuss and scope_updated are silent-by-default activity, the manager daily cap reaches the inbox', () => {
+  assert.deepEqual(classify('discuss'), { visibility: 'activity', requiresUser: false });
+  assert.deepEqual(classify('scope_updated'), { visibility: 'activity', requiresUser: false });
+  assert.deepEqual(classify('manager_daily_cap_reached'), { visibility: 'inbox', requiresUser: true });
+});

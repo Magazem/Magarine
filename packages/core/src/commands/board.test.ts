@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../db/index.ts';
-import { createProject, createTicket } from '../store.ts';
+import { createProject, createTicket, pauseProjectAdapter } from '../store.ts';
 import { buildBoard, formatBoard, truncateTitleForDisplay } from './board.ts';
 
 // Batch 9: a manager ticket must be distinguishable from a work ticket on
@@ -34,6 +34,27 @@ test('formatBoard tags a manager ticket\'s row with [MANAGER], and leaves a work
   // The bare title (no stray "[MANAGER]") must still appear for the work ticket.
   const workLine = text.split('\n').find((line) => line.includes('Ordinary work'))!;
   assert.ok(!workLine.includes('[MANAGER]'));
+});
+
+// Batch 11 rule a: a pause must be the FIRST thing a reader sees, before the
+// spend header -- a ticket still reading READY while paused is not actually
+// about to run, and burying the pause below the spend line (or the ticket
+// rows) would let a reader miss it.
+test('formatBoard leads with PAUSED: <reason> when the project is paused, naming the command that clears it, and shows nothing of the kind when it is not', () => {
+  const db = openDb(':memory:');
+  const paused = createProject(db, { name: 'paused-p' });
+  createTicket(db, { projectId: paused.id, title: 'sits READY while paused' });
+  pauseProjectAdapter(db, paused.id, 'spend_cap');
+
+  const pausedText = formatBoard(buildBoard(db, paused.id));
+  const lines = pausedText.split('\n');
+  assert.match(lines[0], /^PAUSED: /, 'the pause must be the board\'s first line, not buried below spend or tickets');
+  assert.match(lines[0], /magarine project set --project/, 'the pause line must name the command that clears it');
+  assert.match(lines[1], /^Project spend:/, 'the spend header still follows, just not first');
+
+  const notPaused = createProject(db, { name: 'not-paused-p' });
+  const unpausedText = formatBoard(buildBoard(db, notPaused.id));
+  assert.doesNotMatch(unpausedText, /^PAUSED:/m, 'an unpaused project must show no PAUSED line at all');
 });
 
 // Batch 10 owner walk finding 4: a real scope document handed in as a

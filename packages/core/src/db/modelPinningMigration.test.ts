@@ -113,6 +113,8 @@ test("a database migrated only to 0001-0005 picks up 0006 (model pinning) on nex
     '0005_project_spend_cap',
     '0006_model_pinning',
     '0007_manager_kind',
+    '0008_project_scope_path',
+    '0009_pause_reason',
   ]);
   assert.equal(
     snapshot.defaultModelBeforeUpdate,

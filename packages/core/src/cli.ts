@@ -311,8 +311,10 @@ const FLAG_SPECS: Record<string, string[]> = {
   // Batch 9: `magarine plan --project <id> --mission "<text>"` creates the
   // manager ticket. No `--title`: deriveManagerTitle (commands/plan.ts)
   // makes one from the mission, the same way a work ticket's title is
-  // always given directly rather than derived.
-  plan: ['project', 'mission'],
+  // always given directly rather than derived. Batch 11 rule e: `--budget`
+  // sets the manager ticket's own ceiling override, same as `ticket add
+  // --budget`.
+  plan: ['project', 'mission', 'budget'],
   decide: ['ticket', 'answer'],
   retry: ['ticket'],
   approve: ['ticket'],
@@ -567,9 +569,16 @@ async function main(): Promise<void> {
       throw err;
     }
     const mission = String(flags.mission ?? '');
+    const budgetUsd = typeof flags.budget === 'string' ? Number(flags.budget) : undefined;
     const live = await liveDaemonFor(flags);
     if (live) {
-      await routeMutation(flags, live, 'POST', `/projects/${projectId}/plan`, { mission }, (b) => {
+      // daemonApi.ts's handlePlan (Role R, landed) now calls planProject
+      // against the project's own scope document and board, not this
+      // mission string -- `mission` is deliberately NOT sent here since the
+      // route no longer reads it; `--mission` against a live daemon is a
+      // known cross-role gap flagged to the Orchestrator, not silently
+      // patched over by resurrecting a field the route ignores.
+      await routeMutation(flags, live, 'POST', `/projects/${projectId}/plan`, { budgetUsd }, (b) => {
         const t = b as { id: string; title: string };
         return `Created manager ticket ${t.id} (${t.title})`;
       });
@@ -577,7 +586,7 @@ async function main(): Promise<void> {
     }
 
     try {
-      const ticket = planMission(db, { projectId, mission });
+      const ticket = planMission(db, { projectId, mission, budgetUsd });
       output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})`);
     } catch (err) {
       if (err instanceof PlanError) {

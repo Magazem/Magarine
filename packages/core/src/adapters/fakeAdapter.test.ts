@@ -198,3 +198,40 @@ test('manager_proposal script with no proposal given writes nothing and declares
     rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+test('manager_proposal script with extraArtifacts declares them alongside (or instead of) proposal.json, without writing any file for them', async () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'magarine-fakeadapter-manager-extra-'));
+  try {
+    const adapter = new FakeAdapter();
+    adapter.setScript('t1', {
+      kind: 'manager_proposal',
+      proposal: { rationale: 'r', commands: [] },
+      extraArtifacts: [
+        { kind: 'manager_reply', path: 'Here is my reply.' },
+        { kind: 'manager_assessment', path: 'Here is my assessment.' },
+      ],
+    });
+    const handle = await adapter.startWorker({ ticket: envelope('t1'), workspace: { type: 'NONE', path: workspace }, systemPolicy: 'p' });
+
+    const events: WorkerEvent[] = [];
+    await new Promise<void>((resolve) => {
+      adapter.observe(handle, (event) => {
+        events.push(event);
+        resolve();
+      });
+    });
+
+    const terminal = events.at(-1)! as { type: string; raw: { artifacts: Array<{ kind: string; path: string }> } };
+    assert.deepEqual(terminal.raw.artifacts, [
+      { kind: 'file', path: '.orchestrator/proposal.json' },
+      { kind: 'manager_reply', path: 'Here is my reply.' },
+      { kind: 'manager_assessment', path: 'Here is my assessment.' },
+    ]);
+    // No file is ever written for a non-'file' extraArtifact -- the path is
+    // opaque text, not a filesystem location (see managerEnvelope.ts's
+    // MANAGER_EXPECTED_OUTPUT_FORMAT).
+    assert.equal(existsSync(join(workspace, 'Here is my reply.')), false);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});

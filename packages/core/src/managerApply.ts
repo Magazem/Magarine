@@ -1,5 +1,6 @@
 import { withTransaction, type Db } from './db/index.ts';
 import { resolveReadiness } from './dependencies.ts';
+import { readScopeText, writeScopeText } from './manager.ts';
 import { classify } from './policy.ts';
 import { validateProposal, type ManagerCommand, type ProposalBoard } from './proposal.ts';
 import { recordTicketTransition } from './stateMachine.ts';
@@ -7,10 +8,11 @@ import {
   addDependency,
   createTicket,
   getDependencies,
+  getProject,
   insertEvent,
   listTickets,
-  setProjectBrief,
   setTicketPriority,
+  updateTicketFields,
 } from './store.ts';
 import type { Project, Ticket } from './types.ts';
 
@@ -65,9 +67,26 @@ function buildProposalBoard(db: Db, projectId: string): ProposalBoard {
       .map((d) => ({ ticketId: t.id, dependsOnTicketId: d.dependsOnTicketId }))
   );
   return {
-    tickets: tickets.map((t) => ({ id: t.id, title: t.title, kind: t.kind })),
+    tickets: tickets.map((t) => ({ id: t.id, title: t.title, kind: t.kind, status: t.status })),
     dependencies,
+    hasScopePath: getProject(db, projectId)!.scopePath != null,
   };
+}
+
+// A one-line, honest summary of a scope rewrite -- a line count before and
+// after, not a fabricated diff (this file has no diff library and inventing
+// a line-by-line comparison for a decision-log entry is more machinery than
+// the spec asks for: "a one-line summary of what changed"). Recorded on the
+// `scope_updated` event so the decision log (and, eventually, Role Q's page)
+// shows that the scope changed and roughly how much, without duplicating the
+// document's full text a second time in the event payload.
+function summarizeScopeChange(before: string, after: string): string {
+  const countLines = (text: string) => text.split('\n').filter((l) => l.trim().length > 0).length;
+  const beforeLines = countLines(before);
+  const afterLines = countLines(after);
+  if (before.trim().length === 0) return `scope written (${afterLines} line(s))`;
+  if (after.trim().length === 0) return `scope cleared (was ${beforeLines} line(s))`;
+  return `scope updated (${beforeLines} → ${afterLines} line(s))`;
 }
 
 // Re-resolves a create_ticket.depends_on reference to a real ticket id,
@@ -164,9 +183,48 @@ export function applyManagerProposal(
           guard();
           setTicketPriority(db, c.ticket_id, c.priority);
           break;
-        case 'update_project_brief':
+        case 'update_scope': {
           guard();
-          setProjectBrief(db, project.id, c.brief);
+          const before = readScopeText(project);
+          writeScopeText(project, c.content);
+          const scopePolicy = classify('scope_updated');
+          insertEvent(db, {
+            projectId: project.id,
+            eventType: 'scope_updated',
+            entityType: 'project',
+            entityId: project.id,
+            payload: { summary: summarizeScopeChange(before, c.content) },
+            visibility: scopePolicy.visibility,
+            requiresUser: scopePolicy.requiresUser,
+            idempotencyKey: `scope_updated:${runId}`,
+          });
+          break;
+        }
+        case 'cancel_ticket':
+          guard();
+          // The same PERSON-initiated `cancel` transition batch 8's
+          // `POST /tickets/{id}/cancel` uses (stateMachine.ts) -- here
+          // proposed by the Manager instead of typed by the owner directly,
+          // but it is still the owner's own plan taking effect, not the
+          // daemon's; single write site (stateMachine.ts) unchanged.
+          // validateProposal already confirmed the target is neither a
+          // manager ticket nor already in a terminal/non-cancellable
+          // status, so this call is not expected to throw.
+          recordTicketTransition(db, {
+            ticketId: c.ticket_id,
+            event: 'cancel',
+            idempotencyKey: `cancel:${runId}:${c.ticket_id}`,
+          });
+          break;
+        case 'update_ticket':
+          guard();
+          updateTicketFields(db, c.ticket_id, {
+            title: c.title,
+            description: c.description,
+            acceptanceCriteria: c.acceptance_criteria,
+            maxBudgetUsdOverride: c.max_budget_usd,
+            model: c.model,
+          });
           break;
         case 'request_user_decision':
           guard();

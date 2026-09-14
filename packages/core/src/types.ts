@@ -37,8 +37,12 @@ export interface Project {
   workspaceRoot: string | null;
   /** Set when an `adapter_unavailable` failure pauses this project's adapter; cleared by `resumeProjectAdapter`. Null means not paused. */
   adapterPausedAt: string | null;
+  /** Batch 11: which of the two pause causes set `adapterPausedAt`, so the board/inbox can name the fix instead of guessing. Null whenever `adapterPausedAt` is null; also null for pauses recorded before this column existed. See store.ts's `pauseProjectAdapter`. */
+  pauseReason: 'spend_cap' | 'adapter_unavailable' | null;
   /** Batch 9: overrides `defaultModel` for this project's Manager tickets specifically; null falls back to `defaultModel` (same shape as `Ticket.model`/`defaultModel`, but this is a project-level setting because a project can have many Manager tickets over its lifetime, each of which should see a later change here -- not something a single ticket's own `model` column would give). See store.ts's resolveManagerModel. */
   managerModel: string | null;
+  /** Batch 11: the scope document's filesystem path, read fresh into the Manager's envelope on every invocation and hand-editable by the owner between turns. Null means no scope file has been set yet -- see manager.ts's readScopeText, which treats that as empty text rather than inventing a default location. */
+  scopePath: string | null;
   createdAt: string;
   updatedAt: string;
 }

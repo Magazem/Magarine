@@ -233,12 +233,28 @@ export function classifyOutcome(input: {
 // A spike run demonstrated a schema-valid result claiming a file that was
 // never written (docs/spikes/claude-cli-adapter.md §3.3: tool restriction is
 // not a reliable boundary, so the daemon must verify independently). Every
-// artifact path is resolved against the workspace; a path that resolves
+// FILE artifact path is resolved against the workspace; a path that resolves
 // outside the workspace is treated as not found rather than stat'd on the
 // real filesystem, since the workspace directory is the actual boundary.
+//
+// Batch 11: only `kind === 'file'` is checked for existence -- consistent
+// with how this codebase already treats every other artifact kind
+// (scheduler.ts's captureDirectoryArtifacts/captureNoneModeArtifacts store a
+// non-'file' artifact's `path` field verbatim, as opaque text/URI, with no
+// filesystem resolution at all). Before this batch every real artifact kind
+// ever declared was 'file' (a proposal.json, a worker's own output file), so
+// this distinction was latent and untested; `manager_reply`/
+// `manager_assessment` (managerEnvelope.ts's MANAGER_EXPECTED_OUTPUT_FORMAT)
+// are the first non-'file' kinds a real Manager run declares, and their
+// `path` field carries the reply/assessment TEXT itself, not a location on
+// disk -- resolving that text as a filesystem path and demanding it exist
+// would reject every real discuss/interview turn. Caught by
+// managerSpawnedPipeline.test.ts's synthetic spawned-pipeline tests for
+// these two kinds, which fail without this change.
 export function verifyArtifacts(result: WorkerResult, workspacePath: string): ClaudeCliOutcome {
   const resolvedWorkspace = resolvePath(workspacePath);
   for (const artifact of result.artifacts) {
+    if (artifact.kind !== 'file') continue;
     const resolved = isAbsolute(artifact.path) ? resolvePath(artifact.path) : resolvePath(resolvedWorkspace, artifact.path);
     const withinWorkspace = resolved === resolvedWorkspace || resolved.startsWith(resolvedWorkspace + sep);
     if (!withinWorkspace || !existsSync(resolved)) {

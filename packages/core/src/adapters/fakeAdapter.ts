@@ -55,7 +55,24 @@ export type FakeScript =
   // Omitting `proposal` simulates a manager that never wrote the file at
   // all (the "missing artefact" malformed-result case): `resultStatus`
   // still fires, but the daemon's own direct file read finds nothing.
-  | { kind: 'manager_proposal'; delayMs?: number; proposal?: unknown; resultStatus?: WorkerResultStatus; summary?: string; usage?: unknown }
+  // Batch 11: `extraArtifacts` lets a test declare additional artifacts
+  // alongside (or instead of) the proposal.json declaration above -- what a
+  // fake-adapter test needs to drive discuss/interview outcomes end to end
+  // (managerScheduler.test.ts's per-artefact-kind tests), specifically
+  // `manager_reply`/`manager_assessment`, whose `path` field carries reply/
+  // assessment TEXT rather than a real file (see managerEnvelope.ts's
+  // MANAGER_EXPECTED_OUTPUT_FORMAT) -- no file is written for these, unlike
+  // the `proposal` field above, since captureArtifacts (scheduler.ts) never
+  // resolves a non-'file' kind's path against the filesystem either.
+  | {
+      kind: 'manager_proposal';
+      delayMs?: number;
+      proposal?: unknown;
+      resultStatus?: WorkerResultStatus;
+      summary?: string;
+      usage?: unknown;
+      extraArtifacts?: Array<{ kind: string; path: string }>;
+    }
   | { kind: 'hang' };
 
 interface HandleState {
@@ -232,7 +249,7 @@ export class FakeAdapter implements AgentAdapter {
         break;
 
       case 'manager_proposal': {
-        const artifacts = [];
+        const artifacts: Array<{ kind: string; path: string }> = [];
         if (script.proposal !== undefined) {
           if (!state.workspacePath) {
             throw new Error('manager_proposal script requires startWorker to have been given a workspace');
@@ -241,6 +258,9 @@ export class FakeAdapter implements AgentAdapter {
           mkdirSync(dirname(proposalPath), { recursive: true });
           writeFileSync(proposalPath, JSON.stringify(script.proposal));
           artifacts.push({ kind: 'file', path: '.orchestrator/proposal.json' });
+        }
+        for (const extra of script.extraArtifacts ?? []) {
+          artifacts.push(extra);
         }
         schedule(
           {
