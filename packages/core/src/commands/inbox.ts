@@ -25,6 +25,14 @@ const PENDING_TICKET_STATUS: Record<string, TicketStatus> = {
   worker_needs_user_decision: 'BLOCKED',
   worker_needs_review: 'REVIEW',
   worker_failed_final: 'FAILED',
+  // Batch 11 item 3 (Role R's scheduler.ts, policy.ts): the per-project
+  // daily Manager-invocation cap leaves its manager ticket sitting READY --
+  // this row is what actually surfaces that event here, named by Role R's
+  // own doc comment in policy.ts as the one line missing from THIS file
+  // (commands/, Role Q's) for the event to be visible at all. Same class of
+  // bug as the pre-batch-11 adapter_unavailable gap: an event recorded with
+  // inbox policy but no row here is recorded and never seen.
+  manager_daily_cap_reached: 'READY',
 };
 
 export interface InboxItem {
@@ -90,6 +98,18 @@ export function reasonFor(eventType: string, payload: unknown, ticketId?: string
     // two-step line rather than one composed from payload numbers.
     const projectId = typeof p.projectId === 'string' ? p.projectId : '<id>';
     return `the adapter is unavailable (worker could not start) -- log in with \`claude\`, then run \`magarine resume --project ${projectId}\``;
+  }
+
+  if (eventType === 'manager_daily_cap_reached') {
+    // Batch 11 item 3 (Role R): unlike a spend cap or an adapter pause,
+    // there is no command that clears this -- it is a per-project ROLLING
+    // daily limit (manager.ts's isManagerDailyCapReached), not a state a
+    // command can fix. "Names the next command" here means saying plainly
+    // that there is none needed: the ticket stays READY and this line
+    // stops appearing once the daily count resets, without the owner
+    // guessing whether something is stuck.
+    const cap = typeof p.cap === 'number' ? p.cap : 'its';
+    return `reached the daily cap of ${cap} Manager invocations for this project -- no action needed, it resumes automatically once the cap resets at UTC midnight`;
   }
 
   const base = ((): string => {

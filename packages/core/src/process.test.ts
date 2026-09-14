@@ -54,6 +54,29 @@ test('reports a non-zero exit code', async () => {
   assert.equal(result.code, 7);
 });
 
+// Batch 11 ruling 2/4: before the 'error' listener was added, `spawn()`
+// given an executable that does not exist emitted an unhandled 'error'
+// event, which Node treats as an uncaught exception -- crashing this
+// process rather than resolving wait() at all. This is the exact scenario
+// the adapter's spawn-failure legibility work depends on: a resolved
+// executable that is no longer there (deleted, or a shim whose target
+// vanished) between `doctor` checking it and a real spawn attempt.
+test('a nonexistent executable resolves wait() with spawnError set, rather than crashing the process or hanging forever', async () => {
+  // Without the 'error' listener this fix adds, this exact call crashes the
+  // whole `node --test` process with an unhandled 'error' event (confirmed
+  // by hand before writing this test) -- so simply reaching an assertion at
+  // all, on a resolved (not hung) promise, is already most of the proof;
+  // the assertions below are the rest of it.
+  const proc = spawnManaged({
+    executable: join(tmpdir(), 'magarine-definitely-does-not-exist.exe'),
+    args: ['--version'],
+  });
+  const result = await proc.wait();
+  assert.equal(result.code, null);
+  assert.equal(result.signal, null);
+  assert.match(result.spawnError ?? '', /ENOENT/);
+});
+
 test('passes cwd and env through to the child', async () => {
   const marker = 'MAGARINE_TEST_MARKER';
   const proc = spawnManaged({
@@ -232,6 +255,7 @@ test(
       assert.match(resolved.executable, /mytool\.exe$/i);
       assert.deepEqual(resolved.prefixArgs, []);
       assert.equal(resolved.strategy, 'windows_shim_native_exe');
+      assert.equal(resolved.shimPath?.toLowerCase(), join(dir, 'mytool.cmd').toLowerCase());
 
       const proc = spawnManaged({ executable: resolved.executable, args: [...resolved.prefixArgs, '--version'] });
       const result = await proc.wait();
@@ -281,6 +305,7 @@ test(
       assert.equal(resolved.prefixArgs.length, 1);
       assert.match(resolved.prefixArgs[0], /mytool2-cli\.cjs$/i);
       assert.equal(resolved.strategy, 'windows_shim_script');
+      assert.equal(resolved.shimPath?.toLowerCase(), join(dir, 'mytool2.cmd').toLowerCase());
 
       const proc = spawnManaged({ executable: resolved.executable, args: [...resolved.prefixArgs] });
       const result = await proc.wait();
@@ -422,6 +447,7 @@ test('resolveCommand: a bare executable on PATH with no .cmd/.bat shim to unwrap
     copyFileSync(process.execPath, join(dir, name));
     const resolved = withFixtureOnPath(dir, () => resolveCommand('mytool5'));
     assert.equal(resolved.strategy, 'direct');
+    assert.equal(resolved.shimPath, undefined, 'a direct resolution involves no shim at all');
     assert.deepEqual(resolved.prefixArgs, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });

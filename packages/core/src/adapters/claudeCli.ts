@@ -45,6 +45,17 @@ export interface ClaudeCliAdapterOptions {
   /** Path to the `claude` executable (or, in production, whatever `resolveExecutable('claude')` returns once Role D lands). */
   claudeExe: string;
   /**
+   * Batch 11 ruling 2/4 (the Strategist's narrow licence into this file:
+   * ONLY the composition of the spawn-failure error uses this field, nothing
+   * else in this adapter reads it). Mirrors process.ts's `ResolvedCommand`
+   * (minus `executable`, already `claudeExe` above) -- how `claudeExe` was
+   * found, so a spawn failure can say more than a bare path. Undefined in
+   * every test that doesn't set it (the existing `claudeExe: process.execPath`
+   * seam), which is fine: the spawn-failure message falls back to the path
+   * alone when this is absent, same as before this field existed.
+   */
+  claudeResolution?: { strategy: string; shimPath?: string };
+  /**
    * Fallback only, used if a call to `startWorker` is ever given an envelope
    * with no `maxBudgetUsd` (defensive; TicketEnvelope's field is not
    * optional in practice). The real per-run ceiling is
@@ -590,13 +601,37 @@ export class ClaudeCliAdapter implements AgentAdapter {
         fileResult = undefined;
       }
 
-      let outcome = classifyOutcome({
-        resultLine,
-        fileResult,
-        exitCode: waitResult.code,
-        stderr: stderrBuf,
-        timedOut: waitResult.timedOut,
-      });
+      // Batch 11 ruling 2/4: process.ts's spawnManaged now resolves (rather
+      // than crashing or hanging -- see that fix's own comment) with
+      // `spawnError` set when the resolved executable never actually
+      // started -- deleted, permission denied, or a shim whose target
+      // vanished between `doctor` last checking it and this real attempt.
+      // Without this check, that case fell through to classifyOutcome's
+      // generic "no parseable result on stdout" -- RETRYABLE, so the
+      // scheduler would burn every attempt re-spawning the identical broken
+      // path -- instead of adapter_unavailable, which pauses without
+      // consuming one and puts a clear reason in front of the owner. The
+      // reason names the resolved path, the shim it came from (if any), and
+      // the strategy that chose it, so the owner (or whoever is helping
+      // them) can tell a stale resolution apart from a real login problem.
+      let outcome: ClaudeCliOutcome;
+      if (waitResult.spawnError) {
+        const resolution = this.options.claudeResolution;
+        const shimNote = resolution?.shimPath ? `, from shim ${resolution.shimPath}` : '';
+        const strategyNote = resolution ? ` (resolved via ${resolution.strategy}${shimNote})` : '';
+        outcome = {
+          kind: 'adapter_unavailable',
+          reason: `could not start ${this.options.claudeExe}${strategyNote}: ${waitResult.spawnError}`,
+        };
+      } else {
+        outcome = classifyOutcome({
+          resultLine,
+          fileResult,
+          exitCode: waitResult.code,
+          stderr: stderrBuf,
+          timedOut: waitResult.timedOut,
+        });
+      }
 
       if (outcome.kind === 'success') {
         outcome = verifyArtifacts(outcome.result, ws.path);

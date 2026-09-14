@@ -1247,3 +1247,50 @@ test('plan against a nonexistent project fails with a clean message, not a stack
     assert.match(res.stderr, /no such project/);
   });
 });
+
+// Before this fix, manager_daily_cap_reached had inbox policy (policy.ts)
+// and was actually inserted (scheduler.ts, Role R), but commands/inbox.ts's
+// PENDING_TICKET_STATUS had no row for it -- same class of bug as the
+// pre-batch-11 adapter_unavailable gap this batch already fixed once: an
+// event recorded with requiresUser:true that the inbox never displays.
+test('a manager ticket sitting at the daily Manager-invocation cap reaches the inbox, saying no action is needed', async () => {
+  const { openDb } = await import('../db/index.ts');
+  const { createRun, createTicket, finishRun } = await import('../store.ts');
+  const { MANAGER_DAILY_CAP_DEFAULT } = await import('../manager.ts');
+
+  await withTempDb('magarine-daily-cap-inbox-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'CapP', '--json', '--db', dbFile])).stdout);
+
+    const db = openDb(dbFile);
+    for (let i = 0; i < MANAGER_DAILY_CAP_DEFAULT; i++) {
+      const filler = createTicket(db, { projectId: project.id, title: `Filler ${i}`, kind: 'manager', workspaceType: 'NONE' });
+      const fillerRun = createRun(db, { ticketId: filler.id, attempt: 1, adapter: 'fake' });
+      // Finished, not left 'running': the real CLI `tick` command also calls
+      // recoverOrphanedRuns first, which would otherwise treat these seeded
+      // filler runs as orphaned and try to fail a ticket this test has
+      // already forced to DONE, tripping an InvalidTransitionError that has
+      // nothing to do with what this test is actually proving.
+      finishRun(db, fillerRun.id, { status: 'succeeded' });
+      db.prepare("UPDATE tickets SET status = 'DONE' WHERE id = ?").run(filler.id);
+    }
+    const cappedTicket = createTicket(db, { projectId: project.id, title: 'Plan: capped', kind: 'manager', workspaceType: 'NONE' });
+    db.close();
+
+    const tickRes = await run(['tick', '--project', project.id, '--adapter', 'fake', '--json', '--db', dbFile]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+
+    const statusAfter = JSON.parse(
+      (await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ id: string; status: string }>;
+    assert.equal(statusAfter.find((t) => t.id === cappedTicket.id)!.status, 'READY', 'a capped manager ticket stays READY, not stuck or failed');
+
+    const inbox = JSON.parse(
+      (await run(['inbox', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ ticketId?: string; eventType: string; message: string }>;
+    const item = inbox.find((i) => i.ticketId === cappedTicket.id);
+    assert.ok(item, 'the daily-cap event must reach the inbox, not just be recorded silently');
+    assert.equal(item!.eventType, 'manager_daily_cap_reached');
+    assert.match(item!.message, /no action needed/, 'unlike a spend cap or an adapter pause, there is no command to run -- the line must say so');
+    assert.match(item!.message, new RegExp(String(MANAGER_DAILY_CAP_DEFAULT)));
+  });
+});

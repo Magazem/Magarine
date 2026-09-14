@@ -38,6 +38,19 @@ export interface WaitResult {
   timedOut: boolean;
   stdout: string;
   stderr: string;
+  /**
+   * Batch 11 ruling 2/4: set when the child never actually started (the
+   * resolved executable does not exist, or could not be executed, at spawn
+   * time) -- Node's own error message (e.g. "spawn ...claude.exe ENOENT"),
+   * not this module's own text. Undefined for every other outcome,
+   * including a normal non-zero exit. Before this, `spawn()`'s own 'error'
+   * event had no listener at all: Node throws an unhandled 'error' event as
+   * an uncaught exception in that case, which crashes the WHOLE DAEMON, not
+   * just the one run -- found while wiring the adapter's spawn-failure
+   * message to name the resolved path (there is no path to name if the
+   * process that would report it has already died).
+   */
+  spawnError?: string;
 }
 
 export interface ManagedProcess {
@@ -101,9 +114,27 @@ export function spawnManaged(options: SpawnManagedOptions): ManagedProcess {
   }
 
   const donePromise = new Promise<WaitResult>((resolve) => {
+    // Settle at most once: a spawn that never started fires 'error' and
+    // never 'close' (Node's own contract -- 'exit'/'close' only follow a
+    // process that actually ran), but this guard costs nothing and removes
+    // any doubt if that ever changes across Node versions/platforms.
+    let settled = false;
     child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
       if (timer) clearTimeout(timer);
       resolve({ code, signal, timedOut, stdout: stdoutText, stderr: stderrText });
+    });
+    // Without this listener, Node treats an unhandled 'error' event on an
+    // EventEmitter as an uncaught exception -- a resolved-but-nonexistent
+    // executable (deleted after `doctor` last checked, a shim whose target
+    // vanished) would crash the entire daemon process instead of failing
+    // the one run that tried to spawn it.
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve({ code: null, signal: null, timedOut, stdout: stdoutText, stderr: stderrText, spawnError: err.message });
     });
   });
 
@@ -186,6 +217,14 @@ export interface ResolvedCommand {
    * POSIX binary, and a Windows tool installed as a bare `.exe`).
    */
   strategy: 'direct' | 'windows_shim_native_exe' | 'windows_shim_script';
+  /**
+   * Batch 11 ruling 2/4: the `.cmd`/`.bat` file itself, when `strategy` is
+   * one of the two shim shapes -- undefined for 'direct'. `executable` (and,
+   * for a script, `prefixArgs[0]`) is what actually runs, but the SHIM is
+   * what the owner has on disk and would go looking for; naming both in a
+   * spawn-failure message is the point of carrying this through at all.
+   */
+  shimPath?: string;
 }
 
 // Resolves `name` to something directly spawnable with `shell: false`,
@@ -292,12 +331,12 @@ function resolveWindowsShimCommand(shimPath: string, name: string): ResolvedComm
 
   const nativeExe = findSiblingNativeExecutable(text, name, expand);
   if (nativeExe) {
-    return { executable: nativeExe, prefixArgs: [], strategy: 'windows_shim_native_exe' };
+    return { executable: nativeExe, prefixArgs: [], strategy: 'windows_shim_native_exe', shimPath };
   }
 
   const scriptPath = findShimScriptPath(text, expand);
   if (scriptPath) {
-    return { executable: process.execPath, prefixArgs: [scriptPath], strategy: 'windows_shim_script' };
+    return { executable: process.execPath, prefixArgs: [scriptPath], strategy: 'windows_shim_script', shimPath };
   }
 
   throw new Error(`could not find a real executable or script inside shim: ${shimPath}`);

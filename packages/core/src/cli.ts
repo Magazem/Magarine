@@ -6,7 +6,7 @@ import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
 import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
 import { checkDaemonFile, type DaemonFileInfo } from './daemon.ts';
 import { daemonRequest, probeDaemonHealth } from './daemonClient.ts';
-import { resolveExecutable } from './process.ts';
+import { resolveCommand } from './process.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { runUntilIdle, tick } from './scheduler.ts';
 import {
@@ -422,9 +422,15 @@ function buildAdapter(db: Db, flags: Flags, projectId: string): AgentAdapter {
 
   if (kind === 'claude') {
     let claudeExe = typeof flags['claude-exe'] === 'string' ? flags['claude-exe'] : undefined;
+    // Batch 11 ruling 2/4: only captured for the AUTO-resolved path -- an
+    // explicit --claude-exe bypasses resolveCommand entirely, so there is no
+    // strategy/shim to name if that path ever fails to spawn.
+    let claudeResolution: { strategy: string; shimPath?: string } | undefined;
     if (!claudeExe) {
       try {
-        claudeExe = resolveExecutable('claude');
+        const resolved = resolveCommand('claude');
+        claudeExe = resolved.executable;
+        claudeResolution = { strategy: resolved.strategy, shimPath: resolved.shimPath };
       } catch (err) {
         throw new Error(
           `--claude-exe was not given and resolveExecutable('claude') failed: ${
@@ -445,6 +451,7 @@ function buildAdapter(db: Db, flags: Flags, projectId: string): AgentAdapter {
     // reads.
     return new ClaudeCliAdapter({
       claudeExe,
+      claudeResolution,
       maxBudgetUsd: projectRow?.max_budget_usd ?? 2.0,
       workspaceType: 'NONE',
     });
@@ -574,10 +581,19 @@ async function main(): Promise<void> {
     if (live) {
       // daemonApi.ts's handlePlan (Role R, landed) now calls planProject
       // against the project's own scope document and board, not this
-      // mission string -- `mission` is deliberately NOT sent here since the
-      // route no longer reads it; `--mission` against a live daemon is a
-      // known cross-role gap flagged to the Orchestrator, not silently
-      // patched over by resurrecting a field the route ignores.
+      // mission string -- the route no longer reads `mission` at all.
+      // Strategist ruling: refuse loudly rather than silently drop it, "so
+      // no commit in history carries a silent path" -- part 2 turns this
+      // into "seed the scope with this text, then plan" on both paths
+      // through one shared function; until then, a mission string against a
+      // live daemon is a clean, exit-1 refusal, never a quiet no-op.
+      if (mission.trim().length > 0) {
+        process.stderr.write(
+          'plan --mission is not supported against a live daemon yet: the daemon plans from the project\'s scope document, not a mission string, and would otherwise silently ignore it. Edit the scope file directly, or use `plan --project <id>` with no --mission to let the daemon plan from the current scope/board. (Seeding the scope from --mission is coming in part 2.)\n'
+        );
+        process.exitCode = 1;
+        return;
+      }
       await routeMutation(flags, live, 'POST', `/projects/${projectId}/plan`, { budgetUsd }, (b) => {
         const t = b as { id: string; title: string };
         return `Created manager ticket ${t.id} (${t.title})`;

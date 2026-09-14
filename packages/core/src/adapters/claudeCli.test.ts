@@ -360,6 +360,54 @@ test('not-logged-in: is_error true with an auth message is classified adapter-un
   }
 });
 
+// Batch 11 ruling 2/4 (the Strategist's narrow licence into this file --
+// ONLY this composition, nothing else): a resolved executable that fails to
+// spawn at all (deleted, permission denied, or -- the case this test builds
+// -- a shim whose target vanished between resolution and this real attempt)
+// used to fall through to classifyOutcome's generic "no parseable result on
+// stdout" and be marked RETRYABLE, so the scheduler would burn every
+// attempt re-spawning the identical broken path. This must be
+// adapter_unavailable instead (pauses without consuming an attempt), and
+// the reason must name the resolved path, the shim it came from, and the
+// strategy that chose it -- exactly what an owner (or whoever is helping
+// them) needs to tell "stale resolution" apart from "not logged in".
+test('a resolved executable that fails to spawn is classified adapter_unavailable, naming the resolved path, the shim, and the strategy', async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-claudecli-test-'));
+  const missingExe = join(workspaceRoot, 'vanished-claude.exe');
+  const shimPath = join(workspaceRoot, 'claude.cmd');
+  const adapter = new ClaudeCliAdapter({
+    claudeExe: missingExe,
+    claudeResolution: { strategy: 'windows_shim_native_exe', shimPath },
+    maxBudgetUsd: 2,
+    workspaceType: 'DIRECTORY',
+    workspaceRoot,
+  });
+
+  const ticket = envelope();
+  const handle = await adapter.startWorker({ ticket, systemPolicy: 'default' });
+  const events: WorkerEvent[] = [];
+  await new Promise<void>((resolve) => {
+    void adapter.observe(handle, (event) => {
+      events.push(event);
+      if (event.type === 'failure') resolve();
+    });
+  });
+
+  try {
+    const terminal = events.at(-1)! as { type: string; message: string; retryable: boolean; failureClass?: string };
+    assert.equal(terminal.type, 'failure');
+    assert.equal(terminal.retryable, false, 'a spawn failure must not burn an attempt re-trying the identical broken path');
+    assert.equal(terminal.failureClass, 'adapter_unavailable');
+    assert.match(terminal.message, /ADAPTER_UNAVAILABLE/);
+    assert.match(terminal.message, new RegExp(missingExe.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'must name the resolved path');
+    assert.match(terminal.message, new RegExp(shimPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'must name the shim it came from');
+    assert.match(terminal.message, /windows_shim_native_exe/, 'must name the strategy that chose it');
+    assert.match(terminal.message, /ENOENT/);
+  } finally {
+    await rmSyncResilient(workspaceRoot);
+  }
+});
+
 test('invalid schema: no JSON on stdout at all is classified retryable, not crashed', async () => {
   const { events, workspaceRoot } = await runOnce({
     stderrFile: fixturePath('manual-invalid-schema', 'stderr.txt'),

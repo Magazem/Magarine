@@ -260,6 +260,48 @@ test("run --until-idle refuses against a live, matching daemon, but proceeds nor
   }
 });
 
+// Strategist ruling: daemonApi.ts's handlePlan (Role R) calls planProject
+// against the project's scope document, never reading a `mission` string --
+// so `plan --mission` against a live daemon used to silently drop the
+// mission text and plan from whatever the scope/board already said. Landed
+// now as a clean refusal ("so no commit in history carries a silent path");
+// part 2 converts this same test into the "seed the scope, then plan"
+// branch rather than deleting it, once that lands on both paths.
+test('plan --mission against a live daemon refuses cleanly instead of silently dropping the mission text, but plan with no --mission still routes through', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'plan-mission-refusal-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      await handle.waitForListening();
+
+      const refused = await runCli([
+        'plan', '--project', project.id, '--mission', 'ship the thing', '--state-dir', stateDir, '--json',
+      ]);
+      assert.notEqual(refused.code, 0, 'a mission string against a live daemon must refuse, not silently plan without it');
+      assert.match(refused.stderr, /plan --mission is not supported against a live daemon/i);
+      assert.match(refused.stderr, /scope document/i);
+
+      const statusAfterRefusal = await runCli(['status', '--project', project.id, '--state-dir', stateDir, '--json']);
+      assert.deepEqual(JSON.parse(statusAfterRefusal.stdout), [], 'a refused plan must create no manager ticket at all');
+
+      // No --mission at all: this is the supported shape (interview/re-plan
+      // against the current scope+board), and must still route through to
+      // the daemon exactly as before this refusal was added.
+      const planned = await runCli(['plan', '--project', project.id, '--state-dir', stateDir, '--json']);
+      assert.equal(planned.code, 0, planned.stderr);
+      const managerTicket = JSON.parse(planned.stdout) as { id: string; kind: string };
+      assert.equal(managerTicket.kind, 'manager');
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('ticket add and decide route through a live matching daemon end to end (request body mapping and response formatting)', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'happy-path-'));
   try {
