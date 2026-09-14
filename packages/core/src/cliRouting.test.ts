@@ -1,6 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged, type ManagedProcess } from './process.ts';
@@ -262,12 +262,19 @@ test("run --until-idle refuses against a live, matching daemon, but proceeds nor
 
 // Strategist ruling: daemonApi.ts's handlePlan (Role R) calls planProject
 // against the project's scope document, never reading a `mission` string --
-// so `plan --mission` against a live daemon used to silently drop the
-// mission text and plan from whatever the scope/board already said. Landed
-// now as a clean refusal ("so no commit in history carries a silent path");
-// part 2 converts this same test into the "seed the scope, then plan"
-// branch rather than deleting it, once that lands on both paths.
-test('plan --mission against a live daemon refuses cleanly instead of silently dropping the mission text, but plan with no --mission still routes through', async () => {
+// against a live daemon used to silently drop the mission text and plan
+// from whatever the scope/board already said. Landed first as a clean
+// refusal for EVERY mission string ("so no commit in history carries a
+// silent path"); batch 11 part 2 replaced that blanket refusal with
+// planWithMission's real rule (commands/plan.ts): seed an empty scope, or
+// refuse only once the scope already has content. This test used to claim
+// "any --mission against a live daemon refuses" -- that claim moved to a
+// different input (a project whose scope is NOT empty), so per the
+// project's "a test is split, not re-pointed" rule this test is CONVERTED
+// to cover exactly that branch, seeding the scope itself first so the
+// refusal it asserts is the real one. The companion "seeds an empty scope"
+// branch gets its own new test below.
+test('plan --mission against a live daemon refuses cleanly once the scope already has content, but plan with no --mission still routes through', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'plan-mission-refusal-'));
   try {
     const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
@@ -277,15 +284,28 @@ test('plan --mission against a live daemon refuses cleanly instead of silently d
     try {
       await handle.waitForListening();
 
+      // Seed the scope for real, through the same route, before the branch
+      // under test even runs -- this is exactly how a second `--mission`
+      // would be reached in real use.
+      const seeded = await runCli([
+        'plan', '--project', project.id, '--mission', 'first version of the scope', '--state-dir', stateDir, '--json',
+      ]);
+      assert.equal(seeded.code, 0, seeded.stderr);
+
       const refused = await runCli([
         'plan', '--project', project.id, '--mission', 'ship the thing', '--state-dir', stateDir, '--json',
       ]);
-      assert.notEqual(refused.code, 0, 'a mission string against a live daemon must refuse, not silently plan without it');
-      assert.match(refused.stderr, /plan --mission is not supported against a live daemon/i);
-      assert.match(refused.stderr, /scope document/i);
+      assert.notEqual(
+        refused.code,
+        0,
+        'a mission string against a project whose scope already has content must refuse, not silently re-seed it'
+      );
+      assert.match(refused.stderr, /already has a scope/i);
+      assert.match(refused.stderr, /discuss/i);
 
       const statusAfterRefusal = await runCli(['status', '--project', project.id, '--state-dir', stateDir, '--json']);
-      assert.deepEqual(JSON.parse(statusAfterRefusal.stdout), [], 'a refused plan must create no manager ticket at all');
+      const ticketsAfterRefusal = JSON.parse(statusAfterRefusal.stdout) as Array<{ id: string }>;
+      assert.equal(ticketsAfterRefusal.length, 1, 'a refused plan must create no additional manager ticket');
 
       // No --mission at all: this is the supported shape (interview/re-plan
       // against the current scope+board), and must still route through to
@@ -294,6 +314,69 @@ test('plan --mission against a live daemon refuses cleanly instead of silently d
       assert.equal(planned.code, 0, planned.stderr);
       const managerTicket = JSON.parse(planned.stdout) as { id: string; kind: string };
       assert.equal(managerTicket.kind, 'manager');
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('plan --mission against a live daemon seeds an empty scope file whole, then plans from it', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'plan-mission-seed-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout) as { id: string; scopePath: string };
+    assert.ok(project.scopePath, 'project create must assign every project a scope path by default');
+
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      await handle.waitForListening();
+
+      const mission = 'Build the quarterly reporting dashboard.';
+      const planned = await runCli(['plan', '--project', project.id, '--mission', mission, '--state-dir', stateDir, '--json']);
+      assert.equal(planned.code, 0, planned.stderr);
+      const managerTicket = JSON.parse(planned.stdout) as { id: string; kind: string; title: string };
+      assert.equal(managerTicket.kind, 'manager');
+      assert.equal(managerTicket.title, mission, 'a short single-line mission is the ticket title verbatim');
+
+      assert.equal(readFileSync(project.scopePath, 'utf8'), mission, 'the scope file must hold the mission whole');
+
+      const activityRes = await runCli(['activity', '--project', project.id, '--state-dir', stateDir, '--json']);
+      const events = JSON.parse(activityRes.stdout) as Array<{ eventType: string; payload: unknown }>;
+      const scopeUpdated = events.filter((e) => e.eventType === 'scope_updated');
+      assert.equal(scopeUpdated.length, 1);
+      assert.deepEqual(scopeUpdated[0].payload, { summary: 'seeded from --mission' });
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('discuss --project --message routes through a live matching daemon to POST /projects/{id}/discuss', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'discuss-routing-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      await handle.waitForListening();
+
+      const res = await runCli([
+        'discuss', '--project', project.id, '--message', 'What next?', '--state-dir', stateDir, '--json',
+      ]);
+      assert.equal(res.code, 0, res.stderr);
+      const ticket = JSON.parse(res.stdout) as { id: string; kind: string };
+      assert.equal(ticket.kind, 'manager');
+
+      const activityRes = await runCli(['activity', '--project', project.id, '--state-dir', stateDir, '--json']);
+      const events = JSON.parse(activityRes.stdout) as Array<{ eventType: string; payload: { message?: string } }>;
+      const discussEvents = events.filter((e) => e.eventType === 'discuss');
+      assert.equal(discussEvents.length, 1);
+      assert.equal(discussEvents[0].payload.message, 'What next?');
     } finally {
       await handle.kill();
     }

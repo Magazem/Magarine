@@ -1,15 +1,18 @@
 # Magarine
 
 Magarine takes a project scope you write -- the same way you'd hand one to a
-person -- and turns it into working output: it plans your scope into ordered
-tasks, then runs an AI coding assistant on several of them at once wherever
-they don't depend on each other, holding the rest back until whatever they
-need is actually finished, and tracks what every task cost. Right now you
-drive it from a terminal with a handful of plain commands; there is no other
-interface yet (a browser page showing the same board and inbox this file
-describes is coming), and this one page is everything you need in order to
-use it today. While it works, you watch it through a live board and an
-inbox that tells you exactly what, if anything, needs your decision.
+person -- and works the project from it: it reads the scope, asks you
+whatever it's missing before it assumes anything, plans what it already
+understands into ordered tasks, then runs an AI coding assistant on several
+of them at once wherever they don't depend on each other, holding the rest
+back until whatever they need is actually finished, and tracks what every
+task cost. You can keep talking to it as it goes -- answer its questions,
+tell it to change course, ask it to propose the next batch -- and it folds
+each reply back into the same scope document and the same plan, rather than
+starting over. You can drive all of this from a terminal with a handful of
+plain commands, or from a small browser page that shows the same board,
+inbox, and conversation this file describes, refreshed live. This one page
+is everything you need in order to use it today.
 
 ## Install (four commands)
 
@@ -37,7 +40,12 @@ a one-time `pnpm setup` first, and *also* needs a brand new terminal
 afterward -- `npm install -g .` avoids that extra step, which is why it's
 the one above.
 
-## Your first project and mission (five steps)
+## Your first project (worked example)
+
+This is the actual use case Magarine is built for, in the words it was
+described in: *"I would give it an md file with a project scope, something
+similar to how we started this whole project, and work on it with it."*
+Here is exactly that, end to end.
 
 Run these from anywhere, once `magarine` is on your PATH:
 
@@ -50,28 +58,55 @@ Run these from anywhere, once `magarine` is on your PATH:
    below also accepts the project's exact name instead of its id, and
    `magarine project list` shows every project you have, with its id, name,
    spend, and how many tasks are in each status -- run that any time you need
-   to find your way back.
+   to find your way back. A project gets a scope document automatically; if
+   you already have one written, hand it over now instead with
+   `--scope my-project-scope.md`.
 
-2. **Give it a mission.** Write what you want in a plain markdown file -- a
-   project scope, the same way you'd write one for a person -- then hand it
-   over. (A short sentence works too; the file is just the natural way to
-   write a real scope.)
-   ```sh
-   magarine plan --project <projectId> --mission "$(cat my-project-scope.md)"
-   ```
-   Magarine reads that and plans it into an ordered set of tasks. This step
-   only plans -- it doesn't run anything yet.
-
-3. **Start the daemon.** This is the background process that actually runs
-   your tasks, using the real `claude` tool -- this is the step that spends
-   money (typically cents, not dollars, for a small mission; each task's
-   cost shows up on the board). Leave this terminal open -- it prints the
-   port it's listening on and keeps running until you stop it.
+2. **Start the daemon.** This is the background process that actually reads
+   your scope, talks back to you, and runs your tasks, using the real
+   `claude` tool. Every one of these is a real, costed run -- typically cents
+   for a single reply or a small task, shown on the board as it happens.
+   Leave this terminal open -- it prints the port it's listening on and a
+   token, and keeps running until you stop it.
    ```sh
    magarine serve --adapter claude
    ```
 
-4. **Watch it work, from a second terminal.**
+3. **Hand it the scope, and let it interview you.** Write what you want in a
+   plain markdown file -- a project scope, the same way you'd write one for a
+   person -- then hand it over. (A short sentence works too; the file is just
+   the natural way to write a real one.)
+   ```sh
+   magarine plan --project <projectId> --mission "$(cat my-project-scope.md)"
+   ```
+   This writes your text into the project's scope document, then plans from
+   it. **On a fresh project, expect it to come back with only questions and
+   no tasks at all -- that is the intended first reply, not a stall.** It
+   would rather ask what platform you're targeting, what's out of scope, or
+   what "done" looks like than guess and build the wrong thing. Only once it
+   says it has enough does it propose an actual batch of tasks.
+   ```sh
+   magarine inbox --project <projectId>
+   ```
+   shows its questions, in full, and tells you the exact command to answer
+   each one.
+
+4. **Talk to it.** Answer its questions, steer it, or tell it to go ahead --
+   all through the same command:
+   ```sh
+   magarine discuss --project <projectId> --message "Target iOS only for now. Go ahead and propose the first batch."
+   ```
+   Each message is one more costed turn: it reads your scope document and
+   the board fresh, replies, and updates the scope or proposes tasks as
+   needed. Once the scope already has content, running `plan --mission`
+   again refuses (it won't silently overwrite what you and it have built
+   together) -- edit the scope file directly, or keep using `discuss` to add
+   to the conversation.
+
+5. **Watch it work.** Either open the page `magarine serve` printed (paste
+   in the token it printed, pick your project) to see the board, inbox, and
+   the whole conversation in one place, refreshing live -- or, from a second
+   terminal:
    ```sh
    magarine board --project <projectId>
    magarine inbox --project <projectId>
@@ -79,10 +114,11 @@ Run these from anywhere, once `magarine` is on your PATH:
    Run these again any time to see current status -- they don't refresh on
    their own.
 
-5. **Respond when it needs you, then stop.** If `inbox` shows something,
-   see "The inbox" below for what to do. When you're satisfied, go back to
-   the terminal running `magarine serve` and press `Ctrl+C` to stop it
-   cleanly.
+6. **Respond when it needs you, then stop.** If `inbox` shows something, see
+   "The inbox" below for what to do -- and `discuss` any time you want to
+   change direction, correct something, or ask it to plan the next batch.
+   When you're satisfied, go back to the terminal running `magarine serve`
+   and press `Ctrl+C` to stop it cleanly.
 
 ## The board
 
@@ -105,6 +141,11 @@ the first line -- unless the project is paused, in which case the very
 first line instead reads `PAUSED: <reason>`, and names the exact command
 that clears it. A task still showing READY while paused is not about to
 run; nothing starts again until the pause is addressed.
+
+Rows marked `[MANAGER]` are the interview/planning turns themselves --
+`plan` and `discuss` each create one. They cost and behave like any other
+task (attempts, retries, a budget ceiling); they just don't produce files,
+only a reply, a scope update, or a proposal.
 
 ## The inbox
 
@@ -130,6 +171,18 @@ tells you what to do next:
 
 An item disappears from the inbox on its own once you've acted on it -- there
 is nothing separate to dismiss.
+
+## The conversation
+
+`magarine discuss --project <projectId> --message "<text>"` is how you talk
+to it once it's running: answer a question outside the inbox flow, correct
+something, or tell it to go ahead and propose. The same conversation --
+your messages, its replies and assessments, its questions, and every scope
+update -- is also what the page's conversation panel shows, oldest first,
+in full, with a box to answer a live question right there instead of
+switching to `decide`. The scope document itself is shown next to it,
+read-only, so you can always see exactly what it's currently working from;
+edit the file directly any time, or let `discuss` update it for you.
 
 ## When something says FAILED
 
@@ -159,6 +212,10 @@ apart from a login problem or a genuine bug.
   whole project on the board's first line.
 - **Worker output**: under `~/.magarine/artifacts/` unless you gave a task
   its own shared workspace with `--workspace DIRECTORY`.
+- **Scope document**: wherever you pointed `project create --scope` at, or
+  `~/.magarine/projects/<projectId>/SCOPE.md` by default -- either way, edit
+  it by hand any time; the next `plan` or `discuss` reads whatever is
+  currently on disk.
 
 Nothing is written to your current folder unless you explicitly asked for it
 with `--state-dir` or `--workspace`.

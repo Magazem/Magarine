@@ -515,3 +515,39 @@ test('GET / serves the page without a token; GET /projects lists projects; GET /
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+// Batch 11 part 2, item 4: the conversation panel's feed, a thin read-only
+// wrapper over commands/conversation.ts's buildConversation, over real HTTP.
+test('GET /projects/{id}/conversation reads the owner\'s discuss messages back in order, and 404s for a nonexistent project', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'conversation-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+
+    const projectRes = await runCli(['project', 'create', '--name', 'ConversationProject', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout) as { id: string };
+
+    const emptyRes = await api(info.port, fileInfo.token, 'GET', `/projects/${project.id}/conversation`);
+    assert.equal(emptyRes.status, 200);
+    assert.deepEqual(emptyRes.json, [], 'a fresh project has no conversation yet');
+
+    const discussRes = await runCli([
+      'discuss', '--project', project.id, '--message', 'What should the first ticket be?', '--state-dir', stateDir, '--json',
+    ]);
+    assert.equal(discussRes.code, 0, discussRes.stdout);
+
+    const afterRes = await api(info.port, fileInfo.token, 'GET', `/projects/${project.id}/conversation`);
+    assert.equal(afterRes.status, 200);
+    const entries = afterRes.json as Array<{ kind: string; text: string }>;
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].kind, 'owner_message');
+    assert.equal(entries[0].text, 'What should the first ticket be?');
+
+    const missingProjectConversation = await api(info.port, fileInfo.token, 'GET', '/projects/proj_ghost/conversation');
+    assert.equal(missingProjectConversation.status, 404);
+  } finally {
+    await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

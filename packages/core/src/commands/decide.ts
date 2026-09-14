@@ -25,6 +25,15 @@ import type { Ticket } from '../types.ts';
 
 export class DecideError extends Error {}
 
+// Pulled out so commands/conversation.ts (batch 11 part 2 item 4: the
+// page's conversation panel) can show the SAME question text this function
+// answers, rather than re-deriving the blockers/summary precedence a second
+// time and risking the two disagreeing about what "the question" was.
+export function extractQuestionText(payload: unknown): string {
+  const p = payload as { blockers?: string[]; summary?: string } | undefined;
+  return (p?.blockers && p.blockers.length > 0 ? p.blockers.join('; ') : '') || p?.summary || '';
+}
+
 export function decide(db: Db, input: { ticketId: string; answer: string }): Ticket {
   const ticket = getTicket(db, input.ticketId);
   if (!ticket) {
@@ -37,11 +46,7 @@ export function decide(db: Db, input: { ticketId: string; answer: string }): Tic
   const latestDecisionRequest = listEventsForEntity(db, 'ticket', ticket.id)
     .filter((e) => e.eventType === 'worker_needs_user_decision')
     .sort((a, b) => b.sequence - a.sequence)[0];
-  const requestPayload = latestDecisionRequest?.payload as { blockers?: string[]; summary?: string } | undefined;
-  const question =
-    (requestPayload?.blockers && requestPayload.blockers.length > 0 ? requestPayload.blockers.join('; ') : '') ||
-    requestPayload?.summary ||
-    '';
+  const question = extractQuestionText(latestDecisionRequest?.payload);
 
   recordTicketTransition(db, {
     ticketId: ticket.id,

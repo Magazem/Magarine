@@ -1,68 +1,73 @@
 import type { Db } from '../db/index.ts';
-import { createTicket, getProject } from '../store.ts';
+import { newId } from '../id.ts';
+import { classify } from '../policy.ts';
+import { planProject, readScopeText, writeScopeText } from '../manager.ts';
+import { getProject, getTicket, insertEvent, updateTicketFields } from '../store.ts';
 import type { Ticket } from '../types.ts';
+import { truncateTitleForDisplay } from './board.ts';
 
-// `plan --project <id> --mission "<text>"`: creates a manager ticket, per
-// docs/strategy/batch-9-spec.md section 2 -- "creates the manager ticket
-// and, if a daemon is up, it runs on the next tick; otherwise `run
-// --until-idle` picks it up." This function only ever creates the ticket;
-// it never ticks or spawns anything itself, matching every other
-// direct-write command in this codebase (`ticket add`, `dep add`).
+// `plan --project <id> --mission "<text>"`: batch 11 part 2, Strategist
+// ruling (settled) -- `--mission` no longer stores the text as a ticket
+// description (batch 9's original design, since removed along with
+// `deriveManagerTitle`). It now MEANS "seed the scope with this text, then
+// plan": the Manager (manager.ts, Role R's file) always plans from the
+// project's scope document, so a mission has nowhere else to go.
 //
-// The mission text becomes the ticket's own `description` -- the same
-// field managerEnvelope.ts's `buildManagerBriefing` reads back out as the
-// Manager's mission, so there is exactly one place a mission is stored, not
-// a copy in the envelope path and a second one here.
-
+// This is the one function both the direct-write path (cli.ts, no live
+// daemon) and the daemon-routed path (daemonApi.ts's handlePlan) call --
+// there is exactly one seeding implementation, matching this codebase's rule
+// that a mutating behaviour lives in one place, not one copy per path.
 export class PlanError extends Error {}
 
-const MAX_TITLE_MISSION_CHARS = 60;
-
-// A short, readable title derived from the mission, since a manager ticket
-// needs one for the board/inbox the same as any ticket -- but the mission
-// itself can be arbitrarily long free text, unsuited to a board column.
-// Truncates on a word boundary where possible so the title doesn't end
-// mid-word.
-export function deriveManagerTitle(mission: string): string {
-  const trimmed = mission.trim();
-  if (trimmed.length <= MAX_TITLE_MISSION_CHARS) {
-    return `Plan: ${trimmed}`;
-  }
-  const cut = trimmed.slice(0, MAX_TITLE_MISSION_CHARS);
-  const lastSpace = cut.lastIndexOf(' ');
-  const truncated = lastSpace > 0 ? cut.slice(0, lastSpace) : cut;
-  return `Plan: ${truncated}…`;
-}
-
-export function planMission(db: Db, input: { projectId: string; mission: string; budgetUsd?: number | null }): Ticket {
-  const project = getProject(db, input.projectId);
+export function planWithMission(db: Db, projectId: string, input: { mission?: string; budgetUsd?: number }): Ticket {
+  const project = getProject(db, projectId);
   if (!project) {
-    throw new PlanError(`no such project: ${input.projectId}`);
-  }
-  if (!input.mission.trim()) {
-    throw new PlanError('a mission is required');
+    throw new PlanError(`no such project: ${projectId}`);
   }
 
-  // Workspace NONE, per batch-9-spec.md section 2: "A manager ticket is a
-  // ticket... Its workspace is NONE." Model is resolved later, at
-  // envelope-build time (store.ts's resolveManagerModel reads the project's
-  // CURRENT setting, not a value frozen at `plan` time) -- so a later
-  // `project set --manager-model` change is honoured even by a manager
-  // ticket that was already sitting OPEN/READY before that change.
-  //
-  // Batch 11 ruling 1 rule e: `--budget` sets this ticket's OWN ceiling
-  // override, the same mechanism `ticket add --budget` already uses --
-  // resolveMaxBudgetUsd (store.ts) prefers it over the project default, and
-  // scheduler.ts's cap check shrinks it further still if the project's
-  // remaining spend cap is tighter than even this. createTicket enforces
-  // MIN_BUDGET_USD itself when budgetUsd is set, the same floor `ticket add
-  // --budget` already gets for free.
-  return createTicket(db, {
-    projectId: input.projectId,
-    title: deriveManagerTitle(input.mission),
-    description: input.mission,
-    kind: 'manager',
-    workspaceType: 'NONE',
-    maxBudgetUsdOverride: input.budgetUsd ?? null,
-  });
+  const mission = (input.mission ?? '').trim();
+  if (mission.length > 0) {
+    const existingScope = readScopeText(project).trim();
+    if (existingScope.length > 0) {
+      throw new PlanError(
+        'this project already has a scope: edit SCOPE.md directly, or use `discuss --message` to add to the conversation instead of re-seeding it with --mission.'
+      );
+    }
+    if (!project.scopePath) {
+      throw new PlanError(
+        `project ${projectId} has no scope file configured -- recreate it with \`project create --scope <file>\` (a fresh project gets a default one automatically) before using --mission.`
+      );
+    }
+
+    // Whole text, verbatim -- no truncation, no derived summary. The scope
+    // document IS the mission from here on.
+    writeScopeText(project, mission);
+    const scopePolicy = classify('scope_updated');
+    insertEvent(db, {
+      projectId,
+      eventType: 'scope_updated',
+      entityType: 'project',
+      entityId: projectId,
+      payload: { summary: 'seeded from --mission' },
+      visibility: scopePolicy.visibility,
+      requiresUser: scopePolicy.requiresUser,
+      idempotencyKey: newId('evt'),
+    });
+  }
+
+  const ticketId = planProject(db, projectId, { budgetUsd: input.budgetUsd });
+
+  // planProject (manager.ts) always titles its ticket 'Manager: plan' --
+  // reasonable when it re-plans from an existing board, but not when this
+  // call just seeded the scope from scratch: the ruling is that the ticket
+  // title stays the first line of the scope, trimmed to 80 chars, the same
+  // truncation the board already applies for display (board.ts's
+  // truncateTitleForDisplay). Only the seeding branch gets this fix-up; an
+  // ordinary `plan` with no --mission keeps planProject's own title
+  // untouched, since nothing here asked for that case to change.
+  if (mission.length > 0) {
+    updateTicketFields(db, ticketId, { title: truncateTitleForDisplay(mission) });
+  }
+
+  return getTicket(db, ticketId)!;
 }

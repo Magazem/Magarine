@@ -395,7 +395,7 @@ trying `decide`/`inbox` by hand:
 node src/cli.ts tick --project <projectId> --fake-script <ticketId>=needs_user_decision --json
 ```
 
-## Daemon mode (Batch 8)
+## Daemon mode
 
 Every remaining item on this project's route needs a process that outlives a
 single command — `cancel` from another shell, a board that reads while runs
@@ -577,11 +577,22 @@ other code path constructs its own headers. It shows the board, inbox
 (reasons in full, never truncated), and recent activity for a selected
 project, refreshing every 4 seconds, with buttons for every ticket action
 (`decide`/`retry`/`approve`/`reject`/`cancel`) plus `resume`/raise-cap for a
-paused project -- and a conversation panel showing the project's scope
-document as plain text. **The message box in that panel is explicitly wired
-to nothing yet** (its click handler just says so) -- batch 11 part 2, after
-`discussProject` (`manager.ts`) lands, replaces it with a real
-`POST /projects/{id}/discuss` call.
+paused project.
+
+The conversation panel is wired end to end: its message box calls
+`POST /projects/{id}/discuss` (`discussProject`, `manager.ts`) and shows the
+current scope document (`GET /projects/{id}/scope`) next to it, read-only.
+`GET /projects/{id}/conversation` (`commands/conversation.ts`'s
+`buildConversation`) feeds the panel itself -- the owner's own messages
+(`discuss` events), the Manager's `manager_reply`/`manager_assessment`
+artifacts, its `request_user_decision` questions (each with its own answer
+box, wired to the same `decide` route the inbox panel uses), and scope
+updates, all interleaved in chronological order and rendered in full, never
+truncated. This is a second, UI-shaped read over the same rows
+`managerEnvelope.ts`'s own (private, prompt-facing) conversation builder
+reads for the Manager's own briefing -- deliberately not the same function,
+since that one has no reason to know about pending questions or scope
+updates and this one has no reason to know about prompt formatting.
 
 ### The single-writer rule
 
@@ -664,23 +675,44 @@ before the daemon starts listening and a workspace-removal failure must
 never be able to take down `serve` itself, or undo the run/ticket recovery
 that already succeeded.
 
-## Planning a project (Batch 9)
+## Planning a project
 
 The Manager is the last piece of `technical-architecture-weekend-mvp.md`
-that this project had not built: a mission goes in, tickets with
+that this project had not built: a scope document goes in, tickets with
 dependencies come out, the daemon runs them. It is deliberately built to
 have almost no power of its own.
 
+The product this section describes is "work a scope document with it, the
+way this project itself was run": a document goes in, it's read cold and
+judged, questions come back, work is proposed, results are reviewed, the
+plan is corrected, and so on -- see `commands/plan.ts`'s `planWithMission`
+for the "seed the scope, then plan" mechanics, and `manager.ts`'s
+`discussProject` for the ongoing conversation.
+
 ```sh
-node src/cli.ts plan --project <projectId> --mission "Write a short report on the differences between SQLite journal modes: one file per journal mode, and an index file that links them and is written last." --json
+node src/cli.ts plan --project <projectId> --mission "$(cat scope.md)"
 ```
 
-Creates a manager ticket (`kind: 'manager'`) and returns immediately —
-`plan` never ticks or spawns anything itself. If a daemon is up for this
-`--db`, the mutation routes through `POST /projects/{id}/plan`, the same
-single-writer rule every other mutating command follows; otherwise it
-writes directly and the next `run --until-idle` (or a daemon's own next
-periodic tick) picks it up.
+`--mission` seeds the project's scope document with the given text (whole,
+verbatim) and records a `scope_updated` decision event, then plans from it
+-- but only when the scope is currently empty or absent. Once it has
+content, the same command refuses outright (exit non-zero, one sentence)
+rather than silently overwrite it; edit the scope file directly, or use
+`discuss --project <projectId> --message "<text>"` to keep talking instead.
+Planning with no `--mission` at all always works, seeded scope or not: it
+plans (or re-plans) from whatever the scope file and the board currently
+say. Either way this creates a manager ticket (`kind: 'manager'`) and
+returns immediately — `plan` never ticks or spawns anything itself. If a
+daemon is up for this `--db`, the mutation routes through
+`POST /projects/{id}/plan`, the same single-writer rule every other
+mutating command follows, and the exact same seed-or-refuse logic runs on
+that path too (one function, not two); otherwise it writes directly and the
+next `run --until-idle` (or a daemon's own next periodic tick) picks it up.
+
+**On a fresh project, expect only questions back, not tickets -- that is
+the intended first reply, not a stall.** The Manager would rather ask what's
+missing than assume it. It proposes work only once it says it has enough,
+and the owner can ask it to go ahead at any point via `discuss`.
 
 **A Manager run is a ticket, not a special process.** It goes through the
 exact same adapter as any worker (`ClaudeCliAdapter`/`FakeAdapter`), so cost
@@ -693,13 +725,14 @@ shows what it cost like any ticket; a manager ticket's row is prefixed
 above). Its `--workspace` is always `NONE`: it has no files of its own to
 produce, only a plan.
 
-**What it can do:** propose exactly five things, each validated against the
+**What it can do:** propose exactly seven things, each validated against the
 current board and applied only as a whole (`packages/core/src/proposal.ts`,
 `managerApply.ts`) — create a ticket, add a dependency between two existing
-tickets, change a ticket's priority, ask the owner a question, or update the
-project's brief. Everything it proposes is recorded as one
-`manager_proposal_applied` event carrying the full proposal, so the applied
-board can always be explained after the fact.
+tickets, change a ticket's priority, ask the owner a question, update the
+scope document, cancel a ticket, or update an existing ticket's fields
+(title, description, acceptance, budget, model). Everything it proposes is
+recorded as one `manager_proposal_applied` event carrying the full proposal,
+so the applied board can always be explained after the fact.
 
 **What it cannot do, which is the more interesting half of this design:**
 
@@ -707,10 +740,10 @@ board can always be explained after the fact.
   (`.orchestrator/proposal.json`, declared as an artefact like any other);
   the daemon reads, validates, and applies it — the Manager itself never
   runs a single write.
-- It cannot propose a sixth kind of command. `create_ticket`,
+- It cannot propose an eighth kind of command. `create_ticket`,
   `add_dependency`, `change_priority`, `request_user_decision`,
-  `update_project_brief` — exactly the architecture document's list, no
-  more.
+  `update_scope`, `cancel_ticket`, `update_ticket` — exactly these seven
+  shapes, no more.
 - It cannot half-apply a plan. One invalid command in a proposal rejects
   the whole thing, treated the same as a malformed `result.json`: retryable,
   reaching the inbox on exhaustion with the validation errors attached. See
@@ -730,10 +763,14 @@ board can always be explained after the fact.
 - It cannot see a worker's own prompt, another ticket's full description, or
   a completed dependency's reported summary/artifacts. Its envelope
   (`managerEnvelope.ts`) is built independently of the worker-envelope path
-  and carries only: the project brief, the mission, the board in compact
-  form (id/title/status/kind/dependencies/attempts/spend — no descriptions),
-  the decision log, the last five final failures with a curated one-line
-  reason each, and the command schema.
+  and carries only: the project brief, the current scope document (read
+  fresh off disk on every invocation), the conversation so far (the owner's
+  `discuss` messages interleaved with its own prior replies/assessments,
+  across every manager ticket this project has ever run, not just the
+  current one), the board in compact form
+  (id/title/status/kind/dependencies/attempts/spend — no descriptions), the
+  decision log, the last five final failures with a curated one-line reason
+  each, and the command schema.
 - It cannot remember a previous invocation. Every Manager run rebuilds its
   envelope from the database from scratch; nothing about it is a
   long-lived session or an accumulating context — the same "an orchestrator

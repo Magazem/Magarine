@@ -525,10 +525,14 @@ test('board/inbox/status all still work normally against a project that DOES exi
 
 // Batch 10 owner walk finding 4: following the root README's own
 // `--mission "$(cat scope.md)"` line produced a board row broken across
-// several lines with raw markdown embedded in it. Display-only: the title
-// stored on the ticket is untouched (deriveManagerTitle's own behaviour is
-// out of this role's files); board/status truncate it to its first
-// non-empty line, capped at 80 characters, only when actually rendering it.
+// several lines with raw markdown embedded in it. Originally fixed
+// display-only, since batch 9's deriveManagerTitle (removed in batch 11
+// part 2 along with planMission) stored the raw multi-line mission as the
+// title verbatim. Batch 11 part 2's planWithMission (commands/plan.ts) now
+// fixes the STORED title too -- first non-empty line, capped at 80
+// characters, via the same truncateTitleForDisplay (board.ts) this test
+// still also exercises for rendering -- so this proves both layers agree,
+// not just the display one.
 
 test('a multi-line mission title is shown as a single truncated line on board and status, not broken across rows', async () => {
   const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-multiline-title-'));

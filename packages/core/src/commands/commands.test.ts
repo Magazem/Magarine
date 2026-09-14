@@ -1,7 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rmSyncResilient } from '../db/testSupport.ts';
 import { spawnManaged } from '../process.ts';
@@ -1121,6 +1121,35 @@ test('project create without --brief/--workspace-root leaves them null, unchange
   });
 });
 
+// Batch 11 part 2, item 2: every project needs a scope_path -- store.ts's
+// setProjectScopePath is the setter (Role R's), but deciding WHERE the
+// default lives is this role's own call (paths.ts's defaultScopePath), so
+// `plan --mission` never hits "no scope file configured" on an ordinary
+// freshly created project.
+test('project create with no --scope still gets a default scope path, rooted next to this invocation\'s own db file', async () => {
+  await withTempDb('magarine-project-defaultscope-', async (dbFile) => {
+    const res = await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    const project = JSON.parse(res.stdout) as { id: string; scopePath: string | null };
+    assert.ok(project.scopePath, 'a default scope path must be assigned');
+    assert.ok(
+      project.scopePath!.startsWith(dirname(dbFile)),
+      `default scope path ${project.scopePath} must live under the same directory as ${dbFile}, not the default state dir`
+    );
+    assert.ok(project.scopePath!.includes(project.id), 'the default path must be keyed by the project id');
+  });
+});
+
+test('project create --scope <file> uses exactly that path, not the default', async () => {
+  await withTempDb('magarine-project-explicitscope-', async (dbFile) => {
+    const explicitPath = join(dirname(dbFile), 'elsewhere', 'my-scope.md');
+    const res = await run(['project', 'create', '--name', 'P', '--scope', explicitPath, '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    const project = JSON.parse(res.stdout) as { scopePath: string | null };
+    assert.equal(project.scopePath, explicitPath);
+  });
+});
+
 test('--run-timeout cancels a hung fake run: ticket returns to READY without consuming an attempt', async () => {
   await withTempDb('magarine-run-timeout-', async (dbFile) => {
     const project = JSON.parse(
@@ -1186,7 +1215,12 @@ test('plan creates a manager ticket that shows up tagged on the board, and proje
     assert.equal(planRes.code, 0, planRes.stderr);
     const planned = JSON.parse(planRes.stdout);
     assert.equal(planned.kind, 'manager');
-    assert.equal(planned.description, 'Write three reports and an index.');
+    // Batch 11 part 2: a mission seeds the scope document now (see
+    // cliRouting.test.ts's seed test), not the ticket's own description --
+    // that's what commands/plan.ts's planWithMission replaced planMission
+    // with. The title claim below is this test's replacement coverage for
+    // what used to be the description assertion.
+    assert.equal(planned.title, 'Write three reports and an index.');
     assert.equal(planned.workspaceType, 'NONE');
 
     const boardText = (await run(['board', '--project', project.id, '--db', dbFile])).stdout;
@@ -1224,17 +1258,13 @@ test('plan --budget sets the manager ticket\'s maxBudgetUsdOverride, and enforce
     const planned = JSON.parse(planRes.stdout);
     assert.equal(planned.maxBudgetUsdOverride, 0.5);
 
-    const belowFloor = await run([
-      'plan',
-      '--project',
-      project.id,
-      '--mission',
-      'another mission',
-      '--budget',
-      '0.01',
-      '--db',
-      dbFile,
-    ]);
+    // No --mission here: the first call above already seeded this
+    // project's scope, and a second --mission against a non-empty scope now
+    // refuses on its own terms (see cliRouting.test.ts) -- that refusal
+    // would otherwise mask the budget-floor failure this assertion is
+    // actually after. The floor check lives in createTicket regardless of
+    // mission, so plain re-planning still exercises it.
+    const belowFloor = await run(['plan', '--project', project.id, '--budget', '0.01', '--db', dbFile]);
     assert.notEqual(belowFloor.code, 0);
     assert.match(belowFloor.stderr, /\$0\.25/);
   });
@@ -1245,6 +1275,62 @@ test('plan against a nonexistent project fails with a clean message, not a stack
     const res = await run(['plan', '--project', 'proj_ghost', '--mission', 'do it', '--db', dbFile]);
     assert.notEqual(res.code, 0);
     assert.match(res.stderr, /no such project/);
+  });
+});
+
+// Batch 11 part 2, item 3: `discuss --project <id> --message "<text>"` --
+// the direct-write counterpart of daemonApi.ts's already-landed handleDiscuss
+// route, calling the exact same discussProject (manager.ts).
+test('discuss --project --message creates a manager ticket and records the message as a discuss event', async () => {
+  await withTempDb('magarine-discuss-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+
+    const res = await run([
+      'discuss', '--project', project.id, '--message', 'What should the first ticket be?', '--json', '--db', dbFile,
+    ]);
+    assert.equal(res.code, 0, res.stderr);
+    const ticket = JSON.parse(res.stdout);
+    assert.equal(ticket.kind, 'manager');
+    assert.equal(ticket.workspaceType, 'NONE');
+
+    const activity = JSON.parse(
+      (await run(['activity', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ eventType: string; payload: { message?: string } }>;
+    const discussEvents = activity.filter((e) => e.eventType === 'discuss');
+    assert.equal(discussEvents.length, 1);
+    assert.equal(discussEvents[0].payload.message, 'What should the first ticket be?');
+  });
+});
+
+test('discuss --budget sets the manager ticket\'s maxBudgetUsdOverride, enforcing the same floor plan --budget does', async () => {
+  await withTempDb('magarine-discuss-budget-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+
+    const res = await run([
+      'discuss', '--project', project.id, '--message', 'hello', '--budget', '0.5', '--json', '--db', dbFile,
+    ]);
+    assert.equal(res.code, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).maxBudgetUsdOverride, 0.5);
+
+    const belowFloor = await run([
+      'discuss', '--project', project.id, '--message', 'hi again', '--budget', '0.01', '--db', dbFile,
+    ]);
+    assert.notEqual(belowFloor.code, 0);
+    assert.match(belowFloor.stderr, /\$0\.25/);
+  });
+});
+
+test('discuss with an empty message and discuss against a nonexistent project both fail cleanly, not with a stack trace', async () => {
+  await withTempDb('magarine-discuss-errors-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+
+    const emptyMessage = await run(['discuss', '--project', project.id, '--db', dbFile]);
+    assert.notEqual(emptyMessage.code, 0);
+    assert.match(emptyMessage.stderr, /message is required/i);
+
+    const ghostProject = await run(['discuss', '--project', 'proj_ghost', '--message', 'hi', '--db', dbFile]);
+    assert.notEqual(ghostProject.code, 0);
+    assert.match(ghostProject.stderr, /no such project/i);
   });
 });
 

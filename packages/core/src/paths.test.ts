@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { artifactsDir, dbPath, resolveStateDir } from './paths.ts';
+import { artifactsDir, dbPath, defaultScopePath, projectDir, resolveStateDir } from './paths.ts';
 
 const FAKE_HOME = join('C:', 'fake-home');
 
@@ -46,4 +46,14 @@ test('dbPath: database lives at <state>/magarine.db', () => {
 test('artifactsDir: artefacts live at <state>/artifacts', () => {
   const stateDir = join('C:', 'some', 'state');
   assert.equal(artifactsDir(stateDir), join(stateDir, 'artifacts'));
+});
+
+test('projectDir: a project directory lives at <state>/projects/<id>', () => {
+  const stateDir = join('C:', 'some', 'state');
+  assert.equal(projectDir(stateDir, 'proj_123'), join(stateDir, 'projects', 'proj_123'));
+});
+
+test('defaultScopePath: the default scope file lives at <state>/projects/<id>/SCOPE.md', () => {
+  const stateDir = join('C:', 'some', 'state');
+  assert.equal(defaultScopePath(stateDir, 'proj_123'), join(stateDir, 'projects', 'proj_123', 'SCOPE.md'));
 });

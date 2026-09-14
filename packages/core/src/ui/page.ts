@@ -10,9 +10,15 @@
 // but as the Authorization header on this page's own fetch() calls to the
 // daemon it was loaded from.
 //
-// The conversation panel's message box is explicitly wired to nothing yet
-// (see the `sendMessage` handler below): Part 2, after Role R's
-// `discussProject` lands, wires it to a real POST /projects/{id}/discuss.
+// Batch 11 part 2, item 4: the conversation panel is wired for real -- the
+// message box calls POST /projects/{id}/discuss (daemonApi.ts's
+// handleDiscuss, Role R's discussProject underneath), and the panel itself
+// renders GET /projects/{id}/conversation (commands/conversation.ts's
+// buildConversation), newest last, interleaving the owner's own messages
+// with the Manager's manager_reply/manager_assessment/question entries. A
+// live `question` entry gets its own answer box wired to the existing
+// POST /tickets/{id}/decide route -- the same one the inbox panel's
+// worker_needs_user_decision items already use.
 export const PAGE_HTML = `<!doctype html>
 <html lang="en">
 <head>
@@ -33,6 +39,12 @@ export const PAGE_HTML = `<!doctype html>
   .paused { background: #4a1c1c; border: 1px solid #a33; padding: 0.5rem; margin: 0.5rem 0; white-space: pre-wrap; }
   .inbox-item { border: 1px solid #444; padding: 0.5rem; margin-bottom: 0.5rem; }
   .inbox-item .message { white-space: pre-wrap; margin: 0.3rem 0; }
+  .conv-entry { border: 1px solid #333; padding: 0.4rem 0.5rem; margin-bottom: 0.4rem; white-space: pre-wrap; }
+  .conv-entry .speaker { color: #888; font-size: 0.75rem; margin-bottom: 0.2rem; }
+  .conv-entry.owner_message { border-left: 3px solid #58a; }
+  .conv-entry.manager_reply, .conv-entry.manager_assessment { border-left: 3px solid #8a5; }
+  .conv-entry.question { border-left: 3px solid #a85; }
+  .conv-entry.scope_updated { border-left: 3px solid #666; font-style: italic; }
   .error { color: #f88; }
   .muted { color: #888; font-size: 0.8rem; }
   pre.scope { white-space: pre-wrap; background: #1a1a1a; border: 1px solid #333; padding: 0.5rem; max-height: 20rem; overflow: auto; }
@@ -69,8 +81,9 @@ export const PAGE_HTML = `<!doctype html>
 <h2>Conversation</h2>
 <div class="muted">Scope document (read-only here):</div>
 <pre class="scope" id="scopeText"></pre>
+<div id="conversationList"></div>
 <div class="row">
-  <textarea id="messageBox" rows="2" cols="60" placeholder="Not wired yet -- Part 2 (after the Manager lands) wires this to a real conversation."></textarea>
+  <textarea id="messageBox" rows="2" cols="60" placeholder="Talk to the Manager -- e.g. answer a question, or ask it to change something."></textarea>
   <button id="sendMessage">Send</button>
 </div>
 
@@ -92,6 +105,8 @@ export const PAGE_HTML = `<!doctype html>
   var inboxList = document.getElementById('inboxList');
   var activityList = document.getElementById('activityList');
   var scopeText = document.getElementById('scopeText');
+  var conversationList = document.getElementById('conversationList');
+  var messageBox = document.getElementById('messageBox');
   var lastRefresh = document.getElementById('lastRefresh');
 
   tokenInput.value = state.token;
@@ -304,6 +319,63 @@ export const PAGE_HTML = `<!doctype html>
     scopeText.textContent = text || '(no scope document set for this project yet)';
   }
 
+  var CONV_LABELS = {
+    owner_message: 'You',
+    manager_reply: 'Manager',
+    manager_assessment: 'Manager (assessment)',
+    question: 'Manager (question)',
+    scope_updated: 'Scope updated',
+  };
+
+  // Newest last, per this batch's brief -- buildConversation
+  // (commands/conversation.ts) already returns entries in chronological
+  // order, so this renders them exactly as received, no reversal. Replies
+  // are shown IN FULL (plain textContent, no truncation), same rule as the
+  // inbox panel's reasons.
+  function renderConversation(entries) {
+    conversationList.innerHTML = '';
+    if (entries.length === 0) {
+      conversationList.innerHTML = '<div class="muted">(no conversation yet -- send a message below)</div>';
+      return;
+    }
+    entries.forEach(function (entry) {
+      var div = document.createElement('div');
+      div.className = 'conv-entry ' + entry.kind;
+
+      var speaker = document.createElement('div');
+      speaker.className = 'speaker';
+      speaker.textContent = (CONV_LABELS[entry.kind] || entry.kind) + '  ' + entry.createdAt;
+      div.appendChild(speaker);
+
+      var text = document.createElement('div');
+      text.textContent = entry.text;
+      div.appendChild(text);
+
+      // Only a still-BLOCKED question gets a live answer box -- an already
+      // answered one (this ticket moved on, or a later question superseded
+      // it) shows as plain history, matching decide()'s own rule that only
+      // a BLOCKED ticket has anything to answer.
+      if (entry.kind === 'question' && entry.answered === false) {
+        var controls = document.createElement('div');
+        controls.className = 'row';
+        var answer = document.createElement('input');
+        answer.type = 'text';
+        answer.placeholder = 'your answer';
+        var decideBtn = document.createElement('button');
+        decideBtn.textContent = 'Answer';
+        decideBtn.onclick = function () {
+          api('/tickets/' + entry.ticketId + '/decide', { method: 'POST', body: { answer: answer.value } })
+            .then(refresh).catch(function (err) { showError(err.message); });
+        };
+        controls.appendChild(answer);
+        controls.appendChild(decideBtn);
+        div.appendChild(controls);
+      }
+
+      conversationList.appendChild(div);
+    });
+  }
+
   function refresh() {
     if (!state.token || !state.projectId) return;
     showError('');
@@ -312,11 +384,13 @@ export const PAGE_HTML = `<!doctype html>
       api('/inbox?project=' + encodeURIComponent(state.projectId)),
       api('/activity?project=' + encodeURIComponent(state.projectId) + '&all=true'),
       api('/projects/' + encodeURIComponent(state.projectId) + '/scope'),
+      api('/projects/' + encodeURIComponent(state.projectId) + '/conversation'),
     ]).then(function (results) {
       renderBoard(results[0]);
       renderInbox(results[1]);
       renderActivity(results[2]);
       renderScope(results[3].scopeText);
+      renderConversation(results[4]);
       lastRefresh.textContent = 'last refreshed ' + new Date().toLocaleTimeString();
     }).catch(function (err) {
       showError(err.message);
@@ -339,12 +413,16 @@ export const PAGE_HTML = `<!doctype html>
     refresh();
   };
 
-  // Explicitly wired to nothing yet: Part 2 (after Role R's discussProject
-  // lands) replaces this with a real POST /projects/{id}/discuss call. Until
-  // then this box exists only to show the reader where the conversation
-  // will go, and says so plainly rather than pretending to work.
   document.getElementById('sendMessage').onclick = function () {
-    showError('The message box is not wired to anything yet -- this lands in part 2, once the Manager\\'s discuss route is live.');
+    if (!state.projectId) { showError('select a project first'); return; }
+    var message = messageBox.value.trim();
+    if (!message) { showError('type a message first'); return; }
+    api('/projects/' + encodeURIComponent(state.projectId) + '/discuss', { method: 'POST', body: { message: message } })
+      .then(function () {
+        messageBox.value = '';
+        refresh();
+      })
+      .catch(function (err) { showError(err.message); });
   };
 
   if (state.token) loadProjects();

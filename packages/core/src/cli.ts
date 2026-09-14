@@ -20,9 +20,11 @@ import {
   setProjectDefaultModel,
   setProjectManagerModel,
   setProjectMaxSpendUsd,
+  setProjectScopePath,
   setTicketBudgetOverride,
 } from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
+import { discussProject, ManagerError } from './manager.ts';
 import { approve, ApproveError } from './commands/approve.ts';
 import { buildActivity, formatActivity } from './commands/activity.ts';
 import { buildBoard, formatBoard, truncateTitleForDisplay } from './commands/board.ts';
@@ -30,12 +32,17 @@ import { buildProjectList, formatProjectList } from './commands/projectList.ts';
 import { buildInbox, formatInbox } from './commands/inbox.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { doctorExitCode, formatDoctor, runDoctor } from './commands/doctor.ts';
-import { planMission, PlanError } from './commands/plan.ts';
+import { planWithMission, PlanError } from './commands/plan.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { serve, ServeError } from './commands/serve.ts';
-import { artifactsDir as resolveArtifactsDir, dbPath as resolveDbPath, resolveStateDir } from './paths.ts';
+import {
+  artifactsDir as resolveArtifactsDir,
+  dbPath as resolveDbPath,
+  defaultScopePath,
+  resolveStateDir,
+} from './paths.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
@@ -252,7 +259,17 @@ const FLAG_SPECS: Record<string, string[]> = {
   // setting, not a per-ticket one: see types.ts's Project.managerModel for
   // why a manager ticket never gets its own `--model` override the way an
   // ordinary `ticket add` does.
-  'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root', 'max-spend', 'model', 'manager-model'],
+  'project create': [
+    'name',
+    'description',
+    'max-parallel',
+    'brief',
+    'workspace-root',
+    'max-spend',
+    'model',
+    'manager-model',
+    'scope',
+  ],
   'project set': ['project', 'max-spend', 'model', 'manager-model'],
   // Batch 10 (Role Q), item 2: no flags of its own -- lists every project in
   // this state directory's database. See commands/projectList.ts.
@@ -309,12 +326,20 @@ const FLAG_SPECS: Record<string, string[]> = {
   inbox: ['project'],
   activity: ['project', 'ticket', 'all'],
   // Batch 9: `magarine plan --project <id> --mission "<text>"` creates the
-  // manager ticket. No `--title`: deriveManagerTitle (commands/plan.ts)
-  // makes one from the mission, the same way a work ticket's title is
-  // always given directly rather than derived. Batch 11 rule e: `--budget`
-  // sets the manager ticket's own ceiling override, same as `ticket add
-  // --budget`.
+  // manager ticket. Batch 11 part 2 (Strategist ruling, settled):
+  // `--mission` now seeds the project's scope document with the text (or
+  // refuses if the scope already has content) before planning from it --
+  // see commands/plan.ts's planWithMission, the one function both this
+  // direct-write path and the daemon route (daemonApi.ts's handlePlan)
+  // call. Batch 11 rule e: `--budget` sets the manager ticket's own ceiling
+  // override, same as `ticket add --budget`.
   plan: ['project', 'mission', 'budget'],
+  // Batch 11 part 2, item 3: `discuss --project <id> --message "<text>"`
+  // calls Role R's discussProject (manager.ts) directly, the same
+  // no-daemon/live-daemon split every other mutating command here has.
+  // `--budget` matches `plan`'s own meaning: this discuss ticket's own
+  // ceiling override.
+  discuss: ['project', 'message', 'budget'],
   decide: ['ticket', 'answer'],
   retry: ['ticket'],
   approve: ['ticket'],
@@ -492,7 +517,9 @@ async function main(): Promise<void> {
   }
 
   if (command === 'project' && subcommand === 'create') {
-    const db = openDb(dbPath(flags));
+    const resolvedDbPath = dbPath(flags);
+    const db = openDb(resolvedDbPath);
+    const explicitScope = typeof flags.scope === 'string' ? flags.scope : null;
     const project = createProject(db, {
       name: String(flags.name ?? positionals[1] ?? ''),
       description: typeof flags.description === 'string' ? flags.description : null,
@@ -502,8 +529,23 @@ async function main(): Promise<void> {
       brief: typeof flags.brief === 'string' ? flags.brief : null,
       workspaceRoot: typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : null,
       managerModel: typeof flags['manager-model'] === 'string' ? flags['manager-model'] : null,
+      scopePath: explicitScope,
     });
-    output(flags, project, `Created project ${project.id} (${project.name})`);
+    // Batch 11 part 2, item 2: no `--scope` given -- every project still
+    // gets a scope file, at a default path (paths.ts's defaultScopePath),
+    // so `plan --mission` on a freshly created project never hits "no scope
+    // file configured" (commands/plan.ts's planWithMission). Rooted under
+    // wherever the sqlite file this invocation actually opened lives --
+    // `dirname(resolvedDbPath)`, not `stateDir(flags)` -- so an explicit
+    // `--db` elsewhere never leaves a SCOPE.md behind in the *default*
+    // state dir the caller didn't ask for; the two only differ when `--db`
+    // is given without a matching `--state-dir`. Two calls, not one INSERT,
+    // because the id createProject assigns doesn't exist until it returns.
+    if (!explicitScope) {
+      setProjectScopePath(db, project.id, defaultScopePath(dirname(resolvedDbPath), project.id));
+    }
+    const created = getProject(db, project.id)!;
+    output(flags, created, `Created project ${created.id} (${created.name})`);
     return;
   }
 
@@ -579,22 +621,53 @@ async function main(): Promise<void> {
     const budgetUsd = typeof flags.budget === 'string' ? Number(flags.budget) : undefined;
     const live = await liveDaemonFor(flags);
     if (live) {
-      // daemonApi.ts's handlePlan (Role R, landed) now calls planProject
-      // against the project's own scope document and board, not this
-      // mission string -- the route no longer reads `mission` at all.
-      // Strategist ruling: refuse loudly rather than silently drop it, "so
-      // no commit in history carries a silent path" -- part 2 turns this
-      // into "seed the scope with this text, then plan" on both paths
-      // through one shared function; until then, a mission string against a
-      // live daemon is a clean, exit-1 refusal, never a quiet no-op.
-      if (mission.trim().length > 0) {
-        process.stderr.write(
-          'plan --mission is not supported against a live daemon yet: the daemon plans from the project\'s scope document, not a mission string, and would otherwise silently ignore it. Edit the scope file directly, or use `plan --project <id>` with no --mission to let the daemon plan from the current scope/board. (Seeding the scope from --mission is coming in part 2.)\n'
-        );
+      // Batch 11 part 2, item 1 (Strategist ruling, settled): one function,
+      // planWithMission (commands/plan.ts), implements "seed the scope with
+      // this text, then plan" -- daemonApi.ts's handlePlan calls it too, so
+      // the daemon path and this direct-write path never diverge, and a
+      // refusal (scope already has content) reads identically on both.
+      await routeMutation(
+        flags,
+        live,
+        'POST',
+        `/projects/${projectId}/plan`,
+        { mission: mission || undefined, budgetUsd },
+        (b) => {
+          const t = b as { id: string; title: string };
+          return `Created manager ticket ${t.id} (${t.title})`;
+        }
+      );
+      return;
+    }
+
+    try {
+      const ticket = planWithMission(db, projectId, { mission, budgetUsd });
+      output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})`);
+    } catch (err) {
+      if (err instanceof PlanError) {
+        process.stderr.write(`${err.message}\n`);
         process.exitCode = 1;
         return;
       }
-      await routeMutation(flags, live, 'POST', `/projects/${projectId}/plan`, { budgetUsd }, (b) => {
+      throw err;
+    }
+    return;
+  }
+
+  if (command === 'discuss') {
+    const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+    const message = String(flags.message ?? '');
+    const budgetUsd = typeof flags.budget === 'string' ? Number(flags.budget) : undefined;
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'POST', `/projects/${projectId}/discuss`, { message, budgetUsd }, (b) => {
         const t = b as { id: string; title: string };
         return `Created manager ticket ${t.id} (${t.title})`;
       });
@@ -602,10 +675,11 @@ async function main(): Promise<void> {
     }
 
     try {
-      const ticket = planMission(db, { projectId, mission, budgetUsd });
+      const ticketId = discussProject(db, projectId, message, { budgetUsd });
+      const ticket = getTicket(db, ticketId)!;
       output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})`);
     } catch (err) {
-      if (err instanceof PlanError) {
+      if (err instanceof ManagerError) {
         process.stderr.write(`${err.message}\n`);
         process.exitCode = 1;
         return;

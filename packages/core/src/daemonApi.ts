@@ -12,7 +12,9 @@ import { resume, ResumeError } from './commands/resume.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import type { DaemonLoop } from './daemon.ts';
 import { resolveReadiness } from './dependencies.ts';
-import { discussProject, ManagerError, planProject, readScopeText } from './manager.ts';
+import { discussProject, ManagerError, readScopeText } from './manager.ts';
+import { buildConversation } from './commands/conversation.ts';
+import { planWithMission } from './commands/plan.ts';
 import {
   addDependency,
   createTicket,
@@ -221,18 +223,21 @@ async function handleCancel(db: Db, loop: DaemonLoop, ticketId: string): Promise
   return { status: 200, body: getTicket(db, ticketId) };
 }
 
-// Batch 11 (docs/strategy/batch-11-spec.md section 2, Role R item -- the
-// cross-role contract with Role Q): this route now calls `planProject`
-// (manager.ts), not batch 9's mission-string `planMission`
-// (commands/plan.ts, Role Q's file and unowned by this route any more) --
-// `plan` runs the Manager against the project's CURRENT scope document and
-// board, in interview mode on a fresh project, re-plan mode once tickets
-// exist. Creates the manager ticket only, same as before: it never forces a
-// tick itself; a live daemon picks it up on its own next periodic pass.
+// Batch 11 part 2, item 1 (Strategist ruling, settled): `plan` runs the
+// Manager against the project's CURRENT scope document and board, in
+// interview mode on a fresh project, re-plan mode once tickets exist -- and,
+// when `mission` is given, seeds the scope with it first (or refuses, if the
+// scope already has content). planWithMission (commands/plan.ts, Role Q's
+// file) is the one function that implements this; cli.ts's direct-write path
+// calls it too, so this route and that path can never diverge on what
+// --mission does. Creates the manager ticket only, same as before: it never
+// forces a tick itself; a live daemon picks it up on its own next periodic
+// pass. toApiError below turns planWithMission's PlanError into a 400,
+// same flattening every other route's domain error already gets.
 function handlePlan(db: Db, projectId: string, body: unknown): RouteResult {
-  const b = body as { budgetUsd?: number };
-  const ticketId = planProject(db, projectId, { budgetUsd: b.budgetUsd });
-  return { status: 201, body: getTicket(db, ticketId) };
+  const b = body as { mission?: string; budgetUsd?: number };
+  const ticket = planWithMission(db, projectId, { mission: b.mission, budgetUsd: b.budgetUsd });
+  return { status: 201, body: ticket };
 }
 
 // Batch 11 item 3: `discussProject` records the owner's message as a
@@ -293,6 +298,17 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     // -- not edited) already treats "no scope_path" and "file unreadable"
     // both as empty text, so this route needs no separate not-found case.
     return { status: 200, body: { scopeText: readScopeText(project) } };
+  }
+
+  const conversationMatch = /^\/projects\/([^/]+)\/conversation$/.exec(path);
+  if (method === 'GET' && conversationMatch) {
+    const [, projectId] = conversationMatch;
+    const project = getProject(deps.db, projectId);
+    if (!project) throw new ApiError(404, `no such project: ${projectId}`);
+    // Batch 11 part 2, item 4: the conversation panel's own feed --
+    // commands/conversation.ts's buildConversation (Role Q's file), read-only,
+    // no new write site.
+    return { status: 200, body: buildConversation(deps.db, projectId) };
   }
 
   if (method === 'POST' && path === '/tickets') {
