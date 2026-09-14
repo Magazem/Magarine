@@ -33,3 +33,15 @@ Parked until the owner is satisfied with Windows: the Linux leg, the AionUi pull
 
 ## 3. One question for the owner, non-blocking
 "When you give Magarine a scope document, do you want its first reply to be a critique and a list of questions before it proposes any tickets, the way this project started, or do you want tickets straight away?"
+
+## 4. The owner's answer, and what it changes in batch 11
+
+Verbatim: "it depends on what i tell it, sometimes i would create the md with it not just give it the .md, depends on each project where is the starting point honestly but generally i would prefer it to interview me first about any missing context instead of assuming it."
+
+Three changes to the batch 11 shape above, decided here:
+
+1. **Interview first is the default, and questions alone are a success.** On a fresh project the Manager's first invocation may return only questions and no proposal; that is the intended outcome, not a stall. The assessment says what it understood, what it would cut, and what it needs to know. It proposes tickets only when it says it has enough, and the owner can say "propose now" at any time through `discuss`.
+2. **The scope document is an output as well as an input.** The scope file lives at a known path in the project, `SCOPE.md` under the project's directory unless `--scope` names an existing file. A project may be created with no scope at all; the first `discuss` then starts the interview from nothing, and the Manager gains one command, `update_scope { content }`, which writes the whole file and records the change as a decision event with a one-line summary of what changed. The owner may edit the file by hand at any time; every invocation reads the current file. `update_project_brief` from the architecture document becomes this command.
+3. **A conversation turn re-invokes the Manager.** `discuss` and `decide` on a project in the interview phase trigger one Manager invocation per owner message, under the per-project daily cap that automatic triggers were always going to carry. This is owner-initiated, so it is not the failure-driven loop that stays parked. Each turn is a costed manager ticket; the page and the board show what the interview cost.
+
+The owner walk for batch 11 is now: create an empty project, talk to it, answer its questions, watch the scope file appear and grow, tell it to propose, run the batch, correct it, and plan again.
