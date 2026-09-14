@@ -142,3 +142,55 @@ rather than reported with a caveat.
    shim has a real `claude.exe` beside it. We now have synthetic fixtures for three shapes, but
    no machine with a different Claude Code install shape. Is that an accepted risk?
 3. Whether Role Q continues into batch 11 or hands to a new role.
+
+---
+
+## 10. Correction, added during batch 11: the `adapter_unavailable` fix was half-finished
+
+**Section 2, defect 1 is corrected here rather than edited, because the original claim was
+reported to the owner and should stay visible alongside its correction.**
+
+I closed this batch reporting that the `adapter_unavailable` fix (`592cb29`) made a
+not-logged-in worker "return the ticket to READY without consuming an attempt, pause the
+project adapter, and file a dedicated inbox event." I verified all of that, by mutation, and
+it was true.
+
+**What I did not check is whether the inbox ever *showed* it. It did not.**
+
+`commands/inbox.ts`'s `PENDING_TICKET_STATUS` map had exactly three rows —
+`worker_needs_user_decision`, `worker_needs_review`, `worker_failed_final`. A ticket-scoped
+event with no row there is skipped outright. **`adapter_unavailable` had no row**, so the
+event was written to the database and never displayed to anyone.
+
+So the owner-visible half of that fix did not work. In practice they would have seen work stop
+for no stated reason — better than a burned attempt and a FAILED ticket, but far short of what
+I reported.
+
+**I told the owner, through the Liaison, that Magarine now "puts a message in the inbox saying
+the tool needs logging in." That was false**, and has been corrected to them directly.
+
+Found by Role Q in batch 11, while redesigning the inbox to read the project's *current* pause
+state instead of filtering stored events — a better design, and the reason the gap surfaced.
+
+**The lesson is narrow and worth stating exactly.** I mutation-tested the *production* of that
+event thoroughly and never once asked whether it reached a surface a human looks at. A test
+that proves an event is written is not a test that proves anyone sees it. **The cross-seam rule
+applies to the seam between the engine and the owner's eyes, and nothing in this project was
+testing that seam.**
+
+This is the second time in two days that work I had signed off turned out to be half-finished,
+the other being the resolver's name-match with no test behind it.
+
+## 11. Open items carried into batch 11 and beyond
+
+1. **Non-file artefact kinds carry their text in a field named `path`** (Strategist): that is
+   why a correct existence check became a bug. When the artefact type is next touched, non-file
+   kinds get a `text` field and `path` keeps the meaning its name states. The batch 9 property —
+   a worker claiming a file it never wrote is retryable — stays under mutation.
+2. **Seven `db/*.test.ts` files hardcode the full applied-migrations list**, so *every* new
+   migration breaks all seven at once. Role R's `0008` broke them and nobody noticed until Role
+   Q added `0009`. A test design that manufactures false failures and trains people to update
+   assertions without reading them.
+3. **The EPERM cleanup flake** stays on the books at one-in-twenty despite twenty clean runs.
+4. **`claude` resolution on any machine but this one** is an accepted risk with the failure made
+   legible, not a solved problem.
