@@ -1,8 +1,8 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { testTempRoot } from '../testSupport.ts';
 import { doctorExitCode, formatDoctor, runDoctor } from './doctor.ts';
 
 // Batch 10 (Role Q): `magarine doctor` is the owner's first stop when
@@ -13,8 +13,18 @@ import { doctorExitCode, formatDoctor, runDoctor } from './doctor.ts';
 // this suite is deterministic regardless of what is or isn't installed
 // where it runs, and never shells out to a real binary.
 
+// Found during the Orchestrator's soak prep: every call used to create a
+// bare `mkdtempSync` directory under the shared OS tmpdir with nothing ever
+// removing it (only the one `parent` in the "unwritable state directory"
+// test below got its own explicit cleanup) -- 17 leaked per run of this
+// file alone, which would have made every one of the soak's 20 runs read as
+// a growing leak. `testTempRoot`, cli.test.ts's own established pattern, is
+// what's used everywhere else in this codebase for exactly this reason.
+const testRoot = testTempRoot('doctor');
+after(testRoot.cleanup);
+
 function tempStateDir(): string {
-  return mkdtempSync(join(tmpdir(), 'magarine-doctor-test-'));
+  return mkdtempSync(join(testRoot.root, 'magarine-doctor-test-'));
 }
 
 const notLive = async () => ({ status: 'absent' as const });
