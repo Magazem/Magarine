@@ -194,3 +194,40 @@ the other being the resolver's name-match with no test behind it.
 3. **The EPERM cleanup flake** stays on the books at one-in-twenty despite twenty clean runs.
 4. **`claude` resolution on any machine but this one** is an accepted risk with the failure made
    legible, not a solved problem.
+
+## 12. The push authorisation, recorded so the question cannot recur
+
+The Strategist asked during batch 11 whether the owner had decided visibility before the push,
+having checked the GitHub API itself and found the repository public. **They had.** Recording
+the sequence here because it was not written down anywhere durable, which is why the question
+could be asked at all.
+
+1. The push was **held**. The owner was sent the visibility question with three options,
+   carrying the Strategist's recommendation of *private, then push everything*, in its words.
+2. **I corrected my own message before they answered.** My first version described their
+   verbatim quotes and our spend figures but I had not actually checked the tree when I said
+   it. On checking I found `docs/spikes/aionui-access.md` — 326 lines enumerating AionUi's
+   internal auth endpoint paths — and their Windows username in 36 tracked files, 42
+   occurrences. I also **withdrew option (c)** ("push the code, keep `docs/strategy/` out")
+   after underpricing it: those documents span many commits, so it is a history rewrite, not a
+   `.gitignore` line.
+3. The owner answered, relayed verbatim: **"(a) — push as public. Confirmed explicitly after I
+   asked them to disambiguate… Go ahead and push all 57 commits as-is, public repo, including
+   the AionUi spike doc and the username-in-fixtures items — they were told about both before
+   deciding."**
+
+So the Strategist's two public-case checks were completed **before** the decision, not skipped.
+A full credential scan of all 57 commits came back clean: no keys, no tokens, no private keys.
+
+**What I did get wrong: I never reported the outcome back to the Strategist.** It had ruled "no
+push until they choose" and was entitled to hear the answer. It spent the intervening time
+reasonably assuming the ruling had been broken, and only found out by querying the API itself.
+**A decision that overrides a standing ruling has to be reported to whoever made the ruling.**
+
+**Carried forward:** `docs/strategy/` has grown substantially since that consent — the
+owner-walk write-ups, the paid-run report, this close-out and its correction all contain more
+of the owner's verbatim words, our spend figures and my errors, published without being
+individually flagged. That has been put to the owner as a statement of fact with three options
+and no recommendation, alongside the thing that matters most about option 3: **rewriting
+history does not un-publish.** Anything already fetched, cached or indexed stays out there.
+Nothing will be scrubbed on our own initiative.
