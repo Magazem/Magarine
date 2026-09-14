@@ -374,6 +374,7 @@ export function createTicket(
     workspaceRef?: string | null;
     maxBudgetUsdOverride?: number | null;
     model?: string | null;
+    modelReason?: string | null;
     kind?: TicketKind;
   }
 ): Ticket {
@@ -387,8 +388,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, max_budget_usd_override, model, kind, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, model, model_reason, kind, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -401,6 +402,7 @@ export function createTicket(
     input.workspaceRef ?? null,
     input.maxBudgetUsdOverride ?? null,
     input.model ?? null,
+    input.modelReason ?? null,
     input.kind ?? 'work',
     now,
     now
@@ -446,6 +448,7 @@ export function updateTicketFields(
     acceptanceCriteria?: string[];
     maxBudgetUsdOverride?: number;
     model?: string;
+    modelReason?: string;
   }
 ): void {
   if (fields.maxBudgetUsdOverride != null) {
@@ -473,6 +476,10 @@ export function updateTicketFields(
   if (fields.model !== undefined) {
     sets.push('model = ?');
     values.push(fields.model);
+  }
+  if (fields.modelReason !== undefined) {
+    sets.push('model_reason = ?');
+    values.push(fields.modelReason);
   }
   if (sets.length === 0) return;
 

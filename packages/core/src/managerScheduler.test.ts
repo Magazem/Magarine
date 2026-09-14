@@ -63,6 +63,57 @@ test('a valid proposal, driven through a real tick(), creates a small dependency
   assert.ok(applied, 'expected a manager_proposal_applied event on the manager ticket');
 });
 
+// Batch 12 item 3's required test: "Fake-adapter test that a proposal
+// setting models with reasons round-trips" (batch-12-spec.md section 2,
+// Role S item 3) -- a full trip through the real applied path (tick(), the
+// fake worker's manager_proposal script, scheduler.ts's
+// applyManagerTicketDone, managerApply.ts, store.ts), not just
+// proposal.ts's own validator (see proposal.test.ts for that half) or
+// managerApply.test.ts's direct, adapter-free calls (see that file's own
+// update_ticket test for the equivalent narrower coverage).
+test('a proposal setting model and model_reason on both create_ticket and update_ticket round-trips through a real tick() onto the created/updated tickets', async () => {
+  const { db, project, adapter } = setupProject();
+  const managerTicket = makeManagerTicket(db, project.id);
+  const existing = createTicket(db, { projectId: project.id, title: 'Existing work' });
+
+  adapter.setScript(managerTicket.id, {
+    kind: 'manager_proposal',
+    proposal: {
+      rationale: 'differentiate by task',
+      commands: [
+        {
+          type: 'create_ticket',
+          title: 'Deep design work',
+          description: 'd',
+          acceptance_criteria: [],
+          model: 'claude-opus-5',
+          model_reason: 'needs real design trade-offs, not mechanical execution',
+        },
+        {
+          type: 'update_ticket',
+          ticket_id: existing.id,
+          model: 'claude-haiku-4-5-20251001',
+          model_reason: 'purely mechanical, read-only work',
+        },
+      ],
+    },
+  });
+
+  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  assert.equal(result.started.length, 1);
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
+
+  const created = listTickets(db, project.id).find((t) => t.title === 'Deep design work')!;
+  assert.equal(created.model, 'claude-opus-5');
+  assert.equal(created.modelReason, 'needs real design trade-offs, not mechanical execution');
+
+  const updated = getTicket(db, existing.id)!;
+  assert.equal(updated.model, 'claude-haiku-4-5-20251001');
+  assert.equal(updated.modelReason, 'purely mechanical, read-only work');
+});
+
 test('an invalid proposal, driven through a real tick(), is rejected whole (retryable), and creates nothing', async () => {
   const { db, project, adapter } = setupProject();
   const managerTicket = makeManagerTicket(db, project.id);

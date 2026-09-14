@@ -95,7 +95,7 @@ test('a database migrated only to 0001-0004 picks up 0005 (project spend cap) on
     // while fixing this test for 0009_pause_reason).
     '0008_project_scope_path',
     '0009_pause_reason',
-    '0010_backfill_workspace_root_from_scope_path',
+    '0010_backfill_workspace_root_from_scope_path', '0011_ticket_model_reason',
   ]);
   assert.equal(snapshot.maxSpendUsdBeforeUpdate, null, 'existing project rows must get NULL (no cap), not a numeric default');
   assert.equal(snapshot.maxSpendUsdAfterUpdate, 10);

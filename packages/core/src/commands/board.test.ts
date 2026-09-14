@@ -1,13 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../db/index.ts';
-import { createProject, createTicket, pauseProjectAdapter } from '../store.ts';
+import { createProject, createTicket, pauseProjectAdapter, updateTicketFields } from '../store.ts';
 import { buildBoard, formatBoard, truncateTitleForDisplay } from './board.ts';
 
 // Batch 9: a manager ticket must be distinguishable from a work ticket on
 // the board at a glance -- the moment planning is used in anger, a board
 // mixing the two indistinguishably becomes hard to read (per the
 // Orchestrator's own framing for this step).
+
+// Batch 12 item 4 (batch-12-spec.md section 1, "On the owner's cost
+// correction"): the figure is labelled "equivalent API cost", not "spend",
+// and carries the one sentence saying that on a subscription the real
+// constraint is session limits, not dollars -- see
+// docs/strategy/batch-11-closeout.md section 1 for the owner's own
+// correction this wording is answering.
+test('formatBoard labels the header "Equivalent API cost" and names the subscription/session-limits caveat', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const text = formatBoard(buildBoard(db, project.id));
+  assert.match(text, /^Equivalent API cost: /);
+  assert.match(text, /session limits/);
+});
 
 test('buildBoard carries kind for both a work ticket and a manager ticket', () => {
   const db = openDb(':memory:');
@@ -19,6 +33,33 @@ test('buildBoard carries kind for both a work ticket and a manager ticket', () =
 
   assert.equal(board.tickets.find((t) => t.id === work.id)?.kind, 'work');
   assert.equal(board.tickets.find((t) => t.id === manager.id)?.kind, 'manager');
+});
+
+// Batch 12 item 3: "recorded on the ticket and shown on the board"
+// (batch-12-spec.md section 1 ruling 3) -- a ticket whose model was never
+// explicitly set shows no model column at all (it is silently the project
+// default, nothing to explain), one that was carries the model and, when
+// present, its reason right next to it.
+test('buildBoard/formatBoard carry model and modelReason for a ticket whose model was explicitly set, and show neither for one that was not', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const withModel = createTicket(db, { projectId: project.id, title: 'Deep design work' });
+  updateTicketFields(db, withModel.id, { model: 'claude-opus-5', modelReason: 'needs real design trade-offs' });
+  const withoutModel = createTicket(db, { projectId: project.id, title: 'Falls back to project default' });
+
+  const board = buildBoard(db, project.id);
+  const withModelEntry = board.tickets.find((t) => t.id === withModel.id)!;
+  assert.equal(withModelEntry.model, 'claude-opus-5');
+  assert.equal(withModelEntry.modelReason, 'needs real design trade-offs');
+  const withoutModelEntry = board.tickets.find((t) => t.id === withoutModel.id)!;
+  assert.equal(withoutModelEntry.model, null);
+  assert.equal(withoutModelEntry.modelReason, null);
+
+  const text = formatBoard(board);
+  const withModelLine = text.split('\n').find((line) => line.includes(withModel.id))!;
+  assert.match(withModelLine, /model claude-opus-5 \(needs real design trade-offs\)/);
+  const withoutModelLine = text.split('\n').find((line) => line.includes(withoutModel.id))!;
+  assert.doesNotMatch(withoutModelLine, /model /, 'a ticket with no explicit model must show no model column');
 });
 
 test('formatBoard tags a manager ticket\'s row with [MANAGER], and leaves a work ticket\'s row unmarked', () => {
@@ -50,7 +91,7 @@ test('formatBoard leads with PAUSED: <reason> when the project is paused, naming
   const lines = pausedText.split('\n');
   assert.match(lines[0], /^PAUSED: /, 'the pause must be the board\'s first line, not buried below spend or tickets');
   assert.match(lines[0], /magarine project set --project/, 'the pause line must name the command that clears it');
-  assert.match(lines[1], /^Project spend:/, 'the spend header still follows, just not first');
+  assert.match(lines[1], /^Equivalent API cost:/, 'the spend header still follows, just not first');
 
   const notPaused = createProject(db, { name: 'not-paused-p' });
   const unpausedText = formatBoard(buildBoard(db, notPaused.id));

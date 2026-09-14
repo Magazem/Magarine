@@ -131,6 +131,78 @@ test('create_ticket missing required fields is rejected, with an error naming ea
   assert.match(errors, /acceptance_criteria/);
 });
 
+// Batch 12 item 3: "Every create_ticket and update_ticket that sets a model
+// carries a one-line model_reason" (batch-12-spec.md section 1 ruling 3) --
+// enforced here, at the schema boundary, not left to convention.
+test('create_ticket setting model without model_reason is rejected; with a non-empty model_reason it is accepted', () => {
+  const withoutReason = validateProposal(
+    {
+      rationale: 'r',
+      commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], model: 'claude-opus-5' }],
+    },
+    emptyBoard()
+  );
+  assert.equal(withoutReason.valid, false);
+  assert.match((withoutReason as { errors: string[] }).errors.join(' '), /model_reason/);
+
+  const emptyReason = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        { type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], model: 'claude-opus-5', model_reason: '' },
+      ],
+    },
+    emptyBoard()
+  );
+  assert.equal(emptyReason.valid, false, 'an empty string must not satisfy the requirement');
+
+  const withReason = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        {
+          type: 'create_ticket',
+          title: 'T',
+          description: 'd',
+          acceptance_criteria: [],
+          model: 'claude-opus-5',
+          model_reason: 'this ticket needs deep design trade-offs',
+        },
+      ],
+    },
+    emptyBoard()
+  );
+  assert.equal(withReason.valid, true, withReason.valid ? '' : JSON.stringify((withReason as { errors: string[] }).errors));
+});
+
+test('create_ticket/update_ticket with no model set at all needs no model_reason', () => {
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [] }] },
+    emptyBoard()
+  );
+  assert.equal(result.valid, true);
+});
+
+test('update_ticket setting model without model_reason is rejected; with one it is accepted', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }]);
+
+  const withoutReason = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', model: 'claude-sonnet-5' }] },
+    board
+  );
+  assert.equal(withoutReason.valid, false);
+  assert.match((withoutReason as { errors: string[] }).errors.join(' '), /model_reason/);
+
+  const withReason = validateProposal(
+    {
+      rationale: 'r',
+      commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', model: 'claude-sonnet-5', model_reason: 'implementation work, not design' }],
+    },
+    board
+  );
+  assert.equal(withReason.valid, true, withReason.valid ? '' : JSON.stringify((withReason as { errors: string[] }).errors));
+});
+
 test('add_dependency missing fields, change_priority with a non-number priority, and request_user_decision missing question are each rejected', () => {
   assert.equal(validateProposal({ rationale: 'r', commands: [{ type: 'add_dependency', ticket_id: 'x' }] }, emptyBoard()).valid, false);
   assert.equal(

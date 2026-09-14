@@ -36,6 +36,8 @@ export interface CreateTicketCommand {
   depends_on?: string[];
   workspace_type?: WorkspaceType;
   model?: string;
+  /** Batch 12 item 3: required whenever `model` is set (see validateCommandShape) -- the Manager's own one-line justification for the choice, recorded on the ticket and shown on the board. */
+  model_reason?: string;
   max_budget_usd?: number;
 }
 
@@ -98,6 +100,8 @@ export interface UpdateTicketCommand {
   acceptance_criteria?: string[];
   max_budget_usd?: number;
   model?: string;
+  /** Batch 12 item 3: required whenever `model` is set, same rule as create_ticket's own field above. */
+  model_reason?: string;
 }
 
 export type ManagerCommand =
@@ -130,15 +134,15 @@ export const MAX_CREATE_TICKET_COMMANDS = 15;
 export const MANAGER_COMMAND_SCHEMA_DESCRIPTION = `A proposal is a JSON object: { "commands": [...], "rationale": "<string>" }.
 At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of them "create_ticket". Every command must be one of exactly these seven shapes -- no others exist:
 
-- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "workspace_type"?: "NONE"|"DIRECTORY"|"GIT_WORKTREE", "model"?: "<string>", "max_budget_usd"?: <number> }
+- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "workspace_type"?: "NONE"|"DIRECTORY"|"GIT_WORKTREE", "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "max_budget_usd"?: <number> }
 - { "type": "add_dependency", "ticket_id": "<existing ticket id>", "depends_on_ticket_id": "<existing ticket id>" }
 - { "type": "change_priority", "ticket_id": "<existing ticket id>", "priority": <number> }
 - { "type": "request_user_decision", "question": "<string>", "context": "<string>" }
 - { "type": "update_scope", "content": "<string, the WHOLE scope document, replacing what is there now>" }
 - { "type": "cancel_ticket", "ticket_id": "<existing, non-manager ticket id>" }
-- { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>" } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
+- { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>" } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
 
-"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
+"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. Setting "model" on create_ticket or update_ticket without a non-empty "model_reason" is rejected: if you choose a model deliberately, say why in one line. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
 
 const COMMAND_TYPES = new Set<ManagerCommand['type']>([
   'create_ticket',
@@ -238,6 +242,9 @@ function validateCommandShape(command: unknown, index: number): string[] {
       if (command.model !== undefined && typeof command.model !== 'string') {
         errors.push(`${prefix}.model must be a string when present`);
       }
+      if (command.model !== undefined && (typeof command.model_reason !== 'string' || command.model_reason.length === 0)) {
+        errors.push(`${prefix}.model_reason must be a non-empty string whenever model is set`);
+      }
       if (command.max_budget_usd !== undefined) {
         if (typeof command.max_budget_usd !== 'number') {
           errors.push(`${prefix}.max_budget_usd must be a number when present`);
@@ -301,6 +308,9 @@ function validateCommandShape(command: unknown, index: number): string[] {
       }
       if (command.model !== undefined && typeof command.model !== 'string') {
         errors.push(`${prefix}.model must be a string when present`);
+      }
+      if (command.model !== undefined && (typeof command.model_reason !== 'string' || command.model_reason.length === 0)) {
+        errors.push(`${prefix}.model_reason must be a non-empty string whenever model is set`);
       }
       if (command.max_budget_usd !== undefined) {
         if (typeof command.max_budget_usd !== 'number') {

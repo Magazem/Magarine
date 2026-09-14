@@ -2,6 +2,7 @@ import { MANAGER_COMMAND_SCHEMA_DESCRIPTION } from './proposal.ts';
 import { reasonFor } from './commands/inbox.ts';
 import type { Db } from './db/index.ts';
 import { readScopeText } from './manager.ts';
+import { inputRateUsd, knownModelIds } from './pricing.ts';
 import {
   getDependencies,
   listArtifactsForTicket,
@@ -208,6 +209,36 @@ const REPLAN_MODE_FRAMING =
   'change_priority -- correct the scope document via update_scope if it needs it, or ask a further question via request_user_decision. ' +
   'A proposal with an empty commands array is valid when you have nothing to change right now.';
 
+// Batch 12 item 3 (batch-12-spec.md section 1 ruling 3): "The envelope
+// gains one short paragraph: the available models, what each is for in the
+// architecture document's terms ... and their relative price as a ratio."
+// Names every model by its exact id (rather than "the cheap one") so
+// `create_ticket`/`update_ticket`'s own `model` field can be copied
+// verbatim from this paragraph. The role assignment (mechanical/read-only,
+// implementation/normal debugging, deep design) is the ruling's own
+// wording, fixed at three tiers regardless of how many models
+// `knownModelIds()` returns; the price-ratio line is generated FROM that
+// list, so a model pricing.ts adds or removes is never missing from, or
+// stale in, this paragraph -- see managerEnvelope.test.ts's own check that
+// the paragraph names exactly pricing.ts's list, nothing more or less.
+export function renderModelGuidance(): string {
+  const ids = knownModelIds();
+  const cheapest = Math.min(...ids.map(inputRateUsd));
+  const ratioLine = ids
+    .slice()
+    .sort((a, b) => inputRateUsd(a) - inputRateUsd(b))
+    .map((id) => `${id} ${(inputRateUsd(id) / cheapest).toFixed(1)}x`)
+    .join(' : ');
+  return (
+    'Model guidance: you may set "model" on create_ticket/update_ticket to any of these models -- ' +
+    `${ids.join(', ')}. Choose deliberately, not by default. claude-haiku-4-5-20251001 is for mechanical, ` +
+    'read-only work; claude-sonnet-5 is for ordinary implementation and normal debugging; claude-opus-5 and ' +
+    'claude-fable-5-1, the top-priced tier, are for deep design with real trade-offs to weigh. Relative price ' +
+    `(input tokens, cheapest = 1x): ${ratioLine}. Whenever you set "model", "model_reason" is required -- a ` +
+    'one-line justification for the choice, recorded on the ticket and shown on the board.'
+  );
+}
+
 export function renderManagerBrief(briefing: ManagerBriefing): string {
   const sections: string[] = [];
 
@@ -250,6 +281,8 @@ export function renderManagerBrief(briefing: ManagerBriefing): string {
   );
 
   sections.push(`Command schema:\n${MANAGER_COMMAND_SCHEMA_DESCRIPTION}`);
+
+  sections.push(renderModelGuidance());
 
   return sections.join('\n\n');
 }

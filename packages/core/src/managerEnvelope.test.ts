@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb } from './db/index.ts';
-import { buildManagerBriefing, buildManagerEnvelope, renderManagerBrief } from './managerEnvelope.ts';
+import { buildManagerBriefing, buildManagerEnvelope, renderManagerBrief, renderModelGuidance } from './managerEnvelope.ts';
+import { knownModelIds } from './pricing.ts';
 import { discussProject } from './manager.ts';
 import {
   addDependency,
@@ -147,6 +148,36 @@ test('renderManagerBrief includes the mission, board, decision log, failures and
     'update_ticket',
   ]) {
     assert.match(rendered, new RegExp(commandName), `expected the command schema to name "${commandName}"`);
+  }
+});
+
+// Batch 12 item 3 (batch-12-spec.md section 1 ruling 3 / section 2 Role S
+// item 3): "an envelope test that the paragraph is present and lists
+// exactly the models in pricing.ts" -- so the two can't drift apart. Reads
+// pricing.ts's own knownModelIds() as the expected set, rather than a
+// hand-copied literal list, for the same reason.
+test('renderModelGuidance names exactly the models pricing.ts knows about, no more and no fewer, and says model_reason is required', () => {
+  const guidance = renderModelGuidance();
+  for (const id of knownModelIds()) {
+    assert.ok(guidance.includes(id), `model guidance must name "${id}" (a real pricing.ts model)`);
+  }
+  // The inverse half of "exactly": every model-shaped token this paragraph
+  // names is one pricing.ts actually knows, not a stray or invented one.
+  const namedModelIds = guidance.match(/claude-[a-z0-9-]+/g) ?? [];
+  for (const named of namedModelIds) {
+    assert.ok(knownModelIds().includes(named), `model guidance names "${named}", which pricing.ts has no rate for`);
+  }
+  assert.match(guidance, /model_reason/);
+});
+
+test('renderManagerBrief carries the model guidance paragraph', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id, 'A mission.');
+  const rendered = renderManagerBrief(buildManagerBriefing(db, project, managerTicket));
+
+  for (const id of knownModelIds()) {
+    assert.ok(rendered.includes(id), `the rendered brief must carry model guidance naming "${id}"`);
   }
 });
 

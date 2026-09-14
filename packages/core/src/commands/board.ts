@@ -20,6 +20,10 @@ export interface BoardTicket {
   costIsEstimate: boolean;
   /** Batch 12: true if any run contributing to costUsd carries a `usage_json.model` unrecognized by pricing.ts (see `unknown_model_rate`'s policy.ts comment) -- priced at the conservative fallback rate, not that model's real one. Read from usage_json, not from the `unknown_model_rate` event, by design: the event is activity-only (it names no owner decision), but the caveat still belongs beside the number the owner is already reading. */
   usedFallbackRate: boolean;
+  /** Batch 12 item 3: `tickets.model`'s own override, null when the ticket falls back to the project default. Shown alongside modelReason so a Manager's choice (and, per the close-out's model-choice run, whether it differentiated at all) is visible without opening the ticket. */
+  model: string | null;
+  /** Batch 12 item 3: the Manager's one-line justification, required by proposal.ts whenever a create_ticket/update_ticket command sets model. Null for a ticket whose model was never explicitly set (including one set directly via `ticket add --model`, which carries no reason -- see proposal.ts's own comment on why the requirement is scoped to the Manager's two commands). */
+  modelReason: string | null;
   blockedBy: string[];
 }
 
@@ -144,6 +148,8 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
         costUsd: c.costUsd,
         costIsEstimate: c.isEstimate,
         usedFallbackRate: c.usedFallbackRate,
+        model: t.model,
+        modelReason: t.modelReason,
         blockedBy: blockingDependencies(db, t),
       };
     }),
@@ -203,7 +209,12 @@ function pausedLine(pauseMessage: string): string {
 export function formatBoard(result: BoardResult): string {
   const spend = formatSpend(result.projectSpendUsd, result.projectSpendIsEstimate, result.projectUsedFallbackRate);
   const cap = result.projectMaxSpendUsd === null ? 'no cap set' : `cap $${result.projectMaxSpendUsd.toFixed(2)}`;
-  const spendHeader = `Project spend: ${spend} (${cap})`;
+  // Batch 12 item 4: "equivalent API cost", not "spend" -- the owner tests
+  // on a subscription, so nothing here is money actually leaving their
+  // account (batch-11-closeout.md section 1); the figure is reported only
+  // because it is the one comparable unit across models and runs, and the
+  // real constraint on a subscription is session limits, not dollars.
+  const spendHeader = `Equivalent API cost: ${spend} (${cap}) -- on a subscription, the real constraint is session limits, not dollars.`;
   const header = result.pauseMessage !== null ? `${pausedLine(result.pauseMessage)}\n${spendHeader}` : spendHeader;
 
   if (result.tickets.length === 0) return `${header}\n(no tickets)`;
@@ -219,8 +230,9 @@ export function formatBoard(result: BoardResult): string {
       const title = t.kind === 'manager' ? `[MANAGER] ${truncateTitleForDisplay(t.title)}` : truncateTitleForDisplay(t.title);
       const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
       const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate, t.usedFallbackRate)}`;
+      const model = t.model ? `model ${t.model}${t.modelReason ? ` (${t.modelReason})` : ''}` : '';
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
-      const parts = [t.id, t.status, title, attempts, cost, blocked].filter((p) => p.length > 0);
+      const parts = [t.id, t.status, title, attempts, cost, model, blocked].filter((p) => p.length > 0);
       return parts.join('\t');
     })
     .join('\n');

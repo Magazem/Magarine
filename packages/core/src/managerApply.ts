@@ -150,6 +150,7 @@ export function applyManagerProposal(
         acceptanceCriteria: c.acceptance_criteria,
         workspaceType: c.workspace_type,
         model: c.model,
+        modelReason: c.model_reason,
         maxBudgetUsdOverride: c.max_budget_usd,
       });
       createdByTitle.set(c.title, newTicket.id);
@@ -224,6 +225,7 @@ export function applyManagerProposal(
             acceptanceCriteria: c.acceptance_criteria,
             maxBudgetUsdOverride: c.max_budget_usd,
             model: c.model,
+            modelReason: c.model_reason,
           });
           break;
         case 'request_user_decision':

@@ -92,6 +92,26 @@ export function isKnownModel(model: string): boolean {
   return Object.prototype.hasOwnProperty.call(RATES, model);
 }
 
+/** Batch 12 item 3: every model id this table knows a rate for, in the
+ * exact strings the tool prints (see the header comment) -- the single
+ * source managerEnvelope.ts's model-guidance paragraph and its own test
+ * both read, so the paragraph can never name a model this table doesn't
+ * actually have a rate for, or silently drop one that was added here. */
+export function knownModelIds(): string[] {
+  return Object.keys(RATES);
+}
+
+/** Batch 12 item 3: `model`'s own $-per-million-input-tokens rate, the
+ * dimension the envelope's price-ratio line is computed from. Throws for a
+ * model this table has no row for -- every real caller sources `model` from
+ * `knownModelIds()` above, so this is never expected to be reached with an
+ * unrecognized id. */
+export function inputRateUsd(model: string): number {
+  const rates = RATES[model];
+  if (!rates) throw new Error(`inputRateUsd: no rate row for "${model}"`);
+  return rates.input;
+}
+
 /** Dollar cost of `usage` for `model`, per the rates above. Unknown models
  * price at the most expensive known rate (see UNKNOWN_MODEL_RATES) rather
  * than throwing or pricing at zero: over-estimating an unattended daemon's

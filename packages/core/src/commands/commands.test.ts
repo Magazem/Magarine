@@ -154,7 +154,7 @@ test('board shows project spend against its cap at the top, above the ticket row
     const res = await run(['board', '--project', project.id, '--db', dbFile]);
     assert.equal(res.code, 0, res.stderr);
     const lines = res.stdout.split('\n');
-    assert.match(lines[0], /^Project spend: \$\d+\.\d{2} \(/, 'the spend line must be the first line of the board');
+    assert.match(lines[0], /^Equivalent API cost: \$\d+\.\d{2} \(/, 'the spend line must be the first line of the board');
     assert.match(lines[0], /no cap set/, 'a project with no --max-spend has no cap, not a fabricated one');
 
     const jsonRes = JSON.parse((await run(['board', '--project', project.id, '--json', '--db', dbFile])).stdout) as {
@@ -206,7 +206,7 @@ test("board labels a ticket's cost 'at least $x, live estimate' when its usage c
       new RegExp(`^${exact.id}\\t.*cost \\$0\\.50(?!,)`, 'm'),
       "a tool-sourced run must show a plain figure, not labelled 'live estimate'"
     );
-    assert.match(boardRes.stdout.split('\n')[0], /^Project spend: at least \$0\.92, live estimate/,
+    assert.match(boardRes.stdout.split('\n')[0], /^Equivalent API cost: at least \$0\.92, live estimate/,
       'one estimated ticket makes the whole project total a lower bound too');
 
     const jsonRes = JSON.parse((await run(['board', '--project', project.id, '--json', '--db', dbFile])).stdout) as {

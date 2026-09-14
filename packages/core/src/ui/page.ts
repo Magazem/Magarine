@@ -70,7 +70,8 @@ export const PAGE_HTML = `<!doctype html>
 <div id="pausedBox"></div>
 
 <h2>Board</h2>
-<table id="boardTable"><thead><tr><th>id</th><th>status</th><th>title</th><th>attempts</th><th>cost</th><th>blocked by</th><th></th></tr></thead><tbody></tbody></table>
+<div class="muted">Equivalent API cost -- what the tool would have billed at metered rates. On a subscription, this is not money leaving your account; the real constraint is session limits.</div>
+<table id="boardTable"><thead><tr><th>id</th><th>status</th><th>title</th><th>attempts</th><th>equivalent API cost</th><th>blocked by</th><th></th></tr></thead><tbody></tbody></table>
 
 <h2>Inbox</h2>
 <div id="inboxList"></div>

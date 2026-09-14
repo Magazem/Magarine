@@ -331,6 +331,7 @@ test('update_ticket updates the named fields on an existing work ticket and neve
         acceptance_criteria: ['a'],
         max_budget_usd: 1.0,
         model: 'claude-fable-5-1',
+        model_reason: 'deep design trade-offs on this one',
       },
     ],
   });
@@ -342,6 +343,7 @@ test('update_ticket updates the named fields on an existing work ticket and neve
   assert.deepEqual(updated.acceptanceCriteria, ['a']);
   assert.equal(updated.maxBudgetUsdOverride, 1.0);
   assert.equal(updated.model, 'claude-fable-5-1');
+  assert.equal(updated.modelReason, 'deep design trade-offs on this one');
   // READY, not OPEN: applyManagerProposal's own resolveReadiness call
   // promotes a dependency-free ticket the same as it always does -- that is
   // ordinary readiness resolution, not update_ticket itself touching

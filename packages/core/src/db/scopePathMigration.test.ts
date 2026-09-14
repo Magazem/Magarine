@@ -95,7 +95,7 @@ test('a database migrated only to 0001-0007 picks up 0008 (project scope path) o
     // at whatever HEAD currently is, not frozen at 0008. Same for batch 12's
     // 0010.
     '0009_pause_reason',
-    '0010_backfill_workspace_root_from_scope_path',
+    '0010_backfill_workspace_root_from_scope_path', '0011_ticket_model_reason',
   ]);
   assert.equal(
     snapshot.scopePathBeforeSet,
