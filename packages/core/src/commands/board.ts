@@ -1,4 +1,5 @@
 import type { Db } from '../db/index.ts';
+import { isKnownModel } from '../pricing.ts';
 import { getDependencies, getProject, getTicket, listTickets } from '../store.ts';
 import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
 import { describeProjectPause } from './inbox.ts';
@@ -17,6 +18,8 @@ export interface BoardTicket {
   costUsd: number;
   /** Batch 6: true if any run contributing to costUsd carries `usage_json.source === 'scheduler_budget_estimate'` -- the daemon's own live tally (pricing.ts/claudeCli.ts), a known lower bound, not the tool's exact figure. The Strategist's ruling: label it "at least $x, live estimate" rather than showing a number that looks as exact as a completed run's. */
   costIsEstimate: boolean;
+  /** Batch 12: true if any run contributing to costUsd carries a `usage_json.model` unrecognized by pricing.ts (see `unknown_model_rate`'s policy.ts comment) -- priced at the conservative fallback rate, not that model's real one. Read from usage_json, not from the `unknown_model_rate` event, by design: the event is activity-only (it names no owner decision), but the caveat still belongs beside the number the owner is already reading. */
+  usedFallbackRate: boolean;
   blockedBy: string[];
 }
 
@@ -25,6 +28,8 @@ export interface BoardResult {
   projectSpendUsd: number;
   /** True if any ticket's costIsEstimate is true -- see BoardTicket.costIsEstimate. A sum with even one estimated component is itself only a lower bound. */
   projectSpendIsEstimate: boolean;
+  /** True if any ticket's usedFallbackRate is true -- see BoardTicket.usedFallbackRate. */
+  projectUsedFallbackRate: boolean;
   /** `projects.max_spend_usd`, or null when no cap is set. */
   projectMaxSpendUsd: number | null;
   /** Batch 11 rule a: null when not paused. Same wording commands/inbox.ts uses for this pause's inbox line -- see describeProjectPause, this field's one composer -- so the board and the inbox never say two different things about the same pause. */
@@ -63,26 +68,28 @@ const STATUS_ORDER: TicketStatus[] = [
 // header for why it's known-low). One estimated run in the sum makes the
 // whole sum a lower bound, so `isEstimate` is true if ANY contributing run
 // is estimate-sourced, not just the most recent one.
-export function ticketCostUsd(db: Db, ticketId: string): { costUsd: number; isEstimate: boolean } {
+export function ticketCostUsd(db: Db, ticketId: string): { costUsd: number; isEstimate: boolean; usedFallbackRate: boolean } {
   const rows = db.prepare('SELECT usage_json FROM runs WHERE ticket_id = ?').all(ticketId) as Array<{
     usage_json: string | null;
   }>;
   let total = 0;
   let isEstimate = false;
+  let usedFallbackRate = false;
   for (const row of rows) {
     if (!row.usage_json) continue;
     try {
-      const usage = JSON.parse(row.usage_json) as { total_cost_usd?: unknown; source?: unknown };
+      const usage = JSON.parse(row.usage_json) as { total_cost_usd?: unknown; source?: unknown; model?: unknown };
       if (typeof usage.total_cost_usd === 'number') {
         total += usage.total_cost_usd;
         if (usage.source === 'scheduler_budget_estimate') isEstimate = true;
       }
+      if (typeof usage.model === 'string' && !isKnownModel(usage.model)) usedFallbackRate = true;
     } catch {
       // Malformed adapter-defined JSON contributes nothing rather than
       // crashing the board.
     }
   }
-  return { costUsd: total, isEstimate };
+  return { costUsd: total, isEstimate, usedFallbackRate };
 }
 
 function blockingDependencies(db: Db, ticket: Ticket): string[] {
@@ -95,15 +102,17 @@ function blockingDependencies(db: Db, ticket: Ticket): string[] {
 // Project spend is the sum of ticket spend over every ticket in the
 // project (batch-4-spec.md section 2's "Contracts" note), computed here
 // from the tickets `buildBoard` already loaded rather than re-querying.
-export function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; isEstimate: boolean } {
+export function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; isEstimate: boolean; usedFallbackRate: boolean } {
   let total = 0;
   let isEstimate = false;
+  let usedFallbackRate = false;
   for (const t of tickets) {
     const c = ticketCostUsd(db, t.id);
     total += c.costUsd;
     if (c.isEstimate) isEstimate = true;
+    if (c.usedFallbackRate) usedFallbackRate = true;
   }
-  return { costUsd: total, isEstimate };
+  return { costUsd: total, isEstimate, usedFallbackRate };
 }
 
 export function buildBoard(db: Db, projectId: string): BoardResult {
@@ -119,6 +128,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
   return {
     projectSpendUsd: projectSpend.costUsd,
     projectSpendIsEstimate: projectSpend.isEstimate,
+    projectUsedFallbackRate: projectSpend.usedFallbackRate,
     projectMaxSpendUsd: project?.maxSpendUsd ?? null,
     pauseMessage,
     pauseReason: isPaused ? project.pauseReason : null,
@@ -133,6 +143,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
         maxAttempts: t.maxAttempts,
         costUsd: c.costUsd,
         costIsEstimate: c.isEstimate,
+        usedFallbackRate: c.usedFallbackRate,
         blockedBy: blockingDependencies(db, t),
       };
     }),
@@ -144,8 +155,13 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
 // exact as a completed run's tool-reported figure. Shared by the project
 // header and every ticket row so the two can never drift into different
 // phrasings.
-export function formatSpend(costUsd: number, isEstimate: boolean): string {
-  return isEstimate ? `at least $${costUsd.toFixed(2)}, live estimate` : `$${costUsd.toFixed(2)}`;
+// Batch 12: `usedFallbackRate` defaults to false so every pre-existing
+// caller (this file's own formatBoard included, before the edit below) and
+// every existing test keeps working unedited; only a caller that actually
+// has the flag needs to pass it.
+export function formatSpend(costUsd: number, isEstimate: boolean, usedFallbackRate: boolean = false): string {
+  const amount = isEstimate ? `at least $${costUsd.toFixed(2)}, live estimate` : `$${costUsd.toFixed(2)}`;
+  return usedFallbackRate ? `${amount} (estimated at fallback rate)` : amount;
 }
 
 // Batch 10 owner walk, finding 4: a mission handed in as a real markdown
@@ -185,7 +201,7 @@ function pausedLine(pauseMessage: string): string {
 // they read a single ticket row. Ticket id first on every ticket line, per
 // this role's brief: it's the next thing a person copies.
 export function formatBoard(result: BoardResult): string {
-  const spend = formatSpend(result.projectSpendUsd, result.projectSpendIsEstimate);
+  const spend = formatSpend(result.projectSpendUsd, result.projectSpendIsEstimate, result.projectUsedFallbackRate);
   const cap = result.projectMaxSpendUsd === null ? 'no cap set' : `cap $${result.projectMaxSpendUsd.toFixed(2)}`;
   const spendHeader = `Project spend: ${spend} (${cap})`;
   const header = result.pauseMessage !== null ? `${pausedLine(result.pauseMessage)}\n${spendHeader}` : spendHeader;
@@ -202,7 +218,7 @@ export function formatBoard(result: BoardResult): string {
       // start with "Plan:".
       const title = t.kind === 'manager' ? `[MANAGER] ${truncateTitleForDisplay(t.title)}` : truncateTitleForDisplay(t.title);
       const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
-      const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate)}`;
+      const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate, t.usedFallbackRate)}`;
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
       const parts = [t.id, t.status, title, attempts, cost, blocked].filter((p) => p.length > 0);
       return parts.join('\t');

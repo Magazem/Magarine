@@ -739,7 +739,7 @@ test("the tool's own budget stop (claudeCli.ts's classifyOutcome, surfaced as a 
 
 // --- Batch 6 item 3: an unrecognized model prices loud, not silent ---
 
-test('a progress event flagging unknownModel raises exactly one inbox unknown_model_rate event per run, even across repeated flags', async () => {
+test('a progress event flagging unknownModel raises exactly one unknown_model_rate event per run, even across repeated flags', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 5 });
   const adapter = new TestAdapter();
@@ -757,8 +757,12 @@ test('a progress event flagging unknownModel raises exactly one inbox unknown_mo
   const events = listEventsForEntity(db, 'run', s.runId);
   const unknownModelEvents = events.filter((e) => e.eventType === 'unknown_model_rate');
   assert.equal(unknownModelEvents.length, 1, 'exactly one row per run, despite two flagged progress events');
-  assert.equal(unknownModelEvents[0].visibility, 'inbox');
-  assert.equal(unknownModelEvents[0].requiresUser, true);
+  // Batch 12 ruling: activity, not inbox -- see policy.ts's comment on this
+  // row. Still visible (activity --project, and the board/page's own
+  // fallback-rate marker, board.ts), just not asked to resolve a condition
+  // that can never observably become false.
+  assert.equal(unknownModelEvents[0].visibility, 'activity');
+  assert.equal(unknownModelEvents[0].requiresUser, false);
   assert.deepEqual(unknownModelEvents[0].payload, { model: 'claude-mystery-9' });
 });
 
@@ -800,7 +804,7 @@ test("batch 6 item 4: a completed run's terminal result_raw event flagging unkno
   const events = listEventsForEntity(db, 'run', s.runId);
   const unknownModelEvents = events.filter((e) => e.eventType === 'unknown_model_rate');
   assert.equal(unknownModelEvents.length, 1);
-  assert.equal(unknownModelEvents[0].visibility, 'inbox');
+  assert.equal(unknownModelEvents[0].visibility, 'activity');
   assert.deepEqual(unknownModelEvents[0].payload, { model: 'claude-mystery-9' });
 });
 

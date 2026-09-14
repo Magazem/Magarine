@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { openDb, type Db } from '../db/index.ts';
 import { inboxEventTypes } from '../policy.ts';
 import { recordTicketTransition } from '../stateMachine.ts';
-import { createProject, createRun, createTicket, insertEvent, pauseProjectAdapter } from '../store.ts';
+import { createProject, createTicket, insertEvent, pauseProjectAdapter } from '../store.ts';
 import { buildInbox } from './inbox.ts';
 
 // Batch 12 (Role S): the completeness net on top of policy.ts's own
@@ -31,11 +31,15 @@ function claim(db: Db, ticketId: string, tag: string): void {
 
 // The exact next-command substring each scenario's inbox line must contain
 // -- this is the "names the next command" half of the completeness check,
-// not just "the item exists". `null` marks a row whose exact command text
-// isn't settled yet (unknown_model_rate's classification is a standing
-// question to the Orchestrator, see policy.ts's own comment on that row) --
-// reachability is still asserted for it.
-const SCENARIOS: Record<string, { build: () => Scenario; nextCommand: string | null; persistedAs?: string }> = {
+// not just "the item exists". Batch 12 binding corollary (the
+// unknown_model_rate finding, see policy.ts's own comment on that row): an
+// event that cannot name a next command is not an inbox item, by
+// definition -- so `nextCommand` is required, not optional, for every row
+// that claims inbox visibility here. `unknown_model_rate` itself is no
+// longer in this table at all: it is `visibility: 'activity'` now, so
+// `inboxEventTypes()` no longer lists it and this table must not either
+// (see the set-equality test below).
+const SCENARIOS: Record<string, { build: () => Scenario; nextCommand: string; persistedAs?: string }> = {
   worker_needs_user_decision: {
     build: () => {
       const db = openDb(':memory:');
@@ -148,26 +152,6 @@ const SCENARIOS: Record<string, { build: () => Scenario; nextCommand: string | n
       return { db, projectId: project.id };
     },
     nextCommand: 'no action needed',
-  },
-  unknown_model_rate: {
-    build: () => {
-      const db = openDb(':memory:');
-      const project = createProject(db, { name: 'p' });
-      const ticket = createTicket(db, { projectId: project.id, title: 't' });
-      const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
-      insertEvent(db, {
-        projectId: project.id,
-        eventType: 'unknown_model_rate',
-        entityType: 'run',
-        entityId: run.id,
-        payload: { model: 'some-future-model' },
-        visibility: 'inbox',
-        requiresUser: true,
-        idempotencyKey: `umr_${run.id}`,
-      });
-      return { db, projectId: project.id };
-    },
-    nextCommand: null,
   },
   adapter_unavailable: {
     build: () => {
@@ -294,11 +278,11 @@ test('every inbox-visibility event type, recorded through the real path, reaches
     const lookFor = scenario.persistedAs ?? eventType;
     const item = items.find((i) => i.eventType === lookFor);
     assert.ok(item, `"${eventType}" was recorded with inbox visibility but never reached buildInbox`);
-    if (scenario.nextCommand) {
-      assert.ok(
-        item!.message.includes(scenario.nextCommand),
-        `"${eventType}"'s inbox line must name its next command ("${scenario.nextCommand}"), got: ${item!.message}`
-      );
-    }
+    // Batch 12 binding corollary: an event that cannot name a next command
+    // is not an inbox item, by definition -- so this is not conditional.
+    assert.ok(
+      item!.message.includes(scenario.nextCommand),
+      `"${eventType}"'s inbox line must name its next command ("${scenario.nextCommand}"), got: ${item!.message}`
+    );
   }
 });

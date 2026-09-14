@@ -330,6 +330,7 @@ interface TicketRow {
   workspace_ref: string | null;
   max_budget_usd_override: number | null;
   model: string | null;
+  model_reason: string | null;
   kind: string;
   result_json: string | null;
   created_at: string;
@@ -352,6 +353,7 @@ function rowToTicket(row: TicketRow): Ticket {
     workspaceRef: row.workspace_ref,
     maxBudgetUsdOverride: row.max_budget_usd_override,
     model: row.model,
+    modelReason: row.model_reason,
     kind: row.kind as TicketKind,
     resultJson: row.result_json,
     createdAt: row.created_at,

@@ -208,6 +208,7 @@ export const PAGE_HTML = `<!doctype html>
       var tr = document.createElement('tr');
       var kindPrefix = t.kind === 'manager' ? '[MANAGER] ' : '';
       var costText = t.costIsEstimate ? ('at least $' + t.costUsd.toFixed(2) + ', live estimate') : ('$' + t.costUsd.toFixed(2));
+      if (t.usedFallbackRate) { costText += ' (estimated at fallback rate)'; }
       tr.innerHTML =
         '<td>' + t.id + '</td>' +
         '<td>' + t.status + '</td>' +

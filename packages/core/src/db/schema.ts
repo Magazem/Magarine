@@ -271,4 +271,14 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    // Batch 12 item 3: the Manager's own one-line justification for setting
+    // a `model` -- carried alongside `tickets.model` (0006_model_pinning),
+    // never without it (see proposal.ts's validateCommandShape: a command
+    // that sets `model` without `model_reason` is rejected before it ever
+    // reaches here). Nullable: a ticket whose model was never explicitly
+    // set (falls back to the project default) has no reason to record.
+    id: '0011_ticket_model_reason',
+    sql: `ALTER TABLE tickets ADD COLUMN model_reason TEXT;`,
+  },
 ];

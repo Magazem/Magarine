@@ -139,14 +139,8 @@ test('non-TransitionEvent rows for batch 4\'s project-level events', () => {
   });
 });
 
-test('non-TransitionEvent row for batch 6\'s unknown-model pricing fallback: visible, not silent', () => {
-  // Batch 12: resolvesWhen here is a known-imperfect placeholder pending the
-  // Orchestrator's call on downgrading this row to activity (see policy.ts's
-  // own comment on this row) -- asserted loosely (visibility/requiresUser
-  // only) so this test doesn't have to change again the moment that lands.
-  const policy = classify('unknown_model_rate');
-  assert.equal(policy.visibility, 'inbox');
-  assert.equal(policy.requiresUser, true);
+test('non-TransitionEvent row for batch 6\'s unknown-model pricing fallback: activity, not inbox (batch 12 ruling -- no resolvesWhen for it could ever observably resolve, and it names no owner decision)', () => {
+  assert.deepEqual(classify('unknown_model_rate'), { visibility: 'activity', requiresUser: false });
 });
 
 test('spot check for batch 8\'s person-initiated cancel: activity, not internal and not inbox -- the owner did it themselves', () => {

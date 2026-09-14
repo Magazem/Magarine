@@ -219,6 +219,57 @@ test("board labels a ticket's cost 'at least $x, live estimate' when its usage c
   });
 });
 
+// Batch 12: unknown_model_rate itself is activity-only now (it names no
+// owner decision -- see policy.ts's comment on that row), but the fact a
+// run was priced at pricing.ts's conservative fallback rate still needs to
+// reach the owner where they are actually looking, so it shows as a marker
+// next to the run's own cost. Read from usage_json.model, not from the
+// event -- there is no unknown_model_rate event recorded here at all, only
+// a run whose usage names a model pricing.ts doesn't recognize.
+test("board marks a ticket's cost 'estimated at fallback rate' when its usage names a model pricing.ts doesn't recognize, and leaves a recognized model's cost plain", async () => {
+  const { openDb } = await import('../db/index.ts');
+  const { createRun, setRunUsage } = await import('../store.ts');
+
+  await withTempDb('magarine-board-fallbackrate-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+    const unrecognized = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'unrecognized', '--json', '--db', dbFile]))
+        .stdout
+    );
+    const known = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'known', '--json', '--db', dbFile])).stdout
+    );
+
+    const db = openDb(dbFile);
+    const unrecognizedRun = createRun(db, { ticketId: unrecognized.id, attempt: 1, adapter: 'test' });
+    setRunUsage(db, unrecognizedRun.id, { total_cost_usd: 0.3, model: 'claude-mystery-9' });
+    const knownRun = createRun(db, { ticketId: known.id, attempt: 1, adapter: 'test' });
+    setRunUsage(db, knownRun.id, { total_cost_usd: 0.2, model: 'claude-sonnet-5' });
+    db.close();
+
+    const boardRes = await run(['board', '--project', project.id, '--db', dbFile]);
+    assert.equal(boardRes.code, 0, boardRes.stderr);
+    assert.match(
+      boardRes.stdout,
+      new RegExp(`^${unrecognized.id}\\t.*cost \\$0\\.30 \\(estimated at fallback rate\\)`, 'm'),
+      'a run priced at the fallback rate must carry the marker'
+    );
+    assert.match(
+      boardRes.stdout,
+      new RegExp(`^${known.id}\\t.*cost \\$0\\.20(?! \\(estimated)`, 'm'),
+      'a run on a recognized model must not carry the marker'
+    );
+
+    const jsonRes = JSON.parse((await run(['board', '--project', project.id, '--json', '--db', dbFile])).stdout) as {
+      projectUsedFallbackRate: boolean;
+      tickets: Array<{ id: string; usedFallbackRate: boolean }>;
+    };
+    assert.equal(jsonRes.projectUsedFallbackRate, true);
+    assert.equal(jsonRes.tickets.find((t) => t.id === unrecognized.id)!.usedFallbackRate, true);
+    assert.equal(jsonRes.tickets.find((t) => t.id === known.id)!.usedFallbackRate, false);
+  });
+});
+
 test("inbox labels a scheduler budget-stop's spend 'live estimate' since tally/overshoot never appear on the tool's own stop", async () => {
   const { openDb } = await import('../db/index.ts');
   const { getTicket } = await import('../store.ts');

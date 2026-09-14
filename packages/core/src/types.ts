@@ -64,6 +64,8 @@ export interface Ticket {
   maxBudgetUsdOverride: number | null;
   /** Batch 6: overrides the project's default_model for this ticket alone; null falls back to the project default. See store.ts's resolveModel. */
   model: string | null;
+  /** Batch 12 item 3: the Manager's own one-line justification for setting `model` -- required by proposal.ts's validateCommandShape whenever a create_ticket/update_ticket command sets `model`, shown on the board next to it. Null when `model` has never been explicitly set on this ticket. */
+  modelReason: string | null;
   /** Batch 9: 'work' (default) or 'manager' -- see TicketKind. */
   kind: TicketKind;
   resultJson: string | null;
