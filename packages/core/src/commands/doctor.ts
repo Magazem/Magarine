@@ -103,22 +103,39 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
     });
   }
 
+  // Batch 11 ruling 2: this line must say not just PASS/FAIL but HOW claude
+  // was resolved -- the path and which of resolveCommand's three strategies
+  // found it -- so that when a worker fails to start, the owner (or
+  // whoever's helping them) can tell a "wrong shim resolution" problem from
+  // a "not logged in" or "not installed" one just by reading this line, per
+  // the README's own instruction to send it. Resolution and probing are
+  // deliberately two separate try/catches (previously one): resolveCommandFn
+  // throwing on a shim that exists but couldn't be parsed (e.g. "could not
+  // find a real executable or script inside shim: X") used to be swallowed
+  // into the same generic "not found on PATH" message as claude being
+  // genuinely absent -- losing exactly the detail (the shim's own path) this
+  // ruling exists to surface.
   let claudeCmd: ResolvedCommand | undefined;
   try {
     claudeCmd = resolveCommandFn('claude');
+  } catch (err) {
+    lines.push({
+      name: 'claude CLI',
+      status: 'fail',
+      detail: `claude was not found or could not be resolved on PATH: ${
+        err instanceof Error ? err.message : String(err)
+      }. Install Claude Code, then try again: https://docs.claude.com/claude-code`,
+    });
+  }
+  if (claudeCmd) {
+    const resolvedVia = `resolved via ${claudeCmd.strategy}: ${claudeCmd.executable}`;
     const probe = runProbe(claudeCmd.executable, [...claudeCmd.prefixArgs, '--version']);
     lines.push({
       name: 'claude CLI',
       status: probe.ok ? 'pass' : 'fail',
       detail: probe.ok
-        ? `${probe.output} (${claudeCmd.executable})`
-        : `claude was found but did not run (${probe.output}). Reinstall it and try again.`,
-    });
-  } catch {
-    lines.push({
-      name: 'claude CLI',
-      status: 'fail',
-      detail: 'claude was not found on PATH. Install Claude Code, then try again: https://docs.claude.com/claude-code',
+        ? `${probe.output} (${resolvedVia})`
+        : `claude was found but did not run (${probe.output}). ${resolvedVia}. Reinstall it and try again.`,
     });
   }
 

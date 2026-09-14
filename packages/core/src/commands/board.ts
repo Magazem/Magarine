@@ -29,6 +29,8 @@ export interface BoardResult {
   projectMaxSpendUsd: number | null;
   /** Batch 11 rule a: null when not paused. Same wording commands/inbox.ts uses for this pause's inbox line -- see describeProjectPause, this field's one composer -- so the board and the inbox never say two different things about the same pause. */
   pauseMessage: string | null;
+  /** Batch 11 item 3 (the page): the same cause as `pauseMessage`, but structured, so a caller (the page) can decide WHICH fix to offer (a max-spend form vs a plain resume button) without parsing the message text. Null whenever pauseMessage is null. */
+  pauseReason: 'spend_cap' | 'adapter_unavailable' | null;
   tickets: BoardTicket[];
 }
 
@@ -111,14 +113,15 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
 
   const projectSpend = projectSpendUsd(db, tickets);
   const project = getProject(db, projectId);
-  const pauseMessage =
-    project && project.adapterPausedAt != null ? describeProjectPause(db, project, project.pauseReason).message : null;
+  const isPaused = project !== undefined && project.adapterPausedAt != null;
+  const pauseMessage = isPaused ? describeProjectPause(db, project, project.pauseReason).message : null;
 
   return {
     projectSpendUsd: projectSpend.costUsd,
     projectSpendIsEstimate: projectSpend.isEstimate,
     projectMaxSpendUsd: project?.maxSpendUsd ?? null,
     pauseMessage,
+    pauseReason: isPaused ? project.pauseReason : null,
     tickets: tickets.map((t) => {
       const c = ticketCostUsd(db, t.id);
       return {

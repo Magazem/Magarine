@@ -6,12 +6,13 @@ import { approve, ApproveError } from './commands/approve.ts';
 import { buildBoard } from './commands/board.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { buildInbox } from './commands/inbox.ts';
+import { buildProjectList } from './commands/projectList.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import type { DaemonLoop } from './daemon.ts';
 import { resolveReadiness } from './dependencies.ts';
-import { discussProject, ManagerError, planProject } from './manager.ts';
+import { discussProject, ManagerError, planProject, readScopeText } from './manager.ts';
 import {
   addDependency,
   createTicket,
@@ -23,6 +24,7 @@ import {
   setTicketBudgetOverride,
 } from './store.ts';
 import type { AgentAdapter, DependencyType, WorkspaceType } from './types.ts';
+import { PAGE_HTML } from './ui/page.ts';
 
 // The daemon's HTTP API -- docs/strategy/batch-8-spec.md section 2's route
 // list, verbatim: "GET /health, GET /board, GET /inbox, GET /activity, POST
@@ -272,6 +274,27 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     return { status: 200, body: buildActivity(deps.db, { projectId, ticketId, all }) };
   }
 
+  // Batch 11 item 3 (the page): the project selector needs a way to
+  // enumerate projects over HTTP -- nothing in batch 8/9's route list
+  // covers it (CLI's `project list` reads the store directly). Read-only,
+  // same as /board /inbox /activity above: no new write site, a thin
+  // wrapper over commands/projectList.ts's existing buildProjectList.
+  if (method === 'GET' && path === '/projects') {
+    return { status: 200, body: buildProjectList(deps.db) };
+  }
+
+  const scopeMatch = /^\/projects\/([^/]+)\/scope$/.exec(path);
+  if (method === 'GET' && scopeMatch) {
+    const [, projectId] = scopeMatch;
+    const project = getProject(deps.db, projectId);
+    if (!project) throw new ApiError(404, `no such project: ${projectId}`);
+    // Batch 11 item 3: the conversation panel shows the scope file as plain
+    // text. readScopeText (manager.ts, Role R's file, called read-only here
+    // -- not edited) already treats "no scope_path" and "file unreadable"
+    // both as empty text, so this route needs no separate not-found case.
+    return { status: 200, body: { scopeText: readScopeText(project) } };
+  }
+
   if (method === 'POST' && path === '/tickets') {
     return handleCreateTicket(deps.db, body);
   }
@@ -332,10 +355,25 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
 // never echoing what was sent -- the Orchestrator's own stated check is
 // exactly this: a wrong token refused, and never present anywhere in a
 // response, a log line, or /health.
+//
+// Batch 11 item 3 (the page): `GET /` is the one deliberate exception to
+// "auth before anything else" -- the page's own token input box is what the
+// owner uses to GET the token INTO the browser in the first place
+// (sessionStorage), so the page shell itself cannot be behind the same
+// check it exists to satisfy. Every actual route below this stays behind
+// isAuthorized exactly as before; the page is static markup with no data of
+// its own, and ui/page.ts's own script attaches the token to every fetch()
+// it makes against the real (still-authenticated) routes.
 export function createRequestHandler(deps: DaemonApiDeps): (req: IncomingMessage, res: ServerResponse) => void {
   return (req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if ((req.method ?? 'GET') === 'GET' && url.pathname === '/') {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.end(PAGE_HTML);
+        return;
+      }
       if (!isAuthorized(req, deps.token)) {
         sendJson(res, 401, { error: 'unauthorized' });
         return;

@@ -57,6 +57,23 @@ test('formatBoard leads with PAUSED: <reason> when the project is paused, naming
   assert.doesNotMatch(unpausedText, /^PAUSED:/m, 'an unpaused project must show no PAUSED line at all');
 });
 
+// Batch 11 item 3 (the page): a caller needs the STRUCTURED cause, not just
+// the rendered sentence, to decide which fix to offer (a max-spend form vs a
+// plain resume button) without parsing pauseMessage's text.
+test('buildBoard exposes a structured pauseReason alongside pauseMessage, null exactly when not paused', () => {
+  const db = openDb(':memory:');
+  const capPaused = createProject(db, { name: 'cap-paused-p' });
+  pauseProjectAdapter(db, capPaused.id, 'spend_cap');
+  assert.equal(buildBoard(db, capPaused.id).pauseReason, 'spend_cap');
+
+  const adapterPaused = createProject(db, { name: 'adapter-paused-p' });
+  pauseProjectAdapter(db, adapterPaused.id, 'adapter_unavailable');
+  assert.equal(buildBoard(db, adapterPaused.id).pauseReason, 'adapter_unavailable');
+
+  const notPaused = createProject(db, { name: 'not-paused-p2' });
+  assert.equal(buildBoard(db, notPaused.id).pauseReason, null);
+});
+
 // Batch 10 owner walk finding 4: a real scope document handed in as a
 // mission became a ticket title verbatim, newlines and all, breaking one
 // board row across several lines. These test truncateTitleForDisplay in

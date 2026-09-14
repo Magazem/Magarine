@@ -101,7 +101,10 @@ Status is one of:
 - **CANCELLED** -- you stopped it yourself.
 
 The total spend for the project, against any spending limit you set, is on
-the first line.
+the first line -- unless the project is paused, in which case the very
+first line instead reads `PAUSED: <reason>`, and names the exact command
+that clears it. A task still showing READY while paused is not about to
+run; nothing starts again until the pause is addressed.
 
 ## The inbox
 
@@ -116,8 +119,14 @@ tells you what to do next:
   `magarine reject --ticket <ticketId> --reason "why"`.
 - A task **failed for good**: `magarine retry --ticket <ticketId>` to give it
   another attempt, once you've addressed whatever the reason line says.
-- The **project is paused** (usually a spending limit): fix the cause, then
-  `magarine resume --project <projectId>`.
+- The **project is paused**, for one of two reasons, and the inbox line
+  names the exact fix:
+  - **Spending limit reached**: raise it with
+    `magarine project set --project <projectId> --max-spend <amount>` --
+    this clears the pause by itself, no separate `resume` needed.
+  - **`claude` isn't usable right now** (not logged in, or couldn't be
+    started): run `claude` once to log in, then
+    `magarine resume --project <projectId>`.
 
 An item disappears from the inbox on its own once you've acted on it -- there
 is nothing separate to dismiss.
@@ -131,6 +140,15 @@ needs it) with a plain sentence telling you what to do. If `doctor` is all
 is shown there in full, and it is almost always either something in the
 task's own instructions or a spending limit that needs raising
 (`magarine project set --project <projectId> --max-spend <amount>`).
+
+**If a task never even starts running** (it sits IN_PROGRESS with no
+progress, or fails immediately with an unfamiliar error), run
+`magarine doctor` and look at its `claude CLI` line specifically -- it
+names both the exact path `claude` was found at and how it was found
+(a plain PATH entry, or one of two different ways of unwrapping a Windows
+`.cmd` shim). If you're asking someone else for help, send them that one
+line: it is usually enough on its own to tell a wrong-installation problem
+apart from a login problem or a genuine bug.
 
 ## Where things live
 

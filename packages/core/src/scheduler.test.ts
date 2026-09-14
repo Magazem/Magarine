@@ -261,7 +261,17 @@ test('budget_insufficient (the worker\'s own budget self-stop): FAILED, attempt_
 
   const item = buildInbox(db, project.id).find((i) => i.ticketId === ticket.id);
   assert.ok(item, 'must reach the inbox');
-  assert.equal(item!.message, reasoning, "the worker's own reasoning, not a generic failureClass line");
+  // Batch 11: reasonFor now appends the exact next command after the
+  // worker's own reasoning (every inbox line must name the next command) --
+  // the underlying proof here (the WORKER's reasoning reaches the line, not
+  // a generic failureClass fallback) is what this assertion checks, so it
+  // now matches the reasoning as a PREFIX rather than the whole line.
+  assert.match(
+    item!.message,
+    new RegExp(`^${reasoning.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+    "the worker's own reasoning, not a generic failureClass line"
+  );
+  assert.match(item!.message, new RegExp(`magarine retry --ticket ${ticket.id}`));
 
   // The owner's actual remedy per the ruling: raise the ticket's budget,
   // then retry. `cli.ts` has no `ticket set --budget` subcommand (only

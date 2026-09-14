@@ -406,11 +406,12 @@ test('inbox shows a needs-user-decision item before decide, and not after', asyn
 
     const inboxBefore = JSON.parse(
       (await run(['inbox', '--project', project.id, '--json', '--db', dbFile])).stdout
-    ) as Array<{ ticketId: string }>;
-    assert.ok(
-      inboxBefore.some((i) => i.ticketId === ticket.id),
-      'the BLOCKED ticket must show up in the inbox before it is decided'
-    );
+    ) as Array<{ ticketId: string; message: string }>;
+    const blockedItem = inboxBefore.find((i) => i.ticketId === ticket.id);
+    assert.ok(blockedItem, 'the BLOCKED ticket must show up in the inbox before it is decided');
+    // Every inbox line must name the next command: a decide item names the
+    // exact `decide` invocation, not just the reason it is blocked.
+    assert.match(blockedItem!.message, new RegExp(`magarine decide --ticket ${ticket.id} --answer`));
 
     const decideRes = await run([
       'decide',
@@ -844,6 +845,9 @@ test('reject on the last attempt exhausts to FAILED as worker_failed_final and r
     assert.ok(item, 'an exhausted rejection must reach the inbox');
     assert.equal(item!.eventType, 'worker_failed_final');
     assert.match(item!.message, /fundamentally the wrong approach/, 'the reason must be on the line, not just the event type');
+    // Every inbox line must name the next command: a failed-final item names
+    // the exact `retry` invocation, not just its reason for failing.
+    assert.match(item!.message, new RegExp(`magarine retry --ticket ${ticket.id}`));
   });
 });
 
@@ -965,7 +969,16 @@ test('batch 5 item 6: the inbox line for a review item shows the worker\'s summa
     const item = inbox.find((i) => i.ticketId === ticket.id);
     assert.ok(item, 'a review item must reach the inbox');
     assert.equal(item!.eventType, 'worker_needs_review');
-    assert.equal(item!.message, 'fake review', "must be FakeAdapter's review summary, not a repeat of the event type");
+    // Batch 11: reasonFor now appends the exact next command after the
+    // worker's own summary (every inbox line must name the next command,
+    // checked by reading every composer in inbox.ts) -- this test's
+    // assertion is updated to match that addition, same reasoning as batch
+    // 10's cliRouting.test.ts fix: the underlying proof (the SUMMARY reaches
+    // the line, not a repeat of the event type) is unchanged, just no longer
+    // the WHOLE line.
+    assert.match(item!.message, /^fake review/, "must start with FakeAdapter's review summary, not a repeat of the event type");
+    assert.match(item!.message, new RegExp(`magarine approve --ticket ${ticket.id}`));
+    assert.match(item!.message, new RegExp(`magarine reject --ticket ${ticket.id} --reason`));
   });
 });
 

@@ -525,14 +525,21 @@ not asserted from a comment. All JSON, all behind the token
 `node:crypto`'s `timingSafeEqual`): a wrong or missing token gets a fixed
 `{"error": "unauthorized"}`, `401`, on every route including `/health`,
 before any other work happens. Node's built-in `http`/`fetch` only — no
-dependency was added for this.
+dependency was added for this. **One deliberate exception: `GET /`**, which
+serves the browser page (`ui/page.ts`) with no token check at all — it is
+the page the owner types the token INTO in the first place, so it cannot be
+gated behind that same token. Every route the page's own script then calls
+stays behind `isAuthorized` exactly as before.
 
 | Method | Path | Notes |
 | --- | --- | --- |
+| `GET` | `/` | The browser page. No auth (see above). |
 | `GET` | `/health` | `{pid, startedAt, uptimeMs}` — never the token. |
 | `GET` | `/board?project=<id>` | Same shape as `board --json`. |
 | `GET` | `/inbox?project=<id>` | Same shape as `inbox --json`. |
 | `GET` | `/activity?project=<id>\|ticket=<id>&all=true` | Same shape as `activity --json`. |
+| `GET` | `/projects` | Batch 11: same shape as `project list --json`. Added for the page's project selector — not in batch 8/9's original route list. |
+| `GET` | `/projects/{id}/scope` | Batch 11: `{scopeText}` — the project's scope document as plain text (`manager.ts`'s `readScopeText`, called read-only). Empty string when no scope file is set, never a 404 for that case; 404 only for an unknown project id. |
 | `POST` | `/tickets` | Body mirrors `ticket add`'s flags (`project`, `title`, `description`, `maxAttempts`, `priority`, `workspaceType`, `acceptanceCriteria`, `model`, `budget`, `dependsOn`). Attaches every `dependsOn` before resolving readiness, never before — same ordering guarantee as the CLI. |
 | `POST` | `/deps` | `{project, ticket, dependsOn, type?}`. |
 | `POST` | `/tickets/{id}/decide` | `{answer}`. |
@@ -556,6 +563,25 @@ a second *surface* onto the single write path, never a second one. Nothing
 in `daemonApi.ts`/`daemonClient.ts` ever writes `tickets.status` directly;
 `architecture.test.ts`'s grep for `UPDATE tickets SET ... status =` still
 finds exactly one file, `stateMachine.ts`.
+
+### The browser page
+
+`ui/page.ts` exports the whole page as one string constant (`PAGE_HTML`) --
+plain HTML and a single inline `<script>`, no framework, no build step, no
+bundler: it ships and runs exactly the way every other `.ts` file in this
+project does, loaded straight off disk by `daemonApi.ts`'s `GET /`. The
+token is entered once and kept in `sessionStorage` (never a cookie, never in
+the URL); every `fetch()` the page makes attaches it as the `Authorization`
+header, through one shared `api()` helper in the page's own script -- no
+other code path constructs its own headers. It shows the board, inbox
+(reasons in full, never truncated), and recent activity for a selected
+project, refreshing every 4 seconds, with buttons for every ticket action
+(`decide`/`retry`/`approve`/`reject`/`cancel`) plus `resume`/raise-cap for a
+paused project -- and a conversation panel showing the project's scope
+document as plain text. **The message box in that panel is explicitly wired
+to nothing yet** (its click handler just says so) -- batch 11 part 2, after
+`discussProject` (`manager.ts`) lands, replaces it with a real
+`POST /projects/{id}/discuss` call.
 
 ### The single-writer rule
 

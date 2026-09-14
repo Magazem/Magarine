@@ -37,6 +37,20 @@ export interface InboxItem {
   createdAt: string;
 }
 
+// Batch 11: the exact command that clears each ticket-scoped pending item,
+// appended to its message when a ticketId is available (buildInbox always
+// has one; managerEnvelope.ts's call below deliberately does not pass one --
+// a CLI command belongs in a line a person reads, not in the Manager's own
+// prompt, which has no CLI to run). Keyed by the PENDING_TICKET_STATUS event
+// types above, not the generic fallback branches below, since the fix is a
+// property of what the ticket is waiting for, not of which payload shape
+// happened to compose its message text.
+const NEXT_COMMAND: Record<string, (ticketId: string) => string> = {
+  worker_needs_user_decision: (id) => `magarine decide --ticket ${id} --answer "..."`,
+  worker_needs_review: (id) => `magarine approve --ticket ${id}, or magarine reject --ticket ${id} --reason "..."`,
+  worker_failed_final: (id) => `magarine retry --ticket ${id}, once the reason above is addressed`,
+};
+
 // The plain-language reason a line is in the inbox. Falls back through
 // increasingly generic payload shapes so a new event type doesn't have to
 // change this function to show *something* readable, but the two event
@@ -55,11 +69,11 @@ export interface InboxItem {
 // no full prompts/results/artifact listings reaching the envelope; a failed
 // ticket's own reported reason for failing is exactly the "reasons" the
 // spec asks the Manager's envelope to carry.
-export function reasonFor(eventType: string, payload: unknown): string {
+export function reasonFor(eventType: string, payload: unknown, ticketId?: string): string {
   const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
 
   if (eventType === 'project_spend_cap_reached') {
-    const ticketId = typeof p.ticketId === 'string' ? p.ticketId : 'a run';
+    const ticketRef = typeof p.ticketId === 'string' ? p.ticketId : 'a run';
     const projected = typeof p.projectedSpend === 'number' ? `$${p.projectedSpend.toFixed(2)}` : 'its spend';
     const cap = typeof p.maxSpendUsd === 'number' ? `$${p.maxSpendUsd.toFixed(2)}` : 'the project cap';
     // Batch 11 ruling 1 rule c: the line must NAME the fix, not just state
@@ -67,7 +81,7 @@ export function reasonFor(eventType: string, payload: unknown): string {
     // clear their own pause. projectId is threaded through by buildPauseItem
     // below, which is the only caller that reaches this branch now.
     const projectId = typeof p.projectId === 'string' ? p.projectId : '<id>';
-    return `project spend cap reached: starting ${ticketId} would bring the project to ${projected} (cap ${cap}) -- raise it with \`magarine project set --project ${projectId} --max-spend <usd>\``;
+    return `project spend cap reached: starting ${ticketRef} would bring the project to ${projected} (cap ${cap}) -- raise it with \`magarine project set --project ${projectId} --max-spend <usd>\``;
   }
 
   if (eventType === 'adapter_unavailable_pause') {
@@ -78,33 +92,38 @@ export function reasonFor(eventType: string, payload: unknown): string {
     return `the adapter is unavailable (worker could not start) -- log in with \`claude\`, then run \`magarine resume --project ${projectId}\``;
   }
 
-  if (typeof p.summary === 'string' && p.summary.length > 0) return p.summary;
-  if (Array.isArray(p.blockers) && p.blockers.length > 0) return (p.blockers as unknown[]).join('; ');
-  if (typeof p.message === 'string' && p.message.length > 0) return p.message;
-  // An exhausted `reject --reason` lands here persisted as
-  // `worker_failed_final` but still carries `review_rejected`'s original
-  // `{ reason }` payload verbatim (stateMachine.ts inserts the caller's
-  // payload as-is regardless of which concrete type it decides to persist
-  // under).
-  if (typeof p.reason === 'string' && p.reason.length > 0) return `rejected: ${p.reason}`;
+  const base = ((): string => {
+    if (typeof p.summary === 'string' && p.summary.length > 0) return p.summary;
+    if (Array.isArray(p.blockers) && p.blockers.length > 0) return (p.blockers as unknown[]).join('; ');
+    if (typeof p.message === 'string' && p.message.length > 0) return p.message;
+    // An exhausted `reject --reason` lands here persisted as
+    // `worker_failed_final` but still carries `review_rejected`'s original
+    // `{ reason }` payload verbatim (stateMachine.ts inserts the caller's
+    // payload as-is regardless of which concrete type it decides to persist
+    // under).
+    if (typeof p.reason === 'string' && p.reason.length > 0) return `rejected: ${p.reason}`;
 
-  if (typeof p.failureClass === 'string') {
-    // `tally`/`overshoot` only ever appear on the scheduler's own
-    // estimate-driven stop (scheduler.ts's progress-event ceiling branch,
-    // `stoppedBy: 'scheduler_estimate'`) -- the tool's own stop
-    // (`stoppedBy: 'tool_max_budget_usd'`) never sets these fields, so it
-    // falls through to the generic `failureClass` line below unchanged.
-    // Batch 6, per the Strategist's ruling: this number is the daemon's own
-    // live tally, a known lower bound (see claudeCli.ts's
-    // messageModel/priceUsage header), not the tool's exact figure -- say so
-    // rather than showing a number that looks as precise as one.
-    if (p.failureClass === 'budget_exceeded' && typeof p.tally === 'number' && typeof p.overshoot === 'number') {
-      return `budget exceeded: spent at least $${p.tally.toFixed(2)} (live estimate), over its ceiling by at least $${p.overshoot.toFixed(2)}`;
+    if (typeof p.failureClass === 'string') {
+      // `tally`/`overshoot` only ever appear on the scheduler's own
+      // estimate-driven stop (scheduler.ts's progress-event ceiling branch,
+      // `stoppedBy: 'scheduler_estimate'`) -- the tool's own stop
+      // (`stoppedBy: 'tool_max_budget_usd'`) never sets these fields, so it
+      // falls through to the generic `failureClass` line below unchanged.
+      // Batch 6, per the Strategist's ruling: this number is the daemon's
+      // own live tally, a known lower bound (see claudeCli.ts's
+      // messageModel/priceUsage header), not the tool's exact figure -- say
+      // so rather than showing a number that looks as precise as one.
+      if (p.failureClass === 'budget_exceeded' && typeof p.tally === 'number' && typeof p.overshoot === 'number') {
+        return `budget exceeded: spent at least $${p.tally.toFixed(2)} (live estimate), over its ceiling by at least $${p.overshoot.toFixed(2)}`;
+      }
+      return `failed: ${p.failureClass}`;
     }
-    return `failed: ${p.failureClass}`;
-  }
 
-  return eventType;
+    return eventType;
+  })();
+
+  const nextCommand = ticketId ? NEXT_COMMAND[eventType]?.(ticketId) : undefined;
+  return nextCommand ? `${base} -- ${nextCommand}` : base;
 }
 
 // Batch 11 ruling 1: a pause is now read from the project's OWN current
@@ -179,7 +198,7 @@ export function buildInbox(db: Db, projectId: string): InboxItem[] {
     items.push({
       ticketId: event.entityId,
       eventType: event.eventType,
-      message: reasonFor(event.eventType, event.payload),
+      message: reasonFor(event.eventType, event.payload, event.entityId),
       createdAt: event.createdAt,
     });
   }

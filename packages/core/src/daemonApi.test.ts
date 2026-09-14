@@ -465,3 +465,53 @@ test('POST /projects/{id}/plan creates a manager ticket with no body required, P
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
+
+// Batch 11 item 3 (the page): GET / is the one deliberate exception to
+// "auth before anything else" -- the page itself is where the owner types
+// the token IN, so it cannot be gated behind that same token. GET /projects
+// and GET /projects/{id}/scope are the two new read-only routes the page
+// needs that batch 8/9's route list never had reason to include.
+test('GET / serves the page without a token; GET /projects lists projects; GET /projects/{id}/scope reads the scope file, all behind no new write site', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'page-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+
+    const pageNoToken = await api(info.port, '', 'GET', '/');
+    assert.equal(pageNoToken.status, 200, 'the page itself must load with no token at all -- it is where the token is typed IN');
+    assert.match(pageNoToken.text, /<html/i);
+    assert.match(pageNoToken.text, /Magarine/);
+
+    const pageWrongToken = await api(info.port, 'not-the-real-token', 'GET', '/');
+    assert.equal(pageWrongToken.status, 200, 'a wrong token on GET / still serves the shell -- only the routes it calls are gated');
+
+    const projectRes = await runCli(['project', 'create', '--name', 'PageProject', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout) as { id: string; name: string };
+
+    const noAuthProjects = await api(info.port, '', 'GET', '/projects');
+    assert.equal(noAuthProjects.status, 401, 'unlike GET /, the actual data routes stay behind the token');
+
+    const projectsRes = await api(info.port, fileInfo.token, 'GET', '/projects');
+    assert.equal(projectsRes.status, 200);
+    const projects = projectsRes.json as Array<{ id: string; name: string }>;
+    assert.ok(
+      projects.some((p) => p.id === project.id && p.name === 'PageProject'),
+      'the created project must be listed'
+    );
+
+    const noScopeRes = await api(info.port, fileInfo.token, 'GET', `/projects/${project.id}/scope`);
+    assert.equal(noScopeRes.status, 200);
+    assert.equal(
+      (noScopeRes.json as { scopeText: string }).scopeText,
+      '',
+      'a project with no scope_path set must read as empty text, not 404 or throw'
+    );
+
+    const missingProjectScope = await api(info.port, fileInfo.token, 'GET', '/projects/proj_ghost/scope');
+    assert.equal(missingProjectScope.status, 404);
+  } finally {
+    await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});

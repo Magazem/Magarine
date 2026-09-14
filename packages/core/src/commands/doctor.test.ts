@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { testTempRoot } from '../testSupport.ts';
+import type { ResolvedCommand } from '../process.ts';
 import { doctorExitCode, formatDoctor, runDoctor } from './doctor.ts';
 
 // Batch 10 (Role Q): `magarine doctor` is the owner's first stop when
@@ -30,14 +31,17 @@ function tempStateDir(): string {
 const notLive = async () => ({ status: 'absent' as const });
 
 // A resolveCommandFn stub that hands back the plain-native-executable shape
-// (no prefix args) for whatever name is asked, unless overridden per test.
-function fakeResolve(byName: Record<string, { executable: string; prefixArgs?: string[] } | 'throw'>) {
-  return (name: string) => {
+// (no prefix args, strategy 'direct') for whatever name is asked, unless
+// overridden per test.
+function fakeResolve(
+  byName: Record<string, { executable: string; prefixArgs?: string[]; strategy?: ResolvedCommand['strategy'] } | 'throw'>
+) {
+  return (name: string): ResolvedCommand => {
     const entry = byName[name];
     if (entry === 'throw' || entry === undefined) {
       throw new Error(`executable not found on PATH: ${name}`);
     }
-    return { executable: entry.executable, prefixArgs: entry.prefixArgs ?? [] };
+    return { executable: entry.executable, prefixArgs: entry.prefixArgs ?? [], strategy: entry.strategy ?? 'direct' };
   };
 }
 
@@ -136,6 +140,72 @@ test('claude not found on PATH fails, and the login line is skipped rather than 
   assert.match(claudeLine.detail, /not found on PATH/);
   assert.equal(loginLine.status, 'skip');
   assert.match(loginLine.detail, /skipped/);
+});
+
+// Batch 11 ruling 2: a worker's spawn failure is diagnosed by comparing what
+// it saw against this line, so the line must say not just PASS/FAIL but HOW
+// claude was resolved -- both the path and which of resolveCommand's three
+// strategies found it.
+test('claude CLI line names both the resolved path and the resolution strategy, on PASS and on found-but-did-not-run', async () => {
+  const passLines = await runDoctor({
+    stateDir: tempStateDir(),
+    resolveCommandFn: fakeResolve({
+      claude: { executable: 'C:\\nested\\claude.exe', strategy: 'windows_shim_native_exe' },
+      pnpm: { executable: '/usr/bin/pnpm' },
+    }),
+    runProbeFn: () => ({ ok: true, output: 'claude 2.0.0' }),
+    checkDaemonFileFn: notLive,
+  });
+  const passClaudeLine = passLines.find((l) => l.name === 'claude CLI')!;
+  assert.equal(passClaudeLine.status, 'pass');
+  assert.match(passClaudeLine.detail, /C:\\nested\\claude\.exe/);
+  assert.match(passClaudeLine.detail, /windows_shim_native_exe/);
+
+  const failLines = await runDoctor({
+    stateDir: tempStateDir(),
+    resolveCommandFn: fakeResolve({
+      claude: { executable: 'C:\\nested\\claude.exe', strategy: 'windows_shim_native_exe' },
+      pnpm: { executable: '/usr/bin/pnpm' },
+    }),
+    runProbeFn: () => ({ ok: false, output: 'ENOENT' }),
+    checkDaemonFileFn: notLive,
+  });
+  const failClaudeLine = failLines.find((l) => l.name === 'claude CLI')!;
+  assert.equal(failClaudeLine.status, 'fail');
+  assert.match(
+    failClaudeLine.detail,
+    /C:\\nested\\claude\.exe/,
+    'a found-but-did-not-run failure must still name the resolved path -- this is exactly the branch a worker spawn failure needs diagnosed'
+  );
+  assert.match(failClaudeLine.detail, /windows_shim_native_exe/);
+});
+
+// Before this fix, resolveCommandFn throwing ANY error (genuinely absent,
+// or a shim that exists but couldn't be parsed) was collapsed into the same
+// generic "not found on PATH" message -- losing the shim's own path, which
+// is exactly the detail ruling 2 exists to surface. resolveCommand
+// (process.ts) throws `could not find a real executable or script inside
+// shim: <path>` for the latter case; this proves that real message reaches
+// the doctor line now, not a generic fallback.
+test('claude CLI line surfaces the real resolution failure message (naming the shim), not a generic "not found" fallback', async () => {
+  const lines = await runDoctor({
+    stateDir: tempStateDir(),
+    resolveCommandFn: (name: string) => {
+      if (name === 'claude') {
+        throw new Error('could not find a real executable or script inside shim: C:\\npm\\claude.cmd');
+      }
+      return { executable: '/usr/bin/pnpm', prefixArgs: [], strategy: 'direct' };
+    },
+    runProbeFn: () => ({ ok: true, output: 'pnpm 10.0.0' }),
+    checkDaemonFileFn: notLive,
+  });
+  const claudeLine = lines.find((l) => l.name === 'claude CLI')!;
+  assert.equal(claudeLine.status, 'fail');
+  assert.match(
+    claudeLine.detail,
+    /could not find a real executable or script inside shim: C:\\npm\\claude\.cmd/,
+    'the real resolution failure (naming the shim) must reach the line, not be swallowed into a generic message'
+  );
 });
 
 test('claude found but not logged in fails with the exact recovery step, and makes no billed call', async () => {
