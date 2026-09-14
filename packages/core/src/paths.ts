@@ -29,19 +29,3 @@ export function dbPath(stateDir: string): string {
 export function artifactsDir(stateDir: string): string {
   return join(stateDir, 'artifacts');
 }
-
-// Batch 11 part 2, item 2: the spec says a project's default SCOPE.md lives
-// "under the project directory", but this codebase has no notion of a
-// project's own directory independent of the optional DIRECTORY workspace
-// root (itself unset for most projects -- see types.ts's Project.workspaceRoot).
-// Decision: give every project a directory under the state dir it lives in,
-// keyed by its own id, so a default scope path exists unconditionally,
-// regardless of workspace type. `project create --scope <file>` overrides
-// this; nothing below is consulted when that flag is given.
-export function projectDir(stateDir: string, projectId: string): string {
-  return join(stateDir, 'projects', projectId);
-}
-
-export function defaultScopePath(stateDir: string, projectId: string): string {
-  return join(projectDir(stateDir, projectId), 'SCOPE.md');
-}

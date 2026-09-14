@@ -32,10 +32,9 @@ function claim(db: Db, ticketId: string, tag: string): void {
 // The exact next-command substring each scenario's inbox line must contain
 // -- this is the "names the next command" half of the completeness check,
 // not just "the item exists". `null` marks a row whose exact command text
-// isn't settled yet (workspace_preparation_failed's real fix, `project set
-// --dir`, lands with item 2; unknown_model_rate's classification is a
-// standing question to the Orchestrator, see policy.ts's own comment on
-// that row) -- reachability is still asserted for those two.
+// isn't settled yet (unknown_model_rate's classification is a standing
+// question to the Orchestrator, see policy.ts's own comment on that row) --
+// reachability is still asserted for it.
 const SCENARIOS: Record<string, { build: () => Scenario; nextCommand: string | null; persistedAs?: string }> = {
   worker_needs_user_decision: {
     build: () => {
@@ -121,14 +120,14 @@ const SCENARIOS: Record<string, { build: () => Scenario; nextCommand: string | n
         eventType: 'workspace_preparation_failed',
         entityType: 'ticket',
         entityId: ticket.id,
-        payload: { message: 'DIRECTORY workspace requires a workspaceRoot' },
+        payload: { message: 'DIRECTORY workspace requires a workspaceRoot', projectId: project.id },
         visibility: 'inbox',
         requiresUser: true,
         idempotencyKey: `wpf_${ticket.id}`,
       });
       return { db, projectId: project.id };
     },
-    nextCommand: null,
+    nextCommand: 'project set --project',
   },
   manager_daily_cap_reached: {
     build: () => {

@@ -259,25 +259,29 @@ const POLICY: Record<string, EventPolicy> = {
   // member (it never changes tickets.status), so not exercised by the
   // completeness test below.
   //
-  // Batch 12 finding, flagged to the Orchestrator, answer pending: this is
-  // the FOURTH instance of the invisible-inbox class, and the worst one --
+  // Batch 12 finding, ruled by the Orchestrator/Strategist: this was the
+  // FOURTH instance of the invisible-inbox class, and the worst one --
   // unlike the other three, it was never reachable by anyone, because
   // `commands/inbox.ts`'s old `buildInbox` only ever looked at entityType
-  // 'ticket'. Worse, no `resolvesWhen` for it actually works: scheduler.ts
-  // calls `raiseUnknownModelRateIfFlagged` before the run/ticket goes
-  // terminal in the SAME function, on all three call sites, so a
-  // status-based resolution condition (`runLeaves: 'running'`,
-  // `ticketLeaves: 'IN_PROGRESS'`) is already false by the time anyone could
-  // poll the inbox for it -- the same invisibility bug wearing a
-  // `resolvesWhen` field. It also has no next command and no owner action:
-  // a heads-up that a run priced at the conservative fallback rate, nothing
-  // to decide. Proposed: downgrade to `visibility: 'activity'` -- it is
-  // already fully visible via `activity --project <id>` today (that filter
+  // 'ticket'. Worse, no `resolvesWhen` for it could ever have worked:
+  // scheduler.ts calls `raiseUnknownModelRateIfFlagged` before the run/ticket
+  // goes terminal in the SAME function, on all three call sites, so a
+  // status-based resolution condition is already false by the time anyone
+  // could poll the inbox for it. It also names no next command and asks for
+  // no owner decision -- a heads-up that a run priced at the conservative
+  // fallback rate, nothing to decide. Ruling: `visibility: 'activity'`. It
+  // was already fully visible via `activity --project <id>` (that filter
   // only drops `internal`), so nothing becomes less visible; it stops being
-  // asked to resolve a condition that can't be true when anyone would see
-  // it. `runLeaves: 'running'` below is a placeholder, known imperfect,
-  // until that's decided.
-  unknown_model_rate: { visibility: 'inbox', requiresUser: true, resolvesWhen: { runLeaves: 'running' } },
+  // an inbox row that can never resolve. Binding corollary from this
+  // finding: an event that cannot name a next command is not an inbox item,
+  // by definition -- see inboxCompleteness.test.ts, which now enforces that
+  // for every row, not just this one. The fact still needs to reach the
+  // owner where they are actually looking: a run priced at this fallback
+  // rate shows a marker next to its cost on the board and the page,
+  // sourced from the run's own `usage_json.model` via `pricing.ts`'s
+  // `isKnownModel` (see commands/board.ts / commands/page.ts), deliberately
+  // uncoupled from this event.
+  unknown_model_rate: { visibility: 'activity', requiresUser: false },
 
   // --- Batch 9: the Manager invocation ---
   // Fired by managerApply.ts once a valid proposal has been applied,

@@ -57,7 +57,8 @@ export function runMigrations(db: Db): void {
     if (applied.has(migration.id)) continue;
     db.exec('BEGIN');
     try {
-      db.exec(migration.sql);
+      if (migration.sql) db.exec(migration.sql);
+      if (migration.run) migration.run(db);
       db.prepare('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)').run(
         migration.id,
         new Date().toISOString()

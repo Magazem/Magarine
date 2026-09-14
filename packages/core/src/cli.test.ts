@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
-import { testTempRoot } from './testSupport.ts';
+import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
 
 const cliPath = fileURLToPath(new URL('./cli.ts', import.meta.url));
 
@@ -22,7 +22,12 @@ async function run(
   args: string[],
   opts: { env?: NodeJS.ProcessEnv; cwd?: string } = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], env: opts.env, cwd: opts.cwd });
+  const proc = spawnManaged({
+    executable: process.execPath,
+    args: [cliPath, ...args],
+    env: opts.env,
+    cwd: opts.cwd ?? deriveTestCliCwd(args),
+  });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));

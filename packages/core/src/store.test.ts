@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import {
   addDependency,
@@ -22,6 +23,7 @@ import {
   resolveMaxBudgetUsd,
   resumeProject,
   resumeProjectAdapter,
+  setProjectDir,
   setProjectManagerModel,
   setProjectMaxBudgetUsd,
   setProjectMaxSpendUsd,
@@ -138,6 +140,25 @@ test('setProjectScopePath sets and clears (null) the path', () => {
 
   setProjectScopePath(db, project.id, null);
   assert.equal(getProject(db, project.id)!.scopePath, null);
+});
+
+// Batch 12 section 1 ruling 1: `setProjectDir` is the single site that moves
+// a project's one directory, so workspace_root and scope_path can never
+// disagree the way batch 12 was opened to fix -- it must set both columns,
+// derived from the same value, in one call.
+test('setProjectDir sets workspace_root and scope_path together from one directory, and moving it again replaces both atomically', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', workspaceRoot: '/tmp/original', scopePath: '/tmp/original/SCOPE.md' });
+
+  setProjectDir(db, project.id, '/tmp/moved');
+  const moved = getProject(db, project.id)!;
+  assert.equal(moved.workspaceRoot, '/tmp/moved');
+  assert.equal(moved.scopePath, join('/tmp/moved', 'SCOPE.md'));
+
+  setProjectDir(db, project.id, '/tmp/moved-again');
+  const movedAgain = getProject(db, project.id)!;
+  assert.equal(movedAgain.workspaceRoot, '/tmp/moved-again');
+  assert.equal(movedAgain.scopePath, join('/tmp/moved-again', 'SCOPE.md'));
 });
 
 test('updateTicketFields updates only the fields provided, and never touches status', () => {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
+import { deriveTestCliCwd } from './testSupport.ts';
 
 // Flag-level coverage for --adapter/--claude-exe/--run-timeout. No real
 // `claude` tool or network is touched: every case here either errors before
@@ -27,6 +28,7 @@ async function run(
     executable: process.execPath,
     args: [cliPath, ...args],
     env: envOverrides ? { ...process.env, ...envOverrides } : undefined,
+    cwd: deriveTestCliCwd(args),
   });
   let stdout = '';
   let stderr = '';

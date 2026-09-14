@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { newId } from './id.ts';
 import { classify } from './policy.ts';
@@ -126,15 +127,37 @@ export function createProject(
   return getProject(db, id)!;
 }
 
-// Batch 11: the write site for `project create --scope`/a future `project
-// set --scope` (Role Q's CLI surface) and for `writeScopeText` below the
-// first time it needs to persist a path. `null` clears it (falls back to
-// "no scope file", per readScopeText's own doc comment -- this project has
-// no default-location convention to fall back to instead, see this
-// function's migration comment in db/schema.ts).
+// Batch 11's low-level setter, superseded as a CLI surface in batch 12 by
+// `setProjectDir` below (`project create --dir`/`project set --dir` now own
+// where a project's scope document lives, since a project has exactly one
+// directory and scope_path is one of the two things that derive from it --
+// see that function's doc comment). Still used internally wherever a scope
+// path needs setting on its own, e.g. `writeScopeText`'s own callers.
+// `null` clears it (falls back to "no scope file", per readScopeText's own
+// doc comment).
 export function setProjectScopePath(db: Db, projectId: string, scopePath: string | null): void {
   db.prepare('UPDATE projects SET scope_path = ?, updated_at = ? WHERE id = ?').run(
     scopePath,
+    new Date().toISOString(),
+    projectId
+  );
+}
+
+// Batch 12 ruling 1: "a project has exactly one directory." `dir` becomes
+// BOTH workspace_root (the shared DIRECTORY workspace, unchanged meaning)
+// and scope_path's parent (`<dir>/SCOPE.md`, the fixed filename -- there is
+// no `--scope <file>` any more to name a different one). One function, one
+// write site for both columns together, so the two can never independently
+// drift the way workspace_root/scope_path could before this batch (see
+// db/schema.ts's 0010 migration for how an existing drifted pair is healed).
+// `project create --dir` and `project set --dir` (cli.ts) are the only
+// callers; `dir` is never null here -- `project create` always resolves one
+// (defaulting to the current working directory), so a project can no longer
+// exist without a directory at all.
+export function setProjectDir(db: Db, projectId: string, dir: string): void {
+  db.prepare('UPDATE projects SET workspace_root = ?, scope_path = ?, updated_at = ? WHERE id = ?').run(
+    dir,
+    join(dir, 'SCOPE.md'),
     new Date().toISOString(),
     projectId
   );

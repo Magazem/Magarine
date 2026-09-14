@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged, type ManagedProcess } from './process.ts';
 import { daemonFilePath, type DaemonFileInfo } from './daemon.ts';
-import { testTempRoot } from './testSupport.ts';
+import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
 
 // Cross-process coverage for the daemon's HTTP API itself: everything here
 // spawns the real `magarine serve` CLI command and talks to it over a real
@@ -68,7 +68,7 @@ function spawnServe(args: string[]): ServeHandle {
 
 function runCli(args: string[]): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve) => {
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args] });
+    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
     let stdout = '';
     p.onStdout((c) => (stdout += c));
     p.wait().then((r) => resolve({ stdout, code: r.code }));

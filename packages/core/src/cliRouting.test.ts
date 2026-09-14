@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged, type ManagedProcess } from './process.ts';
-import { testTempRoot } from './testSupport.ts';
+import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
 
 // Step 4: CLI routing. The daemon's own API and its business logic are
 // already covered end to end (daemonApi.test.ts, against a real spawned
@@ -34,7 +34,7 @@ after(testRoot.cleanup);
 
 function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args] });
+    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
     let stdout = '';
     let stderr = '';
     p.onStdout((c) => (stdout += c));

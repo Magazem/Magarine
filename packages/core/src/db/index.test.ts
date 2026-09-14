@@ -33,6 +33,7 @@ test('runMigrations is idempotent: applying twice does not error or duplicate ro
     '0007_manager_kind',
     '0008_project_scope_path',
     '0009_pause_reason',
+    '0010_backfill_workspace_root_from_scope_path',
   ]);
 });
 
@@ -99,6 +100,7 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     '0007_manager_kind',
     '0008_project_scope_path',
     '0009_pause_reason',
+    '0010_backfill_workspace_root_from_scope_path',
   ]);
   assert.equal(snapshot.usageJsonInputTokens, 1);
 });

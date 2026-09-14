@@ -102,7 +102,7 @@ export function prepareWorkspace(type: WorkspaceType, ticketId: string, options:
 
   if (type === 'DIRECTORY') {
     if (!options.workspaceRoot) {
-      throw new Error('DIRECTORY workspace requires a workspaceRoot (see projects.workspace_root / --workspace-root).');
+      throw new Error('DIRECTORY workspace requires a workspaceRoot (see projects.workspace_root / project set --dir).');
     }
     const path = options.workspaceRoot;
     mkdirSync(path, { recursive: true });

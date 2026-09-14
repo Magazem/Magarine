@@ -108,6 +108,16 @@ export function reasonFor(eventType: string, payload: unknown, ticketId?: string
     return `the adapter is unavailable (worker could not start) -- log in with \`claude\`, then run \`magarine resume --project ${projectId}\``;
   }
 
+  if (eventType === 'workspace_preparation_failed') {
+    // Batch 12 ruling 1: a project can no longer be CREATED without a
+    // directory, but a legacy row 0010's migration couldn't backfill (no
+    // scope_path to derive one from either) can still hit this -- the fix
+    // is always the same one command, whatever the underlying error was.
+    const message = typeof p.message === 'string' ? p.message : 'workspace could not be prepared';
+    const projectId = typeof p.projectId === 'string' ? p.projectId : '<id>';
+    return `${message} -- run \`magarine project set --project ${projectId} --dir <path>\` to give this project a directory`;
+  }
+
   if (eventType === 'manager_daily_cap_reached') {
     // Batch 11 item 3 (Role R): unlike a spend cap or an adapter pause,
     // there is no command that clears this -- it is a per-project ROLLING

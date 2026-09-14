@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
 import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
@@ -18,9 +18,9 @@ import {
   listProjects,
   listTickets,
   setProjectDefaultModel,
+  setProjectDir,
   setProjectManagerModel,
   setProjectMaxSpendUsd,
-  setProjectScopePath,
   setTicketBudgetOverride,
 } from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
@@ -37,12 +37,7 @@ import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { serve, ServeError } from './commands/serve.ts';
-import {
-  artifactsDir as resolveArtifactsDir,
-  dbPath as resolveDbPath,
-  defaultScopePath,
-  resolveStateDir,
-} from './paths.ts';
+import { artifactsDir as resolveArtifactsDir, dbPath as resolveDbPath, resolveStateDir } from './paths.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
@@ -259,18 +254,12 @@ const FLAG_SPECS: Record<string, string[]> = {
   // setting, not a per-ticket one: see types.ts's Project.managerModel for
   // why a manager ticket never gets its own `--model` override the way an
   // ordinary `ticket add` does.
-  'project create': [
-    'name',
-    'description',
-    'max-parallel',
-    'brief',
-    'workspace-root',
-    'max-spend',
-    'model',
-    'manager-model',
-    'scope',
-  ],
-  'project set': ['project', 'max-spend', 'model', 'manager-model'],
+  // `--dir` (batch 12 ruling 1): "a project has exactly one directory" --
+  // replaces `--workspace-root` and `--scope <file>`, both retired. Defaults
+  // to the current working directory; see the handler below for why that
+  // default, not the state dir.
+  'project create': ['name', 'description', 'max-parallel', 'brief', 'dir', 'max-spend', 'model', 'manager-model'],
+  'project set': ['project', 'max-spend', 'model', 'manager-model', 'dir'],
   // Batch 10 (Role Q), item 2: no flags of its own -- lists every project in
   // this state directory's database. See commands/projectList.ts.
   'project list': [],
@@ -517,9 +506,20 @@ async function main(): Promise<void> {
   }
 
   if (command === 'project' && subcommand === 'create') {
-    const resolvedDbPath = dbPath(flags);
-    const db = openDb(resolvedDbPath);
-    const explicitScope = typeof flags.scope === 'string' ? flags.scope : null;
+    const db = openDb(dbPath(flags));
+    // Batch 12 ruling 1: "a project has exactly one directory" -- `--dir`
+    // replaces both the old `--workspace-root` and `--scope <file>`, since
+    // workspace_root and scope_path now both derive from this one path
+    // (store.ts's createProject call below). Defaults to the CURRENT
+    // working directory, not this invocation's state dir: the owner runs
+    // `project create` FROM the folder they mean, the same way `git init`
+    // works, and the state dir (~/.magarine or --state-dir) is where
+    // Magarine's own bookkeeping lives, not where the owner's project does
+    // -- those are two different things this batch stops conflating. A
+    // project can no longer be created without a directory, so the trap
+    // batch 11's own README walk hit (a DIRECTORY ticket with no
+    // workspace_root configured) cannot be reproduced.
+    const dir = resolve(typeof flags.dir === 'string' ? flags.dir : process.cwd());
     const project = createProject(db, {
       name: String(flags.name ?? positionals[1] ?? ''),
       description: typeof flags.description === 'string' ? flags.description : null,
@@ -527,25 +527,11 @@ async function main(): Promise<void> {
       maxSpendUsd: typeof flags['max-spend'] === 'string' ? Number(flags['max-spend']) : null,
       defaultModel: typeof flags.model === 'string' ? flags.model : undefined,
       brief: typeof flags.brief === 'string' ? flags.brief : null,
-      workspaceRoot: typeof flags['workspace-root'] === 'string' ? flags['workspace-root'] : null,
+      workspaceRoot: dir,
       managerModel: typeof flags['manager-model'] === 'string' ? flags['manager-model'] : null,
-      scopePath: explicitScope,
+      scopePath: join(dir, 'SCOPE.md'),
     });
-    // Batch 11 part 2, item 2: no `--scope` given -- every project still
-    // gets a scope file, at a default path (paths.ts's defaultScopePath),
-    // so `plan --mission` on a freshly created project never hits "no scope
-    // file configured" (commands/plan.ts's planWithMission). Rooted under
-    // wherever the sqlite file this invocation actually opened lives --
-    // `dirname(resolvedDbPath)`, not `stateDir(flags)` -- so an explicit
-    // `--db` elsewhere never leaves a SCOPE.md behind in the *default*
-    // state dir the caller didn't ask for; the two only differ when `--db`
-    // is given without a matching `--state-dir`. Two calls, not one INSERT,
-    // because the id createProject assigns doesn't exist until it returns.
-    if (!explicitScope) {
-      setProjectScopePath(db, project.id, defaultScopePath(dirname(resolvedDbPath), project.id));
-    }
-    const created = getProject(db, project.id)!;
-    output(flags, created, `Created project ${created.id} (${created.name})`);
+    output(flags, project, `Created project ${project.id} (${project.name}) in ${dir}`);
     return;
   }
 
@@ -561,10 +547,11 @@ async function main(): Promise<void> {
 
     const live = await liveDaemonFor(flags);
     if (live) {
-      const body: { maxSpend?: number; model?: string; managerModel?: string } = {};
+      const body: { maxSpend?: number; model?: string; managerModel?: string; dir?: string } = {};
       if (typeof flags['max-spend'] === 'string') body.maxSpend = Number(flags['max-spend']);
       if (typeof flags.model === 'string') body.model = flags.model;
       if (typeof flags['manager-model'] === 'string') body.managerModel = flags['manager-model'];
+      if (typeof flags.dir === 'string') body.dir = resolve(flags.dir);
       await routeMutation(flags, live, 'POST', `/projects/${projectId}/set`, body, () => `Updated project ${projectId}`);
       return;
     }
@@ -577,6 +564,9 @@ async function main(): Promise<void> {
     }
     if (typeof flags['manager-model'] === 'string') {
       setProjectManagerModel(db, projectId, flags['manager-model']);
+    }
+    if (typeof flags.dir === 'string') {
+      setProjectDir(db, projectId, resolve(flags.dir));
     }
     output(flags, getProject(db, projectId), `Updated project ${projectId}`);
     return;

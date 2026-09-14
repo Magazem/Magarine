@@ -386,7 +386,7 @@ function validateSemantics(commands: ManagerCommand[], board: ProposalBoard): st
 
   if (!board.hasScopePath && commands.some((c) => c.type === 'update_scope')) {
     errors.push(
-      'update_scope cannot be applied: this project has no scope_path set yet (see project create --scope / setProjectScopePath)'
+      'update_scope cannot be applied: this project has no scope_path set yet (see project create --dir / project set --dir)'
     );
   }
 

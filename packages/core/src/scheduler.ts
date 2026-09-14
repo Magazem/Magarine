@@ -916,7 +916,13 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         eventType: 'workspace_preparation_failed',
         entityType: 'ticket',
         entityId: ticket.id,
-        payload: { message: err instanceof Error ? err.message : String(err) },
+        // projectId carried in the payload too (not just the event row's own
+        // top-level field), matching project_spend_cap_reached/
+        // adapter_unavailable_pause's own convention -- reasonFor
+        // (commands/inbox.ts) reads it from here to compose `project set
+        // --dir` with the real id, the same way those two compose their own
+        // fix commands.
+        payload: { message: err instanceof Error ? err.message : String(err), projectId: ticket.projectId },
         visibility: 'inbox',
         requiresUser: true,
         idempotencyKey: `workspace_preparation_failed:${ticket.id}:${ticket.updatedAt}`,

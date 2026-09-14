@@ -1,11 +1,11 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rmSyncResilient } from '../db/testSupport.ts';
 import { spawnManaged } from '../process.ts';
-import { testTempRoot } from '../testSupport.ts';
+import { deriveTestCliCwd, testTempRoot } from '../testSupport.ts';
 
 // Every test here drives the real `magarine` CLI entry point against a
 // temporary sqlite file, per this role's working method: a command that
@@ -23,7 +23,7 @@ const testRoot = testTempRoot('commands');
 after(testRoot.cleanup);
 
 async function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args] });
+  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));
@@ -32,10 +32,10 @@ async function run(args: string[]): Promise<{ code: number | null; stdout: strin
   return { code: result.code, stdout, stderr };
 }
 
-function withTempDb<T>(prefix: string, fn: (dbFile: string) => Promise<T>): Promise<T> {
+function withTempDb<T>(prefix: string, fn: (dbFile: string, dir: string) => Promise<T>): Promise<T> {
   const dir = mkdtempSync(join(testRoot.root, prefix));
   const dbFile = join(dir, 'magarine.db');
-  return fn(dbFile).finally(() => rmSyncResilient(dir));
+  return fn(dbFile, dir).finally(() => rmSyncResilient(dir));
 }
 
 test('ticket add accepts --budget, repeatable --acceptance, and repeatable --depends-on in one command', async () => {
@@ -359,6 +359,22 @@ test('ticket add --budget below the floor is refused with a message naming the f
   });
 });
 
+test('project set --dir moves the project to a new directory, deriving both workspaceRoot and scopePath from it', async () => {
+  await withTempDb('magarine-projectset-dir-', async (dbFile, dir) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    ) as { id: string; workspaceRoot: string | null };
+    assert.equal(project.workspaceRoot, dir, 'sanity: created with the default directory first');
+
+    const newDir = join(dir, 'moved-here');
+    const res = await run(['project', 'set', '--project', project.id, '--dir', newDir, '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    const updated = JSON.parse(res.stdout) as { workspaceRoot: string | null; scopePath: string | null };
+    assert.equal(updated.workspaceRoot, newDir);
+    assert.equal(updated.scopePath, join(newDir, 'SCOPE.md'));
+  });
+});
+
 test('project set on an unknown project id fails by name, not with a silent no-op or a DB error', async () => {
   await withTempDb('magarine-projectset-unknown-', async (dbFile) => {
     await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);
@@ -642,8 +658,9 @@ test('resume refuses a project that is not paused, and an unknown project id, wi
   });
 });
 
-test('project create accepts --brief and --workspace-root, persisted on the project', async () => {
-  await withTempDb('magarine-project-brief-', async (dbFile) => {
+test('project create accepts --brief and --dir, both persisted on the project', async () => {
+  await withTempDb('magarine-project-brief-', async (dbFile, dir) => {
+    const workDir = join(dir, 'workroot');
     const res = await run([
       'project',
       'create',
@@ -651,16 +668,17 @@ test('project create accepts --brief and --workspace-root, persisted on the proj
       'BriefP',
       '--brief',
       'Build the weekend MVP.',
-      '--workspace-root',
-      dbFile + '.workroot',
+      '--dir',
+      workDir,
       '--json',
       '--db',
       dbFile,
     ]);
     assert.equal(res.code, 0, res.stderr);
-    const project = JSON.parse(res.stdout) as { brief: string; workspaceRoot: string };
+    const project = JSON.parse(res.stdout) as { brief: string; workspaceRoot: string; scopePath: string };
     assert.equal(project.brief, 'Build the weekend MVP.');
-    assert.equal(project.workspaceRoot, dbFile + '.workroot');
+    assert.equal(project.workspaceRoot, workDir);
+    assert.equal(project.scopePath, join(workDir, 'SCOPE.md'));
   });
 });
 
@@ -1112,42 +1130,91 @@ test('inbox surfaces an adapter_unavailable pause (previously invisible), naming
   });
 });
 
-test('project create without --brief/--workspace-root leaves them null, unchanged from before this flag existed', async () => {
-  await withTempDb('magarine-project-nobrief-', async (dbFile) => {
+test('project create without --brief/--dir leaves brief null, but workspaceRoot defaults to the invocation\'s own directory (batch 12: a project can no longer be created without a directory)', async () => {
+  await withTempDb('magarine-project-nobrief-', async (dbFile, dir) => {
     const res = await run(['project', 'create', '--name', 'NoBriefP', '--json', '--db', dbFile]);
     assert.equal(res.code, 0, res.stderr);
     const project = JSON.parse(res.stdout) as { brief: string | null; workspaceRoot: string | null };
     assert.equal(project.brief, null);
-    assert.equal(project.workspaceRoot, null);
+    assert.equal(project.workspaceRoot, dir);
   });
 });
 
-// Batch 11 part 2, item 2: every project needs a scope_path -- store.ts's
-// setProjectScopePath is the setter (Role R's), but deciding WHERE the
-// default lives is this role's own call (paths.ts's defaultScopePath), so
-// `plan --mission` never hits "no scope file configured" on an ordinary
-// freshly created project.
-test('project create with no --scope still gets a default scope path, rooted next to this invocation\'s own db file', async () => {
-  await withTempDb('magarine-project-defaultscope-', async (dbFile) => {
+// Batch 12 section 1 ruling 1: `workspace_root` and `scope_path` both derive
+// from the one `--dir`, which defaults to the invocation's own directory --
+// there is no longer a project-id-keyed default location, since a project's
+// scope file lives in the one directory the project itself owns.
+test('project create with no --dir still gets a scope path, inside the directory it defaulted to', async () => {
+  await withTempDb('magarine-project-defaultscope-', async (dbFile, dir) => {
     const res = await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);
     assert.equal(res.code, 0, res.stderr);
-    const project = JSON.parse(res.stdout) as { id: string; scopePath: string | null };
-    assert.ok(project.scopePath, 'a default scope path must be assigned');
-    assert.ok(
-      project.scopePath!.startsWith(dirname(dbFile)),
-      `default scope path ${project.scopePath} must live under the same directory as ${dbFile}, not the default state dir`
-    );
-    assert.ok(project.scopePath!.includes(project.id), 'the default path must be keyed by the project id');
+    const project = JSON.parse(res.stdout) as { id: string; workspaceRoot: string | null; scopePath: string | null };
+    assert.equal(project.workspaceRoot, dir);
+    assert.equal(project.scopePath, join(dir, 'SCOPE.md'));
   });
 });
 
-test('project create --scope <file> uses exactly that path, not the default', async () => {
-  await withTempDb('magarine-project-explicitscope-', async (dbFile) => {
-    const explicitPath = join(dirname(dbFile), 'elsewhere', 'my-scope.md');
-    const res = await run(['project', 'create', '--name', 'P', '--scope', explicitPath, '--json', '--db', dbFile]);
+test('project create --dir <path> uses exactly that directory, not the invocation\'s own', async () => {
+  await withTempDb('magarine-project-explicitscope-', async (dbFile, dir) => {
+    const explicitDir = join(dir, 'elsewhere');
+    const res = await run(['project', 'create', '--name', 'P', '--dir', explicitDir, '--json', '--db', dbFile]);
     assert.equal(res.code, 0, res.stderr);
-    const project = JSON.parse(res.stdout) as { scopePath: string | null };
-    assert.equal(project.scopePath, explicitPath);
+    const project = JSON.parse(res.stdout) as { workspaceRoot: string | null; scopePath: string | null };
+    assert.equal(project.workspaceRoot, explicitDir);
+    assert.equal(project.scopePath, join(explicitDir, 'SCOPE.md'));
+  });
+});
+
+// Batch 12 item 2's required regression test, inverted from batch 11's own
+// failure: the paid owner walk followed the README's quickstart path (no
+// `--dir`/`--workspace-root` flag at all) and got a DIRECTORY ticket that
+// could never run, because no directory had ever been configured. Now that
+// `project create` can no longer be created without one -- it defaults to
+// the invocation's own directory -- the same no-flags path must actually
+// carry a DIRECTORY ticket all the way to DONE.
+test('project create with no directory flag at all still carries a DIRECTORY ticket to DONE (batch 11\'s README trap, inverted)', async () => {
+  await withTempDb('magarine-nodir-directory-done-', async (dbFile, dir) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'NoDirP', '--json', '--db', dbFile])).stdout
+    ) as { id: string; workspaceRoot: string | null };
+    // The mechanism this test is actually proving: no --dir was given, and
+    // workspaceRoot is not null (batch 11's trap was exactly a null root).
+    assert.equal(project.workspaceRoot, dir);
+
+    const ticket = JSON.parse(
+      (
+        await run([
+          'ticket',
+          'add',
+          '--project',
+          project.id,
+          '--title',
+          'write a file',
+          '--workspace',
+          'DIRECTORY',
+          '--json',
+          '--db',
+          dbFile,
+        ])
+      ).stdout
+    );
+    assert.equal(ticket.workspaceType, 'DIRECTORY');
+
+    const runRes = await run([
+      'run',
+      '--until-idle',
+      '--project',
+      project.id,
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(runRes.code, 0, runRes.stderr);
+
+    const status = JSON.parse(
+      (await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout
+    ) as Array<{ id: string; status: string }>;
+    assert.equal(status.find((t) => t.id === ticket.id)!.status, 'DONE');
   });
 });
 

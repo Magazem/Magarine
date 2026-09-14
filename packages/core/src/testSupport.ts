@@ -1,6 +1,6 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { rmSyncResilient } from './db/testSupport.ts';
 
 export interface TestTempRoot {
@@ -39,4 +39,20 @@ export function testTempRoot(label: string): TestTempRoot {
     // hook, so this is not a breaking change to any existing caller.
     cleanup: () => rmSyncResilient(root),
   };
+}
+
+// Batch 12 section 1 ruling 1: `project create` with no `--dir` now
+// defaults to the spawned process's own cwd, not a state-dir-relative path.
+// Every test here already isolates its own database via an explicit --db
+// or --state-dir, so this derives that SAME already-unique directory as
+// the child process's cwd -- rather than leaving cwd unset (which lands
+// `project create` in this file's real location on disk; found the hard
+// way when a test's SCOPE.md write landed inside packages/core itself)
+// or inventing a second, parallel isolation mechanism.
+export function deriveTestCliCwd(args: readonly string[]): string | undefined {
+  const dbIndex = args.indexOf('--db');
+  if (dbIndex !== -1 && args[dbIndex + 1]) return dirname(args[dbIndex + 1]);
+  const stateDirIndex = args.indexOf('--state-dir');
+  if (stateDirIndex !== -1 && args[stateDirIndex + 1]) return args[stateDirIndex + 1];
+  return undefined;
 }

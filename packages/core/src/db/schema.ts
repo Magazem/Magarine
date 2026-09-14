@@ -1,10 +1,21 @@
+import { dirname } from 'node:path';
+import type { Db } from './index.ts';
+
 // Schema migrations. Each migration is applied at most once, tracked in
 // `schema_migrations`. Add new migrations by appending to this array —
 // never edit a migration that has already shipped.
-
+//
+// Batch 12: `run` is for a migration that needs real logic, not just DDL --
+// this repo has no `dirname()` available in pure SQL, and doing Windows/
+// POSIX path splitting by hand in a SQL string is exactly the kind of thing
+// that looks like it works until a path with the "wrong" separator shows up
+// (see 0010's own comment). `runMigrations` (db/index.ts) runs `sql` (if
+// given) then `run` (if given), inside the same one transaction per
+// migration id either way.
 export interface Migration {
   id: string;
-  sql: string;
+  sql?: string;
+  run?: (db: Db) => void;
 }
 
 export const MIGRATIONS: Migration[] = [
@@ -230,5 +241,34 @@ export const MIGRATIONS: Migration[] = [
     sql: `
       ALTER TABLE projects ADD COLUMN pause_reason TEXT;
     `,
+  },
+  {
+    // Batch 12 ruling 1: "a project has exactly one directory" -- workspace_root
+    // and scope_path both derive from it from now on (`project create --dir`,
+    // `project set --dir`, cli.ts). Existing rows predate that: workspace_root
+    // is null unless `--workspace-root` was given at creation, independent of
+    // whatever scope_path holds. This backfills workspace_root from
+    // dirname(scope_path) for exactly the rows that have a scope_path but no
+    // root, so a project that already had a scope document gets its
+    // directory for free rather than needing `project set --dir` by hand.
+    // Rows with neither (a truly bare legacy project) are left null --
+    // nothing on disk to derive a directory FROM -- and workspace_preparation_failed's
+    // own inbox line (commands/inbox.ts's reasonFor) names `project set --dir`
+    // as the fix for exactly this case.
+    //
+    // Real Node `dirname()`, not hand-rolled SQL string slicing: this
+    // repository runs on Windows, where a path can use `\` as its
+    // separator, and a SQL `substr`/`instr` splitting on `/` alone would
+    // silently mis-split every real path in this database. `Migration.run`
+    // exists for exactly this -- see this file's own doc comment on it.
+    id: '0010_backfill_workspace_root_from_scope_path',
+    run: (db) => {
+      const rows = db
+        .prepare(`SELECT id, scope_path FROM projects WHERE workspace_root IS NULL AND scope_path IS NOT NULL`)
+        .all() as Array<{ id: string; scope_path: string }>;
+      for (const row of rows) {
+        db.prepare('UPDATE projects SET workspace_root = ? WHERE id = ?').run(dirname(row.scope_path), row.id);
+      }
+    },
   },
 ];
