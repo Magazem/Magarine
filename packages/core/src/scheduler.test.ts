@@ -832,11 +832,29 @@ test('a project spend cap shrinks a ticket\'s ceiling to what remains, rather th
   assert.deepEqual(firstTick.started.map((s) => s.ticketId), [first.id]);
   await Promise.all(firstTick.started.map((s) => s.done));
   assert.equal(getTicket(db, first.id)!.status, 'DONE');
+  assert.equal(
+    listEventsForProject(db, project.id).filter((e) => e.eventType === 'spend_cap_ceiling_shrunk').length,
+    0,
+    'the first run\'s own 0.6 ceiling fit entirely under the 1.0 cap with nothing spent yet -- no shrink happened, so no event'
+  );
 
   const secondTick = await tick(deps);
   assert.equal(secondTick.started.length, 1, '0.4 remains under the cap, still above the $0.25 floor -- must spawn, not refuse');
   assert.equal(isProjectAdapterPaused(db, project.id), false, 'shrinking is not a refusal; the project stays unpaused');
   await Promise.all(secondTick.started.map((s) => s.done));
+
+  const shrinkEvents = listEventsForProject(db, project.id).filter((e) => e.eventType === 'spend_cap_ceiling_shrunk');
+  assert.equal(shrinkEvents.length, 1, 'exactly one shrink event, for the second ticket\'s run only');
+  assert.equal(shrinkEvents[0].entityType, 'run');
+  assert.equal(shrinkEvents[0].entityId, secondTick.started[0].runId, 'the event is recorded on the RUN, not the ticket or the project');
+  assert.equal(shrinkEvents[0].visibility, 'activity', 'quiet, not an inbox item -- the healthy path must not nag the owner');
+  assert.equal(shrinkEvents[0].requiresUser, false);
+  assert.deepEqual(shrinkEvents[0].payload, {
+    ticketId: second.id,
+    ownCeilingUsd: 0.6,
+    capAllowedUsd: 0.4,
+    appliedCeilingUsd: 0.4,
+  });
 
   const after = getTicket(db, second.id)!;
   assert.equal(after.status, 'FAILED', 'the scheduler must have stopped the run itself once the shrunk 0.4 ceiling was crossed');
@@ -884,6 +902,11 @@ test('a project spend cap refuses to spawn, pausing the project with reason spen
   assert.equal(capEvents[0].entityType, 'project');
   assert.equal(capEvents[0].visibility, 'inbox');
   assert.equal(capEvents[0].requiresUser, true);
+  assert.equal(
+    events.filter((e) => e.eventType === 'spend_cap_ceiling_shrunk').length,
+    0,
+    'a refusal never spawns a run at all -- there is nothing to record a shrink event on'
+  );
 
   // A paused project starts nothing further, and does not emit the event again.
   const thirdTick = await tick(deps);
@@ -906,6 +929,11 @@ test('a project with no max_spend_usd set never refuses a spawn on spend-cap gro
   assert.equal(started.length, 1);
   await Promise.all(started.map((s) => s.done));
   assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+  assert.equal(
+    listEventsForEntity(db, 'run', started[0].runId).filter((e) => e.eventType === 'spend_cap_ceiling_shrunk').length,
+    0,
+    'no max_spend_usd at all means no cap to shrink against -- an uncapped project must never see this event'
+  );
 });
 
 // --- Batch 5: the supervisor must survive its own decisions ---

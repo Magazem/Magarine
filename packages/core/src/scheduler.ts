@@ -832,6 +832,14 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     // `undefined` when the ticket's own ceiling already fits, so an
     // uncapped or generously-capped project never has its envelope touched.
     let ceilingOverrideUsd: number | undefined;
+    // Strategist's addition to rule e (part 3): shrinking must stay quiet on
+    // the healthy path -- no inbox item -- but must not be INVISIBLE: a run
+    // that stops early under a shrunk ceiling is otherwise inexplicable from
+    // the board alone. `shrinkDetails` carries the numbers for the
+    // activity-only event inserted below, once `run` exists; stays
+    // `undefined` in the same cases `ceilingOverrideUsd` does (an uncapped
+    // or generously-capped project), so that project sees no event at all.
+    let shrinkDetails: { ownCeilingUsd: number; capAllowedUsd: number; appliedCeilingUsd: number } | undefined;
     if (project.maxSpendUsd != null) {
       const ownCeiling = resolveMaxBudgetUsd(project, ticket);
       const remainingCap = project.maxSpendUsd - projectedSpend;
@@ -856,7 +864,10 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         break;
       }
       projectedSpend += effectiveCeiling;
-      if (effectiveCeiling < ownCeiling) ceilingOverrideUsd = effectiveCeiling;
+      if (effectiveCeiling < ownCeiling) {
+        ceilingOverrideUsd = effectiveCeiling;
+        shrinkDetails = { ownCeilingUsd: ownCeiling, capAllowedUsd: remainingCap, appliedCeilingUsd: effectiveCeiling };
+      }
     }
 
     // Batch 11 item 3: the per-project daily Manager-invocation cap
@@ -930,6 +941,25 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       event: 'run_started',
       idempotencyKey: `run_started:${run.id}`,
     });
+
+    // Part 3: activity-only, never inbox -- hardcoded here rather than
+    // routed through classify() the way most other event types are, the
+    // same choice already made a few lines above for
+    // project_spend_cap_reached; this event type has no policy.ts row
+    // (policy.ts is out of this role's files) and none is needed for a
+    // visibility that never varies.
+    if (shrinkDetails) {
+      insertEvent(deps.db, {
+        projectId: project.id,
+        eventType: 'spend_cap_ceiling_shrunk',
+        entityType: 'run',
+        entityId: run.id,
+        payload: { ticketId: ticket.id, ...shrinkDetails },
+        visibility: 'activity',
+        requiresUser: false,
+        idempotencyKey: `spend_cap_ceiling_shrunk:${run.id}`,
+      });
+    }
 
     // Batch 9: a manager ticket gets the Manager's own envelope (mission,
     // compact board, decision log, recent failures, command schema -- see
