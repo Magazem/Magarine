@@ -1069,10 +1069,11 @@ test('inbox shows a project-scoped project_spend_cap_reached item with the reaso
 });
 
 // Batch 11 ruling 1 rules a/d: before this fix, an adapter_unavailable
-// pause's triggering event was entityType 'ticket' with no
-// PENDING_TICKET_STATUS row, so it was filtered out of the inbox entirely --
-// a project could sit paused, invisible, forever. buildInbox now derives the
-// item from the project's own current pauseReason instead of the raw event.
+// pause's triggering event was entityType 'ticket' with no ticket-scoped
+// resolution rule recorded for it anywhere, so it was filtered out of the
+// inbox entirely -- a project could sit paused, invisible, forever.
+// buildInbox now derives the item from the project's own current
+// pauseReason instead of the raw event.
 test('inbox surfaces an adapter_unavailable pause (previously invisible), naming the login-then-resume fix, and resume clears it', async () => {
   const { openDb } = await import('../db/index.ts');
   const { pauseProjectAdapter } = await import('../store.ts');
@@ -1335,10 +1336,10 @@ test('discuss with an empty message and discuss against a nonexistent project bo
 });
 
 // Before this fix, manager_daily_cap_reached had inbox policy (policy.ts)
-// and was actually inserted (scheduler.ts, Role R), but commands/inbox.ts's
-// PENDING_TICKET_STATUS had no row for it -- same class of bug as the
-// pre-batch-11 adapter_unavailable gap this batch already fixed once: an
-// event recorded with requiresUser:true that the inbox never displays.
+// and was actually inserted (scheduler.ts, Role R), but commands/inbox.ts
+// had no resolution rule recorded for it anywhere -- same class of bug as
+// the pre-batch-11 adapter_unavailable gap this batch already fixed once:
+// an event recorded with requiresUser:true that the inbox never displays.
 test('a manager ticket sitting at the daily Manager-invocation cap reaches the inbox, saying no action is needed', async () => {
   const { openDb } = await import('../db/index.ts');
   const { createRun, createTicket, finishRun } = await import('../store.ts');

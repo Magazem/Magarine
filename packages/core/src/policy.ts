@@ -1,4 +1,4 @@
-import type { EventVisibility } from './types.ts';
+import type { RunStatus, TicketStatus } from './types.ts';
 
 // The notification policy: which events reach the user, and how loudly.
 // Data, not conditionals, per technical-architecture-weekend-mvp.md's
@@ -19,10 +19,41 @@ import type { EventVisibility } from './types.ts';
 // (internal, no user interruption) and callers that care about gaps use the
 // completeness check instead.
 
-export interface EventPolicy {
-  visibility: EventVisibility;
-  requiresUser: boolean;
-}
+// Batch 12 (Role S): three instances of the same bug in two batches --
+// adapter_unavailable, manager_daily_cap_reached, workspace_preparation_failed --
+// were each an event recorded with `visibility: 'inbox'` that
+// commands/inbox.ts's `buildInbox` had no rule to ever display. Adding a
+// fourth row and a fourth test each time was fixing instances, not the
+// class. The fix: an inbox row's RESOLUTION -- what has to become true for
+// the item to stop showing -- is now part of its policy, not a separate
+// hand-maintained table (commands/inbox.ts used to keep its own such table,
+// now deleted). `buildInbox` reads `resolvesWhen` directly, so an inbox row
+// authored without one is a gap `buildInbox` itself cannot silently paper
+// over.
+//
+// `ticketLeaves`: pending while the ticket named by the event's own
+// entityId sits in exactly this status; resolved the moment it's anything
+// else. `runLeaves`: same idea, keyed to a run's own status, for an event
+// scoped to entityType 'run' rather than 'ticket'. `projectResumed`:
+// pending while the project the event belongs to is still paused (either
+// cause) -- see commands/inbox.ts's `describeProjectPause`, which collapses
+// every pause-causing event into the ONE currently-active pause rather than
+// showing one item per historical firing.
+export type ResolvesWhen = { ticketLeaves: TicketStatus } | { runLeaves: RunStatus } | { projectResumed: true };
+
+// A discriminated union, not one shape with an optional field: an
+// `inbox`-visibility row that omits `resolvesWhen` fails to typecheck at
+// the row's own definition site. That alone has no teeth in this repo --
+// there is no `tsc` step in `pnpm test`, only `node`'s own type-stripping,
+// which checks nothing -- so the loop below, right after POLICY, re-asserts
+// the same rule at runtime, at module load, the moment this file is
+// imported by anything. Every test file imports it transitively, so an
+// inbox row missing its resolution rule fails the entire suite immediately,
+// not on whatever test happens to exercise that one event type.
+export type EventPolicy =
+  | { visibility: 'inbox'; requiresUser: true; resolvesWhen: ResolvesWhen }
+  | { visibility: 'activity'; requiresUser: false }
+  | { visibility: 'internal'; requiresUser: false };
 
 const DEFAULT_POLICY: EventPolicy = { visibility: 'internal', requiresUser: false };
 
@@ -55,7 +86,7 @@ const POLICY: Record<string, EventPolicy> = {
   // whether by exhaustion or because the failure was not retryable at all
   // (e.g. `budget_exceeded`). Now a real, distinct event type, so this row
   // is no longer a compromise between two cases the way its predecessor was.
-  worker_failed_final: { visibility: 'inbox', requiresUser: true },
+  worker_failed_final: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'FAILED' } },
   // `worker_failure` itself is never the event_type actually persisted --
   // stateMachine.ts's `recordTicketTransition` always classifies the
   // concrete outcome type above instead (see its comment). This row exists
@@ -73,7 +104,7 @@ const POLICY: Record<string, EventPolicy> = {
   // Unlike `worker_failure`, this verb has only one possible destination
   // (a worker's own budget self-stop is never retryable), so this row is not
   // a "pick the more common case" compromise -- it is the exact answer.
-  worker_budget_stop: { visibility: 'inbox', requiresUser: true },
+  worker_budget_stop: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'FAILED' } },
 
   // "Worker completed", the no-review-needed half (Internal: No, Activity:
   // Yes, Inbox: No, since review was not needed).
@@ -81,10 +112,10 @@ const POLICY: Record<string, EventPolicy> = {
 
   // "Worker completed", the review-needed half (Internal: No, Activity:
   // Yes, Inbox: Yes).
-  worker_needs_review: { visibility: 'inbox', requiresUser: true },
+  worker_needs_review: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'REVIEW' } },
 
   // "User decision required" (Internal: No, Activity: Yes, Inbox: Yes).
-  worker_needs_user_decision: { visibility: 'inbox', requiresUser: true },
+  worker_needs_user_decision: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'BLOCKED' } },
 
   // "Dependency completed" (Internal: No, Activity: Yes, Inbox: No). This is
   // the event fired on the dependent ticket when its blockers are
@@ -172,12 +203,12 @@ const POLICY: Record<string, EventPolicy> = {
   // "Permission/credential required" (Internal: No, Activity: Yes, Inbox:
   // Yes). Fired when a worker reports it can't authenticate; pauses the
   // project's adapter until `magarine resume`.
-  adapter_unavailable: { visibility: 'inbox', requiresUser: true },
+  adapter_unavailable: { visibility: 'inbox', requiresUser: true, resolvesWhen: { projectResumed: true } },
   // Not in the doc. A ticket's workspace couldn't be prepared (e.g.
   // DIRECTORY with no project workspace root configured) — a
   // misconfiguration only the user can fix, so it needs to reach them the
   // same way `adapter_unavailable` does, not silently stall the ticket.
-  workspace_preparation_failed: { visibility: 'inbox', requiresUser: true },
+  workspace_preparation_failed: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'READY' } },
 
   // --- Batch 4: review flow and project spend cap ---
   // docs/strategy/batch-4-spec.md section 2's cross-role contract. Not in
@@ -203,7 +234,7 @@ const POLICY: Record<string, EventPolicy> = {
   // project's spend cap would be exceeded by the next spawn. The daemon
   // refused to spawn and paused the project, so this needs the owner's
   // attention the same way an adapter pause does.
-  project_spend_cap_reached: { visibility: 'inbox', requiresUser: true },
+  project_spend_cap_reached: { visibility: 'inbox', requiresUser: true, resolvesWhen: { projectResumed: true } },
 
   // --- Batch 5: the supervisor must survive its own decisions ---
   // docs/strategy/batch-5-spec.md section 1 ruling 1's three guards. Neither
@@ -227,7 +258,26 @@ const POLICY: Record<string, EventPolicy> = {
   // the adapter's progress events, one row per run. Not a TransitionEvent
   // member (it never changes tickets.status), so not exercised by the
   // completeness test below.
-  unknown_model_rate: { visibility: 'inbox', requiresUser: true },
+  //
+  // Batch 12 finding, flagged to the Orchestrator, answer pending: this is
+  // the FOURTH instance of the invisible-inbox class, and the worst one --
+  // unlike the other three, it was never reachable by anyone, because
+  // `commands/inbox.ts`'s old `buildInbox` only ever looked at entityType
+  // 'ticket'. Worse, no `resolvesWhen` for it actually works: scheduler.ts
+  // calls `raiseUnknownModelRateIfFlagged` before the run/ticket goes
+  // terminal in the SAME function, on all three call sites, so a
+  // status-based resolution condition (`runLeaves: 'running'`,
+  // `ticketLeaves: 'IN_PROGRESS'`) is already false by the time anyone could
+  // poll the inbox for it -- the same invisibility bug wearing a
+  // `resolvesWhen` field. It also has no next command and no owner action:
+  // a heads-up that a run priced at the conservative fallback rate, nothing
+  // to decide. Proposed: downgrade to `visibility: 'activity'` -- it is
+  // already fully visible via `activity --project <id>` today (that filter
+  // only drops `internal`), so nothing becomes less visible; it stops being
+  // asked to resolve a condition that can't be true when anyone would see
+  // it. `runLeaves: 'running'` below is a placeholder, known imperfect,
+  // until that's decided.
+  unknown_model_rate: { visibility: 'inbox', requiresUser: true, resolvesWhen: { runLeaves: 'running' } },
 
   // --- Batch 9: the Manager invocation ---
   // Fired by managerApply.ts once a valid proposal has been applied,
@@ -262,14 +312,31 @@ const POLICY: Record<string, EventPolicy> = {
   // (manager.ts's isManagerDailyCapReached), raised by scheduler.ts's
   // tick() spawn-time gate for a READY manager ticket it will not start
   // this cycle. Inbox per the spec ("with an inbox item when reached"),
-  // matching project_spend_cap_reached's own treatment -- but see this
-  // event's own doc comment in scheduler.ts: it is ticket-scoped, and
-  // actually SURFACING it through commands/inbox.ts's buildInbox needs a
-  // `PENDING_TICKET_STATUS['manager_daily_cap_reached'] = 'READY'` row in
-  // that file, which is Role Q's (commands/) and outside this role's brief
-  // to edit -- recorded here as a finding, not fixed silently.
-  manager_daily_cap_reached: { visibility: 'inbox', requiresUser: true },
+  // matching project_spend_cap_reached's own treatment. Ticket-scoped, and
+  // was ONE OF THE THREE original instances of the invisible-inbox class
+  // (see this file's header comment): recorded with inbox visibility here,
+  // but with no resolution rule anywhere for commands/inbox.ts's buildInbox
+  // to surface it by. Fixed now by the `resolvesWhen` row itself.
+  manager_daily_cap_reached: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'READY' } },
 };
+
+// The runtime half of "adding an inbox event without its resolution rule
+// is a type error at the definition site" -- the TS discriminated union
+// above IS that type error for an editor or a `tsc` run, but this repo's
+// `pnpm test` never runs one (`node`'s native TS support strips types, it
+// does not check them), so nothing would actually stop a row like
+// `{ visibility: 'inbox', requiresUser: true }` with no `resolvesWhen` from
+// running. This runs at module load -- every test file imports policy.ts
+// transitively -- so that exact gap crashes the whole suite immediately,
+// on import, rather than surfacing as a silently-invisible inbox item
+// discovered later by a person hitting it (the bug this batch exists to
+// close structurally). See policy.test.ts's mutation check: removing an
+// inbox row's `resolvesWhen` must fail here, not pass quietly.
+for (const [eventType, policy] of Object.entries(POLICY)) {
+  if (policy.visibility === 'inbox' && !('resolvesWhen' in policy)) {
+    throw new Error(`policy.ts: inbox row "${eventType}" has no resolvesWhen -- every inbox event must say how it resolves`);
+  }
+}
 
 export function classify(eventType: string): EventPolicy {
   return POLICY[eventType] ?? DEFAULT_POLICY;
@@ -280,4 +347,18 @@ export function classify(eventType: string): EventPolicy {
 // `DEFAULT_POLICY`.
 export function hasPolicyRow(eventType: string): boolean {
   return Object.prototype.hasOwnProperty.call(POLICY, eventType);
+}
+
+// Batch 12: drives commands/inboxCompleteness.test.ts's own completeness
+// check -- every event type this returns must have a scenario in that
+// file's scenario map, so a new inbox row added later without one fails
+// that test immediately, the same way a missing `resolvesWhen` fails at
+// import time above. Reads POLICY directly rather than a hand-copied list,
+// for the same reason policy.test.ts parses TransitionEvent from source
+// instead of hand-copying it: a list a person has to remember to update in
+// two places is the exact failure mode this batch exists to close.
+export function inboxEventTypes(): string[] {
+  return Object.entries(POLICY)
+    .filter(([, policy]) => policy.visibility === 'inbox')
+    .map(([eventType]) => eventType);
 }

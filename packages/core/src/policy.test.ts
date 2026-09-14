@@ -70,8 +70,16 @@ test('the missing-row filter used by the completeness check actually flags a gap
 });
 
 test('spot checks against the architecture document\'s explicit rows', () => {
-  assert.deepEqual(classify('worker_needs_user_decision'), { visibility: 'inbox', requiresUser: true });
-  assert.deepEqual(classify('worker_needs_review'), { visibility: 'inbox', requiresUser: true });
+  assert.deepEqual(classify('worker_needs_user_decision'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { ticketLeaves: 'BLOCKED' },
+  });
+  assert.deepEqual(classify('worker_needs_review'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { ticketLeaves: 'REVIEW' },
+  });
   assert.deepEqual(classify('worker_done'), { visibility: 'activity', requiresUser: false });
   assert.deepEqual(classify('worker_progress'), { visibility: 'internal', requiresUser: false });
   assert.deepEqual(classify('user_decision'), { visibility: 'activity', requiresUser: false });
@@ -83,8 +91,16 @@ test('spot checks against batch 3\'s new transitions, now that Role F has landed
 });
 
 test('documentation-only rows for the two non-transition event types scheduler.ts hardcodes today', () => {
-  assert.deepEqual(classify('adapter_unavailable'), { visibility: 'inbox', requiresUser: true });
-  assert.deepEqual(classify('workspace_preparation_failed'), { visibility: 'inbox', requiresUser: true });
+  assert.deepEqual(classify('adapter_unavailable'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { projectResumed: true },
+  });
+  assert.deepEqual(classify('workspace_preparation_failed'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { ticketLeaves: 'READY' },
+  });
 });
 
 test('documentation-only rows for batch 5\'s two internal guard event types', () => {
@@ -94,11 +110,19 @@ test('documentation-only rows for batch 5\'s two internal guard event types', ()
 
 test('spot checks against batch 4\'s failure split: retryable is quiet, final reaches the inbox', () => {
   assert.deepEqual(classify('worker_failed_retryable'), { visibility: 'activity', requiresUser: false });
-  assert.deepEqual(classify('worker_failed_final'), { visibility: 'inbox', requiresUser: true });
+  assert.deepEqual(classify('worker_failed_final'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { ticketLeaves: 'FAILED' },
+  });
 });
 
 test('spot check for batch 7\'s worker_budget_stop: reaches the inbox, same as any other FAILED-final outcome', () => {
-  assert.deepEqual(classify('worker_budget_stop'), { visibility: 'inbox', requiresUser: true });
+  assert.deepEqual(classify('worker_budget_stop'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { ticketLeaves: 'FAILED' },
+  });
 });
 
 test('spot checks against batch 4\'s review flow', () => {
@@ -108,11 +132,21 @@ test('spot checks against batch 4\'s review flow', () => {
 
 test('non-TransitionEvent rows for batch 4\'s project-level events', () => {
   assert.deepEqual(classify('project_resume'), { visibility: 'activity', requiresUser: false });
-  assert.deepEqual(classify('project_spend_cap_reached'), { visibility: 'inbox', requiresUser: true });
+  assert.deepEqual(classify('project_spend_cap_reached'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { projectResumed: true },
+  });
 });
 
 test('non-TransitionEvent row for batch 6\'s unknown-model pricing fallback: visible, not silent', () => {
-  assert.deepEqual(classify('unknown_model_rate'), { visibility: 'inbox', requiresUser: true });
+  // Batch 12: resolvesWhen here is a known-imperfect placeholder pending the
+  // Orchestrator's call on downgrading this row to activity (see policy.ts's
+  // own comment on this row) -- asserted loosely (visibility/requiresUser
+  // only) so this test doesn't have to change again the moment that lands.
+  const policy = classify('unknown_model_rate');
+  assert.equal(policy.visibility, 'inbox');
+  assert.equal(policy.requiresUser, true);
 });
 
 test('spot check for batch 8\'s person-initiated cancel: activity, not internal and not inbox -- the owner did it themselves', () => {
@@ -122,5 +156,9 @@ test('spot check for batch 8\'s person-initiated cancel: activity, not internal 
 test('batch 11: discuss and scope_updated are silent-by-default activity, the manager daily cap reaches the inbox', () => {
   assert.deepEqual(classify('discuss'), { visibility: 'activity', requiresUser: false });
   assert.deepEqual(classify('scope_updated'), { visibility: 'activity', requiresUser: false });
-  assert.deepEqual(classify('manager_daily_cap_reached'), { visibility: 'inbox', requiresUser: true });
+  assert.deepEqual(classify('manager_daily_cap_reached'), {
+    visibility: 'inbox',
+    requiresUser: true,
+    resolvesWhen: { ticketLeaves: 'READY' },
+  });
 });

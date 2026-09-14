@@ -40,9 +40,9 @@ export type TransitionEvent =
   // attempt: retrying under the same ceiling would just reproduce the same
   // stop, so the record must say "raise the budget", not "try again".
   // Always persists as `worker_failed_final` (the concrete FAILED outcome
-  // type the inbox already keys on -- see inbox.ts's PENDING_TICKET_STATUS),
-  // with `payload.failureClass: 'worker_budget_stop'` distinguishing it from
-  // an ordinary exhausted/non-retryable `worker_failure`. See
+  // type the inbox already keys on -- see policy.ts's `resolvesWhen` row for
+  // it), with `payload.failureClass: 'worker_budget_stop'` distinguishing it
+  // from an ordinary exhausted/non-retryable `worker_failure`. See
   // `computeNextState`'s 'worker_budget_stop' case for the live transition
   // and its 'worker_failed_final' case for how replay tells the two apart
   // from the persisted payload alone (there is no second concrete event type
@@ -195,9 +195,9 @@ function computeNextState(ticket: Ticket, event: ReplayableEvent, payload: unkno
     // remedy is `ticket set --budget` (raise the ceiling) then `retry`, not
     // another automatic attempt. Persisted as `worker_failed_final` -- the
     // same concrete outcome type any other FAILED-final failure uses, so the
-    // inbox (inbox.ts's PENDING_TICKET_STATUS, not this role's file) already
-    // knows how to surface it without a second event type or a second policy
-    // row keyed on this string alone.
+    // inbox (via policy.ts's `resolvesWhen` row for it, not this file)
+    // already knows how to surface it without a second event type or a
+    // second policy row keyed on this string alone.
     return {
       toStatus: 'FAILED',
       attemptCount: ticket.attemptCount,

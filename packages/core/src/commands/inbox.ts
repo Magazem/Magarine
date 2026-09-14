@@ -1,6 +1,7 @@
 import type { Db } from '../db/index.ts';
-import { getProject, getTicket, listEventsForProject } from '../store.ts';
-import type { EventRow, TicketStatus } from '../types.ts';
+import { classify } from '../policy.ts';
+import { getProject, getRun, getTicket, listEventsForProject } from '../store.ts';
+import type { EventRow } from '../types.ts';
 
 // `inbox`: events that require the user's attention and have not yet been
 // resolved. There is no separate "acknowledged" column on `events` (the
@@ -8,32 +9,38 @@ import type { EventRow, TicketStatus } from '../types.ts';
 // implementation does not build a second copy of), so "still pending" is
 // derived from current state instead of a stored flag.
 //
-// Two entity scopes, two different "still pending" checks:
-// - ticket-scoped (`worker_needs_user_decision`, `worker_needs_review`,
-//   `worker_failed_final`): pending while the ticket is still sitting in
-//   the *specific* status that event put it into -- not just "some pending
-//   status" (a shared set, checked only against the ticket's current
-//   status, wrongly resurrects a stale `worker_needs_review` once a
-//   `reject`ed-to-exhaustion ticket lands in FAILED: FAILED is pending for
-//   `worker_failed_final`, but the ticket is no longer sitting in REVIEW,
-//   so the older `worker_needs_review` item must not still count).
-// - project-scoped (`project_spend_cap_reached`): pending while the pause
-//   it caused is still in effect. `resume --project` is the project-scoped
-//   analogue of `decide`/`retry` -- once it clears the pause, the item
-//   disappears the same way.
-const PENDING_TICKET_STATUS: Record<string, TicketStatus> = {
-  worker_needs_user_decision: 'BLOCKED',
-  worker_needs_review: 'REVIEW',
-  worker_failed_final: 'FAILED',
-  // Batch 11 item 3 (Role R's scheduler.ts, policy.ts): the per-project
-  // daily Manager-invocation cap leaves its manager ticket sitting READY --
-  // this row is what actually surfaces that event here, named by Role R's
-  // own doc comment in policy.ts as the one line missing from THIS file
-  // (commands/, Role Q's) for the event to be visible at all. Same class of
-  // bug as the pre-batch-11 adapter_unavailable gap: an event recorded with
-  // inbox policy but no row here is recorded and never seen.
-  manager_daily_cap_reached: 'READY',
-};
+// Batch 12 (Role S): this file used to keep its OWN lookup table, mapping
+// ticket-scoped event types to the status they're pending in --
+// hand-maintained, separate from policy.ts's inbox/requiresUser rows, and
+// nothing tied the two together. Three separate events (adapter_unavailable,
+// manager_daily_cap_reached, workspace_preparation_failed) were each recorded
+// with inbox visibility and never displayed, because each one's resolution
+// rule was missing from that table -- three instances of one class, not
+// three unrelated bugs. That table is gone; every inbox row's resolution
+// now lives on the row itself, in policy.ts's `resolvesWhen`, so buildInbox
+// reads it from there and a new inbox row without one fails at import time
+// (see policy.ts's own load-time check) rather than shipping silently
+// invisible.
+//
+// Two resolution kinds land here (a third, `projectResumed`, is handled
+// separately below by `describeProjectPause`, since a project has exactly
+// ONE current pause regardless of how many events over its history could
+// have caused one):
+// - `ticketLeaves`: pending while the ticket the event names is still
+//   sitting in that *specific* status -- not just "some pending status" (a
+//   shared set, checked only against the ticket's current status, wrongly
+//   resurrects a stale `worker_needs_review` once a `reject`ed-to-exhaustion
+//   ticket lands in FAILED: FAILED is pending for `worker_failed_final`, but
+//   the ticket is no longer sitting in REVIEW, so the older
+//   `worker_needs_review` item must not still count).
+// - `runLeaves`: same idea, for an event scoped to a run rather than a
+//   ticket (currently only `unknown_model_rate`).
+//
+// `latestByKey`, below, additionally keeps only the MOST RECENT event per
+// (entityId, eventType): a ticket that fails, gets retried, and fails again
+// gets two `worker_failed_final` events, and without this a naive
+// resolution check would show BOTH once the ticket is FAILED again, not
+// just the current one.
 
 export interface InboxItem {
   /** Set for ticket-scoped events. */
@@ -49,10 +56,11 @@ export interface InboxItem {
 // appended to its message when a ticketId is available (buildInbox always
 // has one; managerEnvelope.ts's call below deliberately does not pass one --
 // a CLI command belongs in a line a person reads, not in the Manager's own
-// prompt, which has no CLI to run). Keyed by the PENDING_TICKET_STATUS event
-// types above, not the generic fallback branches below, since the fix is a
-// property of what the ticket is waiting for, not of which payload shape
-// happened to compose its message text.
+// prompt, which has no CLI to run). Keyed by the ticket-scoped event types
+// buildInbox resolves via `ticketLeaves` above, not the generic fallback
+// branches below, since the fix is a property of what the ticket is
+// waiting for, not of which payload shape happened to compose its message
+// text.
 const NEXT_COMMAND: Record<string, (ticketId: string) => string> = {
   worker_needs_user_decision: (id) => `magarine decide --ticket ${id} --answer "..."`,
   worker_needs_review: (id) => `magarine approve --ticket ${id}, or magarine reject --ticket ${id} --reason "..."`,
@@ -150,9 +158,10 @@ export function reasonFor(eventType: string, payload: unknown, ticketId?: string
 // state (adapterPausedAt/pauseReason), not filtered out of the stored event
 // log, for two reasons found in the same sitting. First, an
 // `adapter_unavailable` pause's triggering event is entityType 'ticket' and
-// was never in PENDING_TICKET_STATUS, so it was silently invisible in the
-// inbox -- a real gap, not a display choice. Second, this makes "is the
-// project still paused" the single source of truth for whether the item
+// had no ticket-scoped resolution rule recorded anywhere, so it was
+// silently invisible in the inbox -- a real gap, not a display choice.
+// Second, this makes "is the project still paused" the single source of
+// truth for whether the item
 // shows at all, exactly the same "still pending" contract every ticket-scoped
 // item already gets, rather than the previous project-scoped branch's
 // bespoke isProjectAdapterPaused check bolted onto raw event iteration.
@@ -209,19 +218,47 @@ export function describeProjectPause(
 export function buildInbox(db: Db, projectId: string): InboxItem[] {
   const events: EventRow[] = listEventsForProject(db, projectId).filter((e) => e.requiresUser);
 
-  const items: InboxItem[] = [];
+  // Ascending sequence order (listEventsForProject's own contract), so the
+  // last write into this map for a given key is always the most recent.
+  const latestByKey = new Map<string, EventRow>();
   for (const event of events) {
-    if (event.entityType !== 'ticket') continue;
-    const ticket = getTicket(db, event.entityId);
-    const pendingStatus = PENDING_TICKET_STATUS[event.eventType];
-    if (!ticket || !pendingStatus || ticket.status !== pendingStatus) continue;
+    const policy = classify(event.eventType);
+    if (policy.visibility !== 'inbox') continue;
+    if ('projectResumed' in policy.resolvesWhen) continue; // one collapsed item per project, handled below
+    latestByKey.set(`${event.entityId}:${event.eventType}`, event);
+  }
+
+  const items: InboxItem[] = [];
+  for (const event of latestByKey.values()) {
+    const policy = classify(event.eventType);
+    if (policy.visibility !== 'inbox') continue; // narrows the type; always true here, set above
+    const resolvesWhen = policy.resolvesWhen;
+
+    let ticketIdForMessage: string | undefined;
+    let stillPending: boolean;
+    if ('ticketLeaves' in resolvesWhen) {
+      const ticket = getTicket(db, event.entityId);
+      stillPending = ticket !== undefined && ticket.status === resolvesWhen.ticketLeaves;
+      ticketIdForMessage = event.entityId;
+    } else {
+      const run = getRun(db, event.entityId);
+      stillPending = run !== undefined && run.status === resolvesWhen.runLeaves;
+      ticketIdForMessage = run?.ticketId;
+    }
+    if (!stillPending) continue;
+
     items.push({
-      ticketId: event.entityId,
+      ticketId: ticketIdForMessage,
       eventType: event.eventType,
-      message: reasonFor(event.eventType, event.payload, event.entityId),
+      message: reasonFor(event.eventType, event.payload, ticketIdForMessage),
       createdAt: event.createdAt,
     });
   }
+  // Chronological, by when each item's CURRENT (most recent) triggering
+  // event actually happened -- not by Map insertion order, which would
+  // otherwise reflect a key's FIRST occurrence even after its value was
+  // overwritten by a later one.
+  items.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
 
   const project = getProject(db, projectId);
   if (project && project.adapterPausedAt != null) {
