@@ -47,9 +47,19 @@ described in: *"I would give it an md file with a project scope, something
 similar to how we started this whole project, and work on it with it."*
 Here is exactly that, end to end.
 
-Run these from anywhere, once `magarine` is on your PATH:
+Run these from wherever `magarine` is on your PATH:
 
-1. **Create a project.** This is a named container for the work.
+1. **Make a folder for the project, and stand inside it.** This folder
+   becomes the project's one home: its scope document lives here, and so
+   does anything a task writes when it needs a shared workspace. If you
+   already have a scope document written, save it here now as `SCOPE.md` --
+   Magarine will pick it up automatically once the project exists. If you
+   don't, that's fine too; the interview (step 4) builds one with you.
+   ```sh
+   mkdir my-first-project && cd my-first-project
+   ```
+
+2. **Create the project**, from inside that folder:
    ```sh
    magarine project create --name "My First Project" --brief "One paragraph describing what you want built."
    ```
@@ -57,53 +67,56 @@ Run these from anywhere, once `magarine` is on your PATH:
    every command below. **Lost it, or closed the terminal?** Every command
    below also accepts the project's exact name instead of its id, and
    `magarine project list` shows every project you have, with its id, name,
-   spend, and how many tasks are in each status -- run that any time you need
-   to find your way back. A project gets a scope document automatically; if
-   you already have one written, hand it over now instead with
-   `--scope my-project-scope.md`.
+   cost, and how many tasks are in each status -- run that any time you need
+   to find your way back. (Standing somewhere else on purpose? `--dir <path>`
+   names a different folder instead of the one you're in; `project set --dir
+   <path>` moves it later.)
 
-2. **Start the daemon.** This is the background process that actually reads
+3. **Start the daemon.** This is the background process that actually reads
    your scope, talks back to you, and runs your tasks, using the real
-   `claude` tool. Every one of these is a real, costed run -- typically cents
-   for a single reply or a small task, shown on the board as it happens.
-   Leave this terminal open -- it prints the port it's listening on and a
-   token, and keeps running until you stop it.
+   `claude` tool. Every one of these is a real run with an equivalent API
+   cost -- typically cents for a single reply or a small task, shown on the
+   board as it happens. Leave this terminal open -- it prints the port it's
+   listening on and a token, and keeps running until you stop it.
    ```sh
    magarine serve --adapter claude
    ```
 
-3. **Hand it the scope, and let it interview you.** Write what you want in a
-   plain markdown file -- a project scope, the same way you'd write one for a
-   person -- then hand it over. (A short sentence works too; the file is just
-   the natural way to write a real one.)
+4. **Let it interview you.** If you already saved a `SCOPE.md` in the
+   project's folder (step 1), just plan from it directly:
    ```sh
-   magarine plan --project <projectId> --mission "$(cat my-project-scope.md)"
+   magarine plan --project <projectId>
    ```
-   This writes your text into the project's scope document, then plans from
-   it. **On a fresh project, expect it to come back with only questions and
-   no tasks at all -- that is the intended first reply, not a stall.** It
-   would rather ask what platform you're targeting, what's out of scope, or
-   what "done" looks like than guess and build the wrong thing. Only once it
-   says it has enough does it propose an actual batch of tasks.
+   If you didn't, write what you want as your `--mission` instead -- a short
+   sentence works, or a whole document (`--mission "$(cat my-notes.md)"`); it
+   is saved as the project's `SCOPE.md` before planning:
+   ```sh
+   magarine plan --project <projectId> --mission "Describe what you want built."
+   ```
+   **On a fresh project, expect it to come back with only questions and no
+   tasks at all -- that is the intended first reply, not a stall.** It would
+   rather ask what platform you're targeting, what's out of scope, or what
+   "done" looks like than guess and build the wrong thing. Only once it says
+   it has enough does it propose an actual batch of tasks.
    ```sh
    magarine inbox --project <projectId>
    ```
    shows its questions, in full, and tells you the exact command to answer
    each one.
 
-4. **Talk to it.** Answer its questions, steer it, or tell it to go ahead --
+5. **Talk to it.** Answer its questions, steer it, or tell it to go ahead --
    all through the same command:
    ```sh
    magarine discuss --project <projectId> --message "Target iOS only for now. Go ahead and propose the first batch."
    ```
-   Each message is one more costed turn: it reads your scope document and
-   the board fresh, replies, and updates the scope or proposes tasks as
-   needed. Once the scope already has content, running `plan --mission`
-   again refuses (it won't silently overwrite what you and it have built
-   together) -- edit the scope file directly, or keep using `discuss` to add
-   to the conversation.
+   Each message is one more run with its own equivalent API cost: it reads
+   your scope document and the board fresh, replies, and updates the scope
+   or proposes tasks as needed. Once the scope already has content, running
+   `plan --mission` again refuses (it won't silently overwrite what you and
+   it have built together) -- edit `SCOPE.md` directly, or keep using
+   `discuss` to add to the conversation.
 
-5. **Watch it work.** Either open the page `magarine serve` printed (paste
+6. **Watch it work.** Either open the page `magarine serve` printed (paste
    in the token it printed, pick your project) to see the board, inbox, and
    the whole conversation in one place, refreshing live -- or, from a second
    terminal:
@@ -114,7 +127,7 @@ Run these from anywhere, once `magarine` is on your PATH:
    Run these again any time to see current status -- they don't refresh on
    their own.
 
-6. **Respond when it needs you, then stop.** If `inbox` shows something, see
+7. **Respond when it needs you, then stop.** If `inbox` shows something, see
    "The inbox" below for what to do -- and `discuss` any time you want to
    change direction, correct something, or ask it to plan the next batch.
    When you're satisfied, go back to the terminal running `magarine serve`
@@ -123,8 +136,8 @@ Run these from anywhere, once `magarine` is on your PATH:
 ## The board
 
 `magarine board --project <projectId>` lists every task in the project: its
-id, status, title, how many attempts it's used, and what it has cost so far.
-Status is one of:
+id, status, title, how many attempts it's used, and its equivalent API cost
+so far. Status is one of:
 
 - **OPEN** -- waiting on another task it depends on.
 - **READY** -- next in line to run.
@@ -136,11 +149,15 @@ Status is one of:
   "When something says FAILED" below.
 - **CANCELLED** -- you stopped it yourself.
 
-The total spend for the project, against any spending limit you set, is on
-the first line -- unless the project is paused, in which case the very
-first line instead reads `PAUSED: <reason>`, and names the exact command
-that clears it. A task still showing READY while paused is not about to
-run; nothing starts again until the pause is addressed.
+The project's total equivalent API cost, against any spending limit you
+set, is on the first line -- unless the project is paused, in which case the
+very first line instead reads `PAUSED: <reason>`, and names the exact
+command that clears it. **"Equivalent API cost" is what the tool would have
+billed at metered rates, for comparison -- if you're testing on a
+subscription rather than metered billing, this is not money leaving your
+account, and the real constraint is session limits, not dollars.** A task
+still showing READY while paused is not about to run; nothing starts again
+until the pause is addressed.
 
 Rows marked `[MANAGER]` are the interview/planning turns themselves --
 `plan` and `discuss` each create one. They cost and behave like any other
@@ -205,17 +222,25 @@ apart from a login problem or a genuine bug.
 
 ## Where things live
 
+- **Your project's own folder**: the one you stood in when you ran
+  `project create` (or named with `--dir`). This is the project's one home:
+  `SCOPE.md` lives here, edit it by hand any time and the next `plan` or
+  `discuss` reads whatever is currently on disk, and any task you give a
+  shared workspace with `--workspace DIRECTORY` writes here too. `project
+  set --project <projectId> --dir <path>` moves it later.
 - **State** (your projects, tasks, and their history): a small database file
   under `~/.magarine/` by default. Set `MAGARINE_HOME` or pass
-  `--state-dir <folder>` to any command to use a different location.
-- **Cost**: shown per task on the board, and as a running total for the
-  whole project on the board's first line.
-- **Worker output**: under `~/.magarine/artifacts/` unless you gave a task
-  its own shared workspace with `--workspace DIRECTORY`.
-- **Scope document**: wherever you pointed `project create --scope` at, or
-  `~/.magarine/projects/<projectId>/SCOPE.md` by default -- either way, edit
-  it by hand any time; the next `plan` or `discuss` reads whatever is
-  currently on disk.
+  `--state-dir <folder>` to any command to use a different location. This
+  is Magarine's own bookkeeping, separate from any project's own folder
+  above.
+- **Equivalent API cost**: shown per task on the board, and as a running
+  total for the whole project on the board's first line -- what the tool
+  would have billed at metered rates; on a subscription, not money leaving
+  your account, and the real constraint is session limits, not dollars.
+- **Worker output**: under `~/.magarine/artifacts/` for a task with no
+  shared workspace (the default), or in the project's own folder above for
+  one given `--workspace DIRECTORY`.
 
-Nothing is written to your current folder unless you explicitly asked for it
-with `--state-dir` or `--workspace`.
+Nothing is written outside your project's own folder or `~/.magarine/`
+unless you explicitly asked for it (`--state-dir`, or `--workspace` naming
+somewhere else).

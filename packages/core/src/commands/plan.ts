@@ -35,7 +35,7 @@ export function planWithMission(db: Db, projectId: string, input: { mission?: st
     }
     if (!project.scopePath) {
       throw new PlanError(
-        `project ${projectId} has no scope file configured -- recreate it with \`project create --scope <file>\` (a fresh project gets a default one automatically) before using --mission.`
+        `project ${projectId} has no scope file configured -- give it a directory with \`project set --project ${projectId} --dir <path>\` (a fresh project gets one automatically from \`project create --dir\`) before using --mission.`
       );
     }
 

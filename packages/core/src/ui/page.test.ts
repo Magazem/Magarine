@@ -31,3 +31,12 @@ test('the page\'s inline <script> is syntactically valid JavaScript', async () =
   const result = await proc.wait();
   assert.equal(result.code, 0, `node --check failed:\n${stderr}`);
 });
+
+// Batch 12 item 4: "equivalent API cost" on the board, the page and the
+// README, with the one sentence about subscriptions/session limits -- see
+// commands/board.test.ts for the CLI board's own version of this same
+// check.
+test('the page labels cost "equivalent API cost" and names the subscription/session-limits caveat', () => {
+  assert.match(PAGE_HTML, /equivalent API cost/i);
+  assert.match(PAGE_HTML, /session limits/);
+});
