@@ -328,3 +328,125 @@ test('with no --state-dir, no MAGARINE_HOME, and no --db, the daemon falls back 
     rmSync(scratchCwd, { recursive: true, force: true });
   }
 });
+
+// Batch 10 (Role Q): the five likeliest owner mistakes, each driven through
+// the real CLI entry point (spawning cli.ts, not calling the functions
+// underneath) -- the whole point is what the owner actually sees on their
+// screen, not what the function they never call returns. Four of the five
+// already had friendly, typed-error handling in this file before this role
+// touched it (ticket add's TicketAddError, decide/retry's DecideError/
+// RetryError, cancel's daemon-only message, and the budget floor's own
+// message from store.ts); what was missing was a test proving each one
+// through the CLI itself rather than only against the command function.
+
+test('cancel without a running daemon fails with a plain sentence naming the fix, not a raw error', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-cancel-nodaemon-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['cancel', '--ticket', 'tkt_whatever', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /cancel requires a running daemon/i);
+    assert.match(res.stderr, /magarine serve/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('decide against a ticket id that does not exist fails with a plain "no such ticket" message', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-decide-badticket-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['decide', '--ticket', 'tkt_does_not_exist', '--answer', 'x', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such ticket: tkt_does_not_exist/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('retry against a ticket id that does not exist fails with a plain "no such ticket" message', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-retry-badticket-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['retry', '--ticket', 'tkt_does_not_exist', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such ticket: tkt_does_not_exist/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ticket add --budget below the floor fails with a plain sentence naming the floor, not a stack trace', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-budgetfloor-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const projectRes = await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+    const res = await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--budget', '0.01', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /at least \$0\.25/);
+    assert.doesNotMatch(res.stderr, /at\s+(file:|Object\.|async)/, 'must not leak a raw stack trace to the owner');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor runs through the real CLI entry point and prints one PASS/FAIL/SKIP line per check', async () => {
+  // Real machine, real claude/pnpm/node -- this proves the WIRING (cli.ts
+  // actually calls runDoctor and prints its output in both formats), not
+  // any specific PASS/FAIL/SKIP content. The content of each line,
+  // including the "claude not logged in" branch, is covered deterministically
+  // with injected fakes in commands/doctor.test.ts -- faking a real
+  // logged-out `claude` binary at the subprocess/PATH level for this test
+  // too would need a fragile cross-platform executable shim for little
+  // additional proof, so it was not built; noted here rather than silently
+  // left out.
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-doctor-'));
+  try {
+    const res = await run(['doctor', '--state-dir', dir]);
+    for (const name of ['Node.js version', 'pnpm', 'claude CLI', 'claude login', 'state directory', 'daemon']) {
+      assert.match(
+        res.stdout,
+        new RegExp(`^(PASS|FAIL|SKIP) {2}${name.replace('.', '\\.')}`, 'm'),
+        `missing a line for "${name}" in:\n${res.stdout}`
+      );
+    }
+    assert.ok(res.code === 0 || res.code === 1, `exit code should be 0 or 1, got ${res.code}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor --json prints one machine-readable line per check through the real CLI entry point', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-doctor-json-'));
+  try {
+    const res = await run(['doctor', '--state-dir', dir, '--json']);
+    const lines = JSON.parse(res.stdout) as Array<{ name: string; status: string; detail: string }>;
+    assert.ok(Array.isArray(lines) && lines.length >= 6);
+    assert.ok(lines.every((l) => ['pass', 'fail', 'skip'].includes(l.status)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor --paid is accepted as a known flag, without actually calling out to a real claude', async () => {
+  // Does not assert doctor's own outcome -- only that `--paid` reaches
+  // FLAG_SPECS/runDoctor rather than being reported as an unknown flag, per
+  // this file's own "an unknown flag is reported by name" test above for
+  // every other command. PATH is overridden to a directory with nothing in
+  // it so `resolveExecutable('claude')` fails and `claudeExe` stays
+  // undefined -- `runDoctor`'s `--paid` branch is gated on `claudeExe` being
+  // set, so this is what keeps a real, billed `claude -p` call from ever
+  // firing here, on this machine or the Orchestrator's twenty cold runs.
+  // Spend stays at zero for this whole role; this test proves the flag is
+  // wired, not that a real paid call succeeds.
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-doctor-paid-flag-'));
+  try {
+    const res = await run(['doctor', '--state-dir', dir, '--paid'], {
+      env: { ...process.env, PATH: dir, Path: dir },
+    });
+    assert.doesNotMatch(res.stderr, /Unknown flag/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -27,6 +27,7 @@ import { buildActivity, formatActivity } from './commands/activity.ts';
 import { buildBoard, formatBoard } from './commands/board.ts';
 import { buildInbox, formatInbox } from './commands/inbox.ts';
 import { decide, DecideError } from './commands/decide.ts';
+import { doctorExitCode, formatDoctor, runDoctor } from './commands/doctor.ts';
 import { planMission, PlanError } from './commands/plan.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
@@ -259,6 +260,10 @@ const FLAG_SPECS: Record<string, string[]> = {
   // defaults to 0 (any free loopback port); `--tick-interval` is in seconds,
   // matching `--run-timeout`'s convention elsewhere in this file.
   serve: ['port', 'tick-interval', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
+  // Batch 10 (Role Q): `--paid` opts into one real, billed `claude -p` call
+  // (see commands/doctor.ts) -- absent by default, so `doctor` costs nothing
+  // unless explicitly asked to spend.
+  doctor: ['paid'],
   status: ['project'],
   board: ['project'],
   inbox: ['project'],
@@ -475,6 +480,21 @@ async function main(): Promise<void> {
       setProjectManagerModel(db, projectId, flags['manager-model']);
     }
     output(flags, getProject(db, projectId), `Updated project ${projectId}`);
+    return;
+  }
+
+  if (command === 'doctor') {
+    // No `--db`/daemon routing: doctor never touches ticket/project state,
+    // only the state directory (writability) and a live daemon.json there
+    // (daemon.ts/daemonClient.ts, read-only). See commands/doctor.ts's own
+    // header for why each check is PASS/FAIL/SKIP rather than a boolean.
+    const lines = await runDoctor({ stateDir: stateDir(flags), paid: Boolean(flags.paid) });
+    if (flags.json) {
+      process.stdout.write(JSON.stringify(lines) + '\n');
+    } else {
+      process.stdout.write(formatDoctor(lines) + '\n');
+    }
+    process.exitCode = doctorExitCode(lines);
     return;
   }
 
@@ -892,7 +912,7 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    'Usage: magarine <project create|project set|ticket add|dep add|plan|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
+    'Usage: magarine <doctor|project create|project set|ticket add|dep add|plan|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }
