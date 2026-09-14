@@ -48,10 +48,15 @@ happened when it was changed.
 
 ## Running the CLI
 
-The CLI is not published as a `bin`; run it directly with Node:
+Batch 10 (Role Q) added a `bin` entry (`package.json`), so `npm install -g .`
+or `pnpm link --global` from this directory puts `magarine` on the PATH --
+see the root `README.md` for that path, written for the product's owner
+rather than for this package's own contributors. From inside this directory,
+`node src/cli.ts` still works exactly the same, with no install step:
 
 ```sh
 node src/cli.ts project create --name "My Project" --brief "One-paragraph project brief" --json
+node src/cli.ts project list --json
 node src/cli.ts ticket add --project <projectId> --title "T1" --json
 node src/cli.ts ticket add --project <projectId> --title "T2" --json
 node src/cli.ts ticket add --project <projectId> --title "T3" --json
@@ -98,6 +103,17 @@ Both default to `null`/unset if omitted.
 <usd>` set the project's spend cap (see "Budget and spend caps" below).
 `project set` also refuses (clean message, no stack trace) if the project id
 doesn't exist.
+
+`project list` (Batch 10, Role Q) prints every project in this state
+directory's database -- id, name, default model, spend against its cap, and
+ticket counts by status -- the read path back to a project's id if it's been
+lost or the terminal that created it is gone. Every command taking
+`--project` (this includes `board`/`inbox`/`status`, which now also refuse
+an unknown project instead of silently returning an empty result -- see
+`cli.ts`'s `resolveProjectRef`/`NoSuchProjectError`) accepts either the
+project's id or its exact name; an ambiguous name (`projects.name` has no
+uniqueness constraint) refuses and lists every matching id rather than
+silently picking one.
 
 `project create --model <model>` sets `projects.default_model` (default
 `claude-sonnet-5` if omitted); `project set --project <id> --model <model>`

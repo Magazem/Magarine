@@ -129,11 +129,15 @@ test('a live daemon whose recorded dbPath does not match --db is not routed to: 
       // state directory: must NOT be there -- proof the write went to the
       // file --db actually named, not to the live daemon's database.
       const daemonDbStatus = await runCli(['board', '--project', project.id, '--state-dir', stateDir, '--json']);
-      const board = JSON.parse(daemonDbStatus.stdout) as { tickets: unknown[] };
-      // buildBoard on an unknown project id returns an empty board rather
-      // than throwing (see commands/board.ts) -- this project id simply
-      // does not exist in the daemon's own db.
-      assert.deepEqual(board.tickets, []);
+      // Batch 10 owner walk finding 3: `board` now refuses an unknown
+      // project (cli.ts's `requireProject`) instead of silently returning
+      // an empty board -- exactly what this project id is here, since it
+      // was created in `otherDbPath`, not the daemon's own default db. This
+      // is the corrected behaviour, not a regression: it is the whole proof
+      // that the write went to the right file, just surfaced as a clean
+      // "no such project" refusal now rather than a quietly empty board.
+      assert.equal(daemonDbStatus.code, 1);
+      assert.match(daemonDbStatus.stderr, new RegExp(`no such project: ${project.id}`));
     } finally {
       await handle.kill();
     }

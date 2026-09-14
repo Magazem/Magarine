@@ -450,3 +450,193 @@ test('doctor --paid is accepted as a known flag, without actually calling out to
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Batch 10 owner walk finding 3 (docs/strategy/batch-10-owner-walk.md):
+// `board`/`inbox`/`status` used to accept ANY project id, including one
+// that never existed, and print a calm, empty result at exit 0 --
+// indistinguishable from "no tickets yet" to an owner who typoed or pasted
+// a stale id. `plan`/`ticket add` already refused this at creation time;
+// these three read paths never got the same check. Each below is driven
+// through the real CLI entry point, matching the message `plan`/`ticket
+// add` already use.
+
+test('board against a project id that does not exist fails with "no such project", not a calm empty board', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-board-badproject-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['board', '--project', 'proj_does_not_exist', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such project: proj_does_not_exist/);
+    assert.doesNotMatch(res.stdout, /no tickets/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('inbox against a project id that does not exist fails with "no such project", not a calm empty inbox', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-inbox-badproject-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['inbox', '--project', 'proj_does_not_exist', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such project: proj_does_not_exist/);
+    assert.doesNotMatch(res.stdout, /inbox is empty/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('status against a project id that does not exist fails with "no such project", not silence', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-status-badproject-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['status', '--project', 'proj_does_not_exist', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such project: proj_does_not_exist/);
+    assert.equal(res.stdout, '', 'status used to print nothing at all on a bad id -- now it must fail loudly instead, not just stay quiet');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('board/inbox/status all still work normally against a project that DOES exist', async () => {
+  // The three tests above prove the refusal; this proves the fix didn't
+  // also break the ordinary path for all three in the same stroke.
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-goodproject-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const projectRes = await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+
+    const boardRes = await run(['board', '--project', project.id, '--db', dbFile]);
+    assert.equal(boardRes.code, 0, boardRes.stderr);
+    assert.match(boardRes.stdout, /no tickets/);
+
+    const inboxRes = await run(['inbox', '--project', project.id, '--db', dbFile]);
+    assert.equal(inboxRes.code, 0, inboxRes.stderr);
+
+    const statusRes = await run(['status', '--project', project.id, '--json', '--db', dbFile]);
+    assert.equal(statusRes.code, 0, statusRes.stderr);
+    assert.deepEqual(JSON.parse(statusRes.stdout), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Batch 10 owner walk finding 4: following the root README's own
+// `--mission "$(cat scope.md)"` line produced a board row broken across
+// several lines with raw markdown embedded in it. Display-only: the title
+// stored on the ticket is untouched (deriveManagerTitle's own behaviour is
+// out of this role's files); board/status truncate it to its first
+// non-empty line, capped at 80 characters, only when actually rendering it.
+
+test('a multi-line mission title is shown as a single truncated line on board and status, not broken across rows', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-multiline-title-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const projectRes = await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+
+    const mission = '\n\n# Scope: a tiny reference on SQLite journal modes\n\nWrite three files and an index that links them.';
+    const planRes = await run(['plan', '--project', project.id, '--mission', mission, '--json', '--db', dbFile]);
+    assert.equal(planRes.code, 0, planRes.stderr);
+
+    const boardRes = await run(['board', '--project', project.id, '--db', dbFile]);
+    assert.equal(boardRes.code, 0, boardRes.stderr);
+    const boardLines = boardRes.stdout.trimEnd().split('\n');
+    // One header line plus exactly one ticket row -- if the title's
+    // newlines had leaked through, this row alone would span several lines.
+    assert.equal(boardLines.length, 2, `expected exactly 2 lines, got:\n${boardRes.stdout}`);
+    assert.doesNotMatch(boardRes.stdout.trimEnd(), /\n\n/);
+    assert.match(boardLines[1], /# Scope: a tiny reference on SQLite journal modes/);
+
+    const statusRes = await run(['status', '--project', project.id, '--db', dbFile]);
+    assert.equal(statusRes.code, 0, statusRes.stderr);
+    assert.equal(statusRes.stdout.trim().split('\n').length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Batch 10 owner walk finding 2, and item 2 of the follow-up brief:
+// `project list` (so closing the terminal after `project create` no longer
+// makes a project unreachable) and `--project` accepting a name as well as
+// an id on every project-taking command, since a name is what a person
+// actually remembers.
+
+test('project list is empty for a fresh database, and shows created projects afterward', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-projectlist-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const emptyRes = await run(['project', 'list', '--db', dbFile]);
+    assert.equal(emptyRes.code, 0, emptyRes.stderr);
+    assert.match(emptyRes.stdout, /no projects yet/);
+
+    const projectRes = await run(['project', 'create', '--name', 'Alpha', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+
+    const listRes = await run(['project', 'list', '--db', dbFile]);
+    assert.equal(listRes.code, 0, listRes.stderr);
+    assert.match(listRes.stdout, new RegExp(`^${project.id}\\tAlpha\\t`));
+
+    const jsonRes = await run(['project', 'list', '--json', '--db', dbFile]);
+    const entries = JSON.parse(jsonRes.stdout);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].id, project.id);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('--project accepts the project\'s exact name, not just its id, on board/ticket add/plan', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-projectname-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const projectRes = await run(['project', 'create', '--name', 'My Named Project', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+
+    const boardRes = await run(['board', '--project', 'My Named Project', '--db', dbFile]);
+    assert.equal(boardRes.code, 0, boardRes.stderr);
+    assert.match(boardRes.stdout, /no tickets/);
+
+    const ticketRes = await run(['ticket', 'add', '--project', 'My Named Project', '--title', 'T1', '--json', '--db', dbFile]);
+    assert.equal(ticketRes.code, 0, ticketRes.stderr);
+    const ticket = JSON.parse(ticketRes.stdout);
+    assert.equal(ticket.projectId, project.id, 'the ticket must be attached to the real id, not the literal name');
+
+    const planRes = await run(['plan', '--project', 'My Named Project', '--mission', 'do the thing', '--json', '--db', dbFile]);
+    assert.equal(planRes.code, 0, planRes.stderr);
+    assert.equal(JSON.parse(planRes.stdout).projectId, project.id);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('--project with a name matching no project fails with "no such project", naming what was typed', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-projectname-notfound-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['board', '--project', 'Totally Made Up Name', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /no such project: Totally Made Up Name/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('--project with a name matching two projects refuses ambiguously, listing both ids, rather than silently picking one', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-projectname-ambiguous-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const first = JSON.parse((await run(['project', 'create', '--name', 'Dup', '--json', '--db', dbFile])).stdout);
+    const second = JSON.parse((await run(['project', 'create', '--name', 'Dup', '--json', '--db', dbFile])).stdout);
+
+    const res = await run(['board', '--project', 'Dup', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /matches 2 projects by name/);
+    assert.match(res.stderr, new RegExp(first.id));
+    assert.match(res.stderr, new RegExp(second.id));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

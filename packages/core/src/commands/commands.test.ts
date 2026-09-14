@@ -364,7 +364,12 @@ test('project set on an unknown project id fails by name, not with a silent no-o
     await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);
     const res = await run(['project', 'set', '--project', 'proj_doesnotexist', '--max-spend', '5', '--db', dbFile]);
     assert.notEqual(res.code, 0);
-    assert.match(res.stderr, /No such project/);
+    // Batch 10 (Role Q), item 2: `project set` now shares cli.ts's single
+    // resolveProjectRef/NoSuchProjectError path (also what makes `--project`
+    // accept a name, not just an id) instead of its own separately-worded
+    // "No such project" check, so the message matches every other
+    // project-taking command exactly.
+    assert.match(res.stderr, /no such project: proj_doesnotexist/);
   });
 });
 

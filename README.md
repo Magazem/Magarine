@@ -46,7 +46,11 @@ Run these from anywhere, once `magarine` is on your PATH:
    magarine project create --name "My First Project" --brief "One paragraph describing what you want built."
    ```
    This prints the project's id (starts with `proj_`) -- you'll use it in
-   every command below.
+   every command below. **Lost it, or closed the terminal?** Every command
+   below also accepts the project's exact name instead of its id, and
+   `magarine project list` shows every project you have, with its id, name,
+   spend, and how many tasks are in each status -- run that any time you need
+   to find your way back.
 
 2. **Give it a mission.** Write what you want in a plain markdown file -- a
    project scope, the same way you'd write one for a person -- then hand it

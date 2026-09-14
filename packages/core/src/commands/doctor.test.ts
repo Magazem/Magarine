@@ -7,7 +7,7 @@ import { doctorExitCode, formatDoctor, runDoctor } from './doctor.ts';
 
 // Batch 10 (Role Q): `magarine doctor` is the owner's first stop when
 // something is wrong, so every branch below is driven through injected
-// seams (resolveExecutableFn/runProbeFn/checkDaemonFileFn) rather than the
+// seams (resolveCommandFn/runProbeFn/checkDaemonFileFn) rather than the
 // real `claude`/`pnpm` on whoever's machine runs this suite -- the same
 // test-only-seam pattern workspace.ts already uses (baseDir/removeFn), so
 // this suite is deterministic regardless of what is or isn't installed
@@ -19,11 +19,23 @@ function tempStateDir(): string {
 
 const notLive = async () => ({ status: 'absent' as const });
 
+// A resolveCommandFn stub that hands back the plain-native-executable shape
+// (no prefix args) for whatever name is asked, unless overridden per test.
+function fakeResolve(byName: Record<string, { executable: string; prefixArgs?: string[] } | 'throw'>) {
+  return (name: string) => {
+    const entry = byName[name];
+    if (entry === 'throw' || entry === undefined) {
+      throw new Error(`executable not found on PATH: ${name}`);
+    }
+    return { executable: entry.executable, prefixArgs: entry.prefixArgs ?? [] };
+  };
+}
+
 test('Node version below 24 fails with a plain upgrade sentence, not a stack trace', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
     nodeVersion: '20.11.0',
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -38,7 +50,7 @@ test('Node version 24+ passes', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
     nodeVersion: '24.1.0',
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -48,10 +60,7 @@ test('Node version 24+ passes', async () => {
 test('pnpm not found on PATH fails with an install hint', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: (name) => {
-      if (name === 'pnpm') throw new Error('executable not found on PATH: pnpm');
-      return '/usr/bin/claude';
-    },
+    resolveCommandFn: fakeResolve({ pnpm: 'throw', claude: { executable: '/usr/bin/claude' } }),
     runProbeFn: () => ({ ok: true, output: 'claude 2.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -61,32 +70,53 @@ test('pnpm not found on PATH fails with an install hint', async () => {
   assert.match(pnpmLine.detail, /pnpm\.io/);
 });
 
-test('pnpm resolved but its probe failing to run is SKIP, not FAIL (owner walk finding 1)', async () => {
-  // Batch 10 owner walk: `resolveExecutable` can resolve `pnpm` to a path
-  // that does not actually run (a real defect in process.ts, not owned by
-  // this role, now routed to the Strategist) even though `pnpm --version`
-  // works fine typed directly. Reporting this as FAIL told a real owner to
-  // "fix" a tool that was never broken -- it must be SKIP so `doctorExitCode`
-  // doesn't also halt a script over it.
+test('pnpm resolved to a real path but the probe genuinely fails to run is FAIL, not SKIP', async () => {
+  // Batch 10 owner walk finding 1 was fixed at the source (process.ts's
+  // resolveCommand), not papered over here -- see process.test.ts's
+  // synthetic shim fixtures and the two real-pnpm/real-npm regression
+  // tests there. With the resolver correct, a probe that still fails to
+  // run pnpm is a genuine problem again, so this must be FAIL, not the
+  // interim SKIP this line briefly carried.
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: (name) => (name === 'pnpm' ? 'C:\\fake\\pnpm.cmd' : '/usr/bin/claude'),
-    runProbeFn: (exe) => (exe === 'C:\\fake\\pnpm.cmd' ? { ok: false, output: 'spawnSync ...\\node.exe ENOENT' } : { ok: true, output: 'claude 2.0.0' }),
+    resolveCommandFn: fakeResolve({ pnpm: { executable: 'C:\\fake\\node.exe', prefixArgs: [] }, claude: { executable: '/usr/bin/claude' } }),
+    runProbeFn: (exe) => (exe === 'C:\\fake\\node.exe' ? { ok: false, output: 'spawnSync C:\\fake\\node.exe ENOENT' } : { ok: true, output: 'claude 2.0.0' }),
     checkDaemonFileFn: notLive,
   });
   const pnpmLine = lines.find((l) => l.name === 'pnpm')!;
-  assert.equal(pnpmLine.status, 'skip');
-  assert.match(pnpmLine.detail, /pnpm --version/);
-  assert.equal(doctorExitCode(lines), 0, 'a pnpm SKIP alone must not fail the whole command');
+  assert.equal(pnpmLine.status, 'fail');
+  assert.match(pnpmLine.detail, /Reinstall it/);
+});
+
+test('pnpm resolved to a script (prefixArgs shape) runs through them, and reports its real version', async () => {
+  // Proves doctor.ts actually spreads `resolveCommand`'s `prefixArgs` into
+  // the probe call -- the exact wiring that makes the pnpm.cmd/npm.cmd
+  // shapes work end to end, not just that resolveCommand itself is correct.
+  const calls: Array<{ exe: string; args: string[] }> = [];
+  const lines = await runDoctor({
+    stateDir: tempStateDir(),
+    resolveCommandFn: fakeResolve({
+      pnpm: { executable: 'C:\\node.exe', prefixArgs: ['C:\\npm-global\\node_modules\\pnpm\\bin\\pnpm.cjs'] },
+      claude: { executable: '/usr/bin/claude' },
+    }),
+    runProbeFn: (exe, args) => {
+      calls.push({ exe, args });
+      if (exe === 'C:\\node.exe') return { ok: true, output: '10.33.0' };
+      return { ok: true, output: 'claude 2.0.0' };
+    },
+    checkDaemonFileFn: notLive,
+  });
+  const pnpmLine = lines.find((l) => l.name === 'pnpm')!;
+  assert.equal(pnpmLine.status, 'pass');
+  assert.equal(pnpmLine.detail, '10.33.0');
+  const pnpmCall = calls.find((c) => c.exe === 'C:\\node.exe')!;
+  assert.deepEqual(pnpmCall.args, ['C:\\npm-global\\node_modules\\pnpm\\bin\\pnpm.cjs', '--version']);
 });
 
 test('claude not found on PATH fails, and the login line is skipped rather than run against nothing', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: (name) => {
-      if (name === 'claude') throw new Error('executable not found on PATH: claude');
-      return '/usr/bin/pnpm';
-    },
+    resolveCommandFn: fakeResolve({ claude: 'throw', pnpm: { executable: '/usr/bin/pnpm' } }),
     runProbeFn: () => ({ ok: true, output: 'pnpm 10.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -102,7 +132,7 @@ test('claude found but not logged in fails with the exact recovery step, and mak
   const calls: string[][] = [];
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: () => '/usr/bin/claude',
+    resolveCommandFn: fakeResolve({ claude: { executable: '/usr/bin/claude' }, pnpm: { executable: '/usr/bin/pnpm' } }),
     runProbeFn: (exe, args) => {
       calls.push(args);
       if (args[0] === 'auth') return { ok: true, output: JSON.stringify({ loggedIn: false }) };
@@ -125,7 +155,7 @@ test('claude logged in passes, and never reads or reports the email/org fields t
   // is the point of this test, not just an implementation detail.
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: () => '/usr/bin/claude',
+    resolveCommandFn: fakeResolve({ claude: { executable: '/usr/bin/claude' }, pnpm: { executable: '/usr/bin/pnpm' } }),
     runProbeFn: (_exe, args) => {
       if (args[0] === 'auth') {
         return {
@@ -152,7 +182,7 @@ test('claude logged in passes, and never reads or reports the email/org fields t
 test('claude auth status --json failing to run is SKIP, not FAIL and not PASS', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: () => '/usr/bin/claude',
+    resolveCommandFn: fakeResolve({ claude: { executable: '/usr/bin/claude' }, pnpm: { executable: '/usr/bin/pnpm' } }),
     runProbeFn: (_exe, args) => {
       if (args[0] === 'auth') return { ok: false, output: 'error: unknown command auth' };
       return { ok: true, output: 'claude 1.0.0' };
@@ -169,7 +199,7 @@ test('claude auth status --json failing to run is SKIP, not FAIL and not PASS', 
 test('claude auth status --json returning an unrecognised shape is SKIP, not a crash and not PASS', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: () => '/usr/bin/claude',
+    resolveCommandFn: fakeResolve({ claude: { executable: '/usr/bin/claude' }, pnpm: { executable: '/usr/bin/pnpm' } }),
     runProbeFn: (_exe, args) => {
       if (args[0] === 'auth') return { ok: true, output: JSON.stringify({ someOtherField: true }) };
       return { ok: true, output: 'claude 3.0.0' };
@@ -184,7 +214,7 @@ test('claude auth status --json returning an unrecognised shape is SKIP, not a c
 test('claude auth status --json returning unparseable output is SKIP, not a thrown exception', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: () => '/usr/bin/claude',
+    resolveCommandFn: fakeResolve({ claude: { executable: '/usr/bin/claude' }, pnpm: { executable: '/usr/bin/pnpm' } }),
     runProbeFn: (_exe, args) => {
       if (args[0] === 'auth') return { ok: true, output: 'not json at all' };
       return { ok: true, output: 'claude 3.0.0' };
@@ -206,7 +236,7 @@ test('--paid calls claude -p exactly once when passed', async () => {
   await runDoctor({
     stateDir: tempStateDir(),
     paid: true,
-    resolveExecutableFn: () => '/usr/bin/claude',
+    resolveCommandFn: fakeResolve({ claude: { executable: '/usr/bin/claude' }, pnpm: { executable: '/usr/bin/pnpm' } }),
     runProbeFn: (_exe, args) => {
       calls.push(args);
       if (args[0] === 'auth') return { ok: true, output: JSON.stringify({ loggedIn: true }) };
@@ -230,7 +260,7 @@ test('an unwritable state directory fails with a permissions hint, not a raw sta
 
   const lines = await runDoctor({
     stateDir,
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -244,7 +274,7 @@ test('an unwritable state directory fails with a permissions hint, not a raw sta
 test('a live daemon is reported with its port, and is not treated as a failure', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: async () => ({
       status: 'live',
@@ -260,7 +290,7 @@ test('a live daemon is reported with its port, and is not treated as a failure',
 test('no daemon running is reported as informational, not a failure', async () => {
   const lines = await runDoctor({
     stateDir: tempStateDir(),
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -273,7 +303,7 @@ test('doctorExitCode is 0 only when every line passes, and SKIP does not count a
   const allPass = await runDoctor({
     stateDir: tempStateDir(),
     nodeVersion: '24.1.0',
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: (_exe, args) => (args[0] === 'auth' ? { ok: true, output: JSON.stringify({ loggedIn: true }) } : { ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -282,7 +312,7 @@ test('doctorExitCode is 0 only when every line passes, and SKIP does not count a
   const oneFail = await runDoctor({
     stateDir: tempStateDir(),
     nodeVersion: '18.0.0',
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: (_exe, args) => (args[0] === 'auth' ? { ok: true, output: JSON.stringify({ loggedIn: true }) } : { ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: notLive,
   });
@@ -291,7 +321,7 @@ test('doctorExitCode is 0 only when every line passes, and SKIP does not count a
   const oneSkipOnly = await runDoctor({
     stateDir: tempStateDir(),
     nodeVersion: '24.1.0',
-    resolveExecutableFn: () => '/usr/bin/fake',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
     runProbeFn: (_exe, args) => (args[0] === 'auth' ? { ok: false, output: 'unknown command' } : { ok: true, output: 'fake 1.0.0' }),
     checkDaemonFileFn: notLive,
   });

@@ -15,6 +15,7 @@ import {
   createTicket,
   getProject,
   getTicket,
+  listProjects,
   listTickets,
   setProjectDefaultModel,
   setProjectManagerModel,
@@ -24,7 +25,8 @@ import {
 import { resolveReadiness } from './dependencies.ts';
 import { approve, ApproveError } from './commands/approve.ts';
 import { buildActivity, formatActivity } from './commands/activity.ts';
-import { buildBoard, formatBoard } from './commands/board.ts';
+import { buildBoard, formatBoard, truncateTitleForDisplay } from './commands/board.ts';
+import { buildProjectList, formatProjectList } from './commands/projectList.ts';
 import { buildInbox, formatInbox } from './commands/inbox.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { doctorExitCode, formatDoctor, runDoctor } from './commands/doctor.ts';
@@ -49,17 +51,52 @@ interface Flags {
   [key: string]: string | boolean | string[];
 }
 
-// Batch 10 (Role O): `plan` has always validated its `--project` against a
-// typed PlanError before creating anything (commands/plan.ts); `ticket add`
-// never did the equivalent check, so `ticket add --project <nonexistent>`
-// fell straight through to `createTicket`'s raw `INSERT`, which fails on the
-// `tickets.project_id` foreign key with SQLite's own constraint-violation
-// message -- uncaught by any typed-error branch here, so it reached the
-// user as a raw database error rather than the same clean "no such project"
-// line `plan` already gives. Named after the command, not a generic
-// "NotFoundError", to match ApproveError/DecideError/PlanError/etc.'s
-// per-command convention in this file.
-class TicketAddError extends Error {}
+// Batch 10 owner walk (docs/strategy/batch-10-owner-walk.md, finding 3):
+// `plan` always validated its `--project` against a typed PlanError before
+// creating anything (commands/plan.ts); `ticket add`, `board`, `inbox`, and
+// `status` did not -- `ticket add` fell through to a raw DB
+// foreign-key-constraint error, and the three read paths accepted ANY id at
+// all, including one that never existed, printing a calm, empty result at
+// exit 0. A typo'd or stale id was therefore indistinguishable from "no
+// tickets yet", and a script piping through one of them would sail past it
+// silently. One shared class, not one per command, since every one of these
+// wants the exact same check and message.
+class NoSuchProjectError extends Error {}
+
+// Batch 10 (Role Q), item 2: every command taking `--project` accepts
+// either the project's id OR its exact name -- a name is what a person
+// actually remembers, especially with `magarine project list` (below) as
+// the only way back to an id once a terminal is closed. Tries the id first
+// (the common case once a script or a copied id is in hand: an id can never
+// collide with a name here since `createProject` generates ids as
+// `proj_<uuid>`, disjoint from anything a person would type as a name), then
+// an exact name match. `projects.name` has no uniqueness constraint
+// (db/schema.ts), so an ambiguous name refuses explicitly by listing every
+// matching id, rather than silently picking one.
+function resolveProjectRef(db: Db, ref: string): string {
+  if (getProject(db, ref)) return ref;
+  const matches = listProjects(db).filter((p) => p.name === ref);
+  if (matches.length === 1) return matches[0].id;
+  if (matches.length > 1) {
+    throw new NoSuchProjectError(
+      `"${ref}" matches ${matches.length} projects by name -- use one of these ids instead: ${matches
+        .map((p) => p.id)
+        .join(', ')}`
+    );
+  }
+  throw new NoSuchProjectError(`no such project: ${ref}`);
+}
+
+// Every project-taking command shares this exact catch shape; pulled out
+// once rather than repeated at every call site.
+function reportIfNoSuchProject(err: unknown): boolean {
+  if (err instanceof NoSuchProjectError) {
+    process.stderr.write(`${err.message}\n`);
+    process.exitCode = 1;
+    return true;
+  }
+  return false;
+}
 
 // A flag repeated on the command line (`--acceptance a --acceptance b`)
 // collects into an array instead of the last one silently winning. A flag
@@ -217,6 +254,9 @@ const FLAG_SPECS: Record<string, string[]> = {
   // ordinary `ticket add` does.
   'project create': ['name', 'description', 'max-parallel', 'brief', 'workspace-root', 'max-spend', 'model', 'manager-model'],
   'project set': ['project', 'max-spend', 'model', 'manager-model'],
+  // Batch 10 (Role Q), item 2: no flags of its own -- lists every project in
+  // this state directory's database. See commands/projectList.ts.
+  'project list': [],
   'ticket add': [
     'project',
     'title',
@@ -330,7 +370,14 @@ const FAKE_OUTCOME_KINDS: Record<string, FakeScript['kind']> = {
   manager_proposal: 'manager_proposal',
 };
 
-function buildAdapter(db: Db, flags: Flags): AgentAdapter {
+// `projectId` is the already-RESOLVED id (see `resolveProjectRef`), never
+// `flags.project` directly -- that flag may now be a project NAME (item 2),
+// and the `max_budget_usd` lookup below is a raw scoped query keyed on the
+// real id, not something `resolveProjectRef`'s own name-matching applies to.
+// `serve` has no single project in view (it ticks every project in the
+// database), so it passes `''`, matching this function's prior behaviour
+// for that command exactly.
+function buildAdapter(db: Db, flags: Flags, projectId: string): AgentAdapter {
   const kind = typeof flags.adapter === 'string' ? flags.adapter : 'fake';
 
   if (kind === 'fake') {
@@ -384,9 +431,9 @@ function buildAdapter(db: Db, flags: Flags): AgentAdapter {
         );
       }
     }
-    const projectRow = db
-      .prepare('SELECT max_budget_usd FROM projects WHERE id = ?')
-      .get(String(flags.project ?? '')) as { max_budget_usd: number } | undefined;
+    const projectRow = db.prepare('SELECT max_budget_usd FROM projects WHERE id = ?').get(projectId) as
+      | { max_budget_usd: number }
+      | undefined;
     // `workspaceType`/`workspaceRoot` here are ClaudeCliAdapterOptions'
     // required construction-time fallback, never actually used: scheduler.ts
     // now prepares a workspace per ticket and passes it into every
@@ -452,7 +499,15 @@ async function main(): Promise<void> {
   }
 
   if (command === 'project' && subcommand === 'set') {
-    const projectId = String(flags.project ?? positionals[1] ?? '');
+    const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? positionals[1] ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+
     const live = await liveDaemonFor(flags);
     if (live) {
       const body: { maxSpend?: number; model?: string; managerModel?: string } = {};
@@ -463,13 +518,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    const db = openDb(dbPath(flags));
-    const project = getProject(db, projectId);
-    if (!project) {
-      process.stderr.write(`No such project: ${projectId}\n`);
-      process.exitCode = 1;
-      return;
-    }
     if (typeof flags['max-spend'] === 'string') {
       setProjectMaxSpendUsd(db, projectId, Number(flags['max-spend']));
     }
@@ -480,6 +528,17 @@ async function main(): Promise<void> {
       setProjectManagerModel(db, projectId, flags['manager-model']);
     }
     output(flags, getProject(db, projectId), `Updated project ${projectId}`);
+    return;
+  }
+
+  if (command === 'project' && subcommand === 'list') {
+    // Batch 10 owner walk finding 2: closing the terminal after `project
+    // create` made a project unreachable -- there was no way back to its
+    // id. Read-only, like board/inbox/status/activity: never routed to a
+    // live daemon.
+    const db = openDb(dbPath(flags));
+    const entries = buildProjectList(db);
+    output(flags, entries, formatProjectList(entries));
     return;
   }
 
@@ -499,7 +558,14 @@ async function main(): Promise<void> {
   }
 
   if (command === 'plan') {
-    const projectId = String(flags.project ?? '');
+    const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
     const mission = String(flags.mission ?? '');
     const live = await liveDaemonFor(flags);
     if (live) {
@@ -510,7 +576,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    const db = openDb(dbPath(flags));
     try {
       const ticket = planMission(db, { projectId, mission });
       output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})`);
@@ -527,10 +592,19 @@ async function main(): Promise<void> {
 
   if (command === 'ticket' && subcommand === 'add') {
     const dependsOn = flagList(flags, 'depends-on');
+    const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+
     const live = await liveDaemonFor(flags);
     if (live) {
       const body = {
-        project: String(flags.project ?? ''),
+        project: projectId,
         title: String(flags.title ?? positionals[1] ?? ''),
         description: typeof flags.description === 'string' ? flags.description : null,
         maxAttempts: flags['max-attempts'] ? Number(flags['max-attempts']) : undefined,
@@ -548,64 +622,60 @@ async function main(): Promise<void> {
       return;
     }
 
-    const db = openDb(dbPath(flags));
-    const projectId = String(flags.project ?? '');
-    try {
-      const project = getProject(db, projectId);
-      if (!project) {
-        throw new TicketAddError(`no such project: ${projectId}`);
-      }
+    // The project is already known to exist (resolveProjectRef above), so
+    // nothing left here can throw the "no such project" shape TicketAddError
+    // used to guard -- that class is gone, superseded by NoSuchProjectError.
+    const ticket = createTicket(db, {
+      projectId,
+      title: String(flags.title ?? positionals[1] ?? ''),
+      description: typeof flags.description === 'string' ? flags.description : null,
+      maxAttempts: flags['max-attempts'] ? Number(flags['max-attempts']) : 3,
+      priority: flags.priority ? Number(flags.priority) : 0,
+      workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
+      acceptanceCriteria: flagList(flags, 'acceptance'),
+      model: typeof flags.model === 'string' ? flags.model : null,
+    });
 
-      const ticket = createTicket(db, {
-        projectId,
-        title: String(flags.title ?? positionals[1] ?? ''),
-        description: typeof flags.description === 'string' ? flags.description : null,
-        maxAttempts: flags['max-attempts'] ? Number(flags['max-attempts']) : 3,
-        priority: flags.priority ? Number(flags.priority) : 0,
-        workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
-        acceptanceCriteria: flagList(flags, 'acceptance'),
-        model: typeof flags.model === 'string' ? flags.model : null,
-      });
-
-      // `setTicketBudgetOverride` enforces `MIN_BUDGET_USD` (store.ts) with a
-      // message naming the floor -- a raw `UPDATE` here would bypass it, which
-      // is exactly the hole batch 4's close-out found: `--budget 0.01` was
-      // silently accepted despite the twenty-five-cent floor.
-      if (typeof flags.budget === 'string') {
-        setTicketBudgetOverride(db, ticket.id, Number(flags.budget));
-      }
-
-      // Dependencies are attached, and only then is readiness resolved --
-      // never before all of them are attached, and never left unresolved
-      // after. Resolving mid-loop (or not at all) is exactly the batch 1
-      // regression this flag exists to make impossible: a ticket must not be
-      // promoted to READY, even briefly, while a `--depends-on` from this
-      // same command has not been wired in yet. See dependencies.ts's
-      // `resolveReadiness` doc comment and cli.test.ts's ordering regression
-      // test for the original bug this guards against.
-      for (const dependsOnTicketId of dependsOn) {
-        addDependency(db, { ticketId: ticket.id, dependsOnTicketId });
-      }
-      if (dependsOn.length > 0) {
-        resolveReadiness(db, ticket.projectId);
-      }
-
-      const finalTicket = getTicket(db, ticket.id)!;
-      output(flags, finalTicket, `Created ticket ${finalTicket.id} (${finalTicket.title})`);
-    } catch (err) {
-      if (err instanceof TicketAddError) {
-        process.stderr.write(`${err.message}\n`);
-        process.exitCode = 1;
-        return;
-      }
-      throw err;
+    // `setTicketBudgetOverride` enforces `MIN_BUDGET_USD` (store.ts) with a
+    // message naming the floor -- a raw `UPDATE` here would bypass it, which
+    // is exactly the hole batch 4's close-out found: `--budget 0.01` was
+    // silently accepted despite the twenty-five-cent floor.
+    if (typeof flags.budget === 'string') {
+      setTicketBudgetOverride(db, ticket.id, Number(flags.budget));
     }
+
+    // Dependencies are attached, and only then is readiness resolved --
+    // never before all of them are attached, and never left unresolved
+    // after. Resolving mid-loop (or not at all) is exactly the batch 1
+    // regression this flag exists to make impossible: a ticket must not be
+    // promoted to READY, even briefly, while a `--depends-on` from this
+    // same command has not been wired in yet. See dependencies.ts's
+    // `resolveReadiness` doc comment and cli.test.ts's ordering regression
+    // test for the original bug this guards against.
+    for (const dependsOnTicketId of dependsOn) {
+      addDependency(db, { ticketId: ticket.id, dependsOnTicketId });
+    }
+    if (dependsOn.length > 0) {
+      resolveReadiness(db, ticket.projectId);
+    }
+
+    const finalTicket = getTicket(db, ticket.id)!;
+    output(flags, finalTicket, `Created ticket ${finalTicket.id} (${finalTicket.title})`);
     return;
   }
 
   if (command === 'dep' && subcommand === 'add') {
     const ticketId = String(flags.ticket ?? '');
     const dependsOnTicketId = String(flags['depends-on'] ?? '');
+    const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+
     const live = await liveDaemonFor(flags);
     if (live) {
       await routeMutation(
@@ -613,20 +683,28 @@ async function main(): Promise<void> {
         live,
         'POST',
         '/deps',
-        { project: String(flags.project ?? ''), ticket: ticketId, dependsOn: dependsOnTicketId },
+        { project: projectId, ticket: ticketId, dependsOn: dependsOnTicketId },
         () => `Added dependency: ${ticketId} depends on ${dependsOnTicketId}`
       );
       return;
     }
 
-    const db = openDb(dbPath(flags));
     addDependency(db, { ticketId, dependsOnTicketId });
-    resolveReadiness(db, String(flags.project ?? ''));
+    resolveReadiness(db, projectId);
     output(flags, { ticketId, dependsOnTicketId }, `Added dependency: ${ticketId} depends on ${dependsOnTicketId}`);
     return;
   }
 
   if (command === 'tick') {
+    const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+
     const live = await liveDaemonFor(flags);
     if (live) {
       // The daemon owns its own adapter, set once at `serve` startup -- an
@@ -639,20 +717,19 @@ async function main(): Promise<void> {
           `Note: --${ignoredAdapterFlags.join(', --')} ignored: a live daemon uses the adapter it was started with, not a flag on this command.\n`
         );
       }
-      await routeMutation(flags, live, 'POST', '/tick', { project: String(flags.project ?? '') }, (b) => {
+      await routeMutation(flags, live, 'POST', '/tick', { project: projectId }, (b) => {
         const r = b as { started: Array<{ ticketId: string }> };
         return `Started ${r.started.length} run(s).`;
       });
       return;
     }
 
-    const db = openDb(dbPath(flags));
     recoverOrphanedRuns(db);
-    const adapter = buildAdapter(db, flags);
+    const adapter = buildAdapter(db, flags, projectId);
     const result = await tick({
       db,
       adapter,
-      projectId: String(flags.project ?? ''),
+      projectId,
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
@@ -679,12 +756,19 @@ async function main(): Promise<void> {
     }
 
     const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
     recoverOrphanedRuns(db);
-    const adapter = buildAdapter(db, flags);
+    const adapter = buildAdapter(db, flags, projectId);
     await runUntilIdle({
       db,
       adapter,
-      projectId: String(flags.project ?? ''),
+      projectId,
       maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
@@ -696,7 +780,9 @@ async function main(): Promise<void> {
   if (command === 'serve') {
     const resolvedDbPath = dbPath(flags);
     const db = openDb(resolvedDbPath);
-    const adapter = buildAdapter(db, flags);
+    // No `--project` on `serve` -- it ticks every project in the database
+    // (daemon.ts's startDaemonLoop), so there is no single id to resolve.
+    const adapter = buildAdapter(db, flags, '');
     const resolvedStateDir = stateDir(flags);
     try {
       await serve({
@@ -729,33 +815,66 @@ async function main(): Promise<void> {
 
   if (command === 'status') {
     const db = openDb(dbPath(flags));
-    const tickets = listTickets(db, String(flags.project ?? ''));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+    const tickets = listTickets(db, projectId);
     output(
       flags,
       tickets,
-      tickets.map((t) => `${t.id}\t${t.status}\t${t.title}`).join('\n')
+      // Batch 10 owner walk finding 4: display-only truncation, same as
+      // board.ts's formatBoard -- the `--json` branch of `output()` above
+      // still carries every ticket's full, untouched `.title`.
+      tickets.map((t) => `${t.id}\t${t.status}\t${truncateTitleForDisplay(t.title)}`).join('\n')
     );
     return;
   }
 
   if (command === 'board') {
     const db = openDb(dbPath(flags));
-    const result = buildBoard(db, String(flags.project ?? ''));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+    const result = buildBoard(db, projectId);
     output(flags, result, formatBoard(result));
     return;
   }
 
   if (command === 'inbox') {
     const db = openDb(dbPath(flags));
-    const items = buildInbox(db, String(flags.project ?? ''));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+    const items = buildInbox(db, projectId);
     output(flags, items, formatInbox(items));
     return;
   }
 
   if (command === 'activity') {
     const db = openDb(dbPath(flags));
+    let projectId: string | undefined;
+    if (typeof flags.project === 'string') {
+      try {
+        projectId = resolveProjectRef(db, flags.project);
+      } catch (err) {
+        if (reportIfNoSuchProject(err)) return;
+        throw err;
+      }
+    }
     const events = buildActivity(db, {
-      projectId: typeof flags.project === 'string' ? flags.project : undefined,
+      projectId,
       ticketId: typeof flags.ticket === 'string' ? flags.ticket : undefined,
       all: Boolean(flags.all),
     });
@@ -870,13 +989,20 @@ async function main(): Promise<void> {
   }
 
   if (command === 'resume') {
-    const projectId = String(flags.project ?? '');
+    const db = openDb(dbPath(flags));
+    let projectId: string;
+    try {
+      projectId = resolveProjectRef(db, String(flags.project ?? ''));
+    } catch (err) {
+      if (reportIfNoSuchProject(err)) return;
+      throw err;
+    }
+
     const live = await liveDaemonFor(flags);
     if (live) {
       await routeMutation(flags, live, 'POST', `/projects/${projectId}/resume`, undefined, () => `${projectId} resumed`);
       return;
     }
-    const db = openDb(dbPath(flags));
     try {
       const project = resume(db, { projectId });
       output(flags, project, `${project.id} resumed`);
@@ -912,7 +1038,7 @@ async function main(): Promise<void> {
   }
 
   process.stderr.write(
-    'Usage: magarine <doctor|project create|project set|ticket add|dep add|plan|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
+    'Usage: magarine <doctor|project create|project set|project list|ticket add|dep add|plan|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
   );
   process.exitCode = 1;
 }

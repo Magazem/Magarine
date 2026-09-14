@@ -58,7 +58,7 @@ const STATUS_ORDER: TicketStatus[] = [
 // header for why it's known-low). One estimated run in the sum makes the
 // whole sum a lower bound, so `isEstimate` is true if ANY contributing run
 // is estimate-sourced, not just the most recent one.
-function ticketCostUsd(db: Db, ticketId: string): { costUsd: number; isEstimate: boolean } {
+export function ticketCostUsd(db: Db, ticketId: string): { costUsd: number; isEstimate: boolean } {
   const rows = db.prepare('SELECT usage_json FROM runs WHERE ticket_id = ?').all(ticketId) as Array<{
     usage_json: string | null;
   }>;
@@ -90,7 +90,7 @@ function blockingDependencies(db: Db, ticket: Ticket): string[] {
 // Project spend is the sum of ticket spend over every ticket in the
 // project (batch-4-spec.md section 2's "Contracts" note), computed here
 // from the tickets `buildBoard` already loaded rather than re-querying.
-function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; isEstimate: boolean } {
+export function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; isEstimate: boolean } {
   let total = 0;
   let isEstimate = false;
   for (const t of tickets) {
@@ -134,8 +134,30 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
 // exact as a completed run's tool-reported figure. Shared by the project
 // header and every ticket row so the two can never drift into different
 // phrasings.
-function formatSpend(costUsd: number, isEstimate: boolean): string {
+export function formatSpend(costUsd: number, isEstimate: boolean): string {
   return isEstimate ? `at least $${costUsd.toFixed(2)}, live estimate` : `$${costUsd.toFixed(2)}`;
+}
+
+// Batch 10 owner walk, finding 4: a mission handed in as a real markdown
+// scope document (per the root README's `--mission "$(cat scope.md)"`)
+// becomes its manager ticket's title verbatim -- newlines and all, since
+// nothing between the CLI flag and `tickets.title` ever reshapes it -- so
+// one board row broke across several lines and became unreadable with a
+// real document (a scope document often opens with a blank line or two
+// before its actual heading, which is why this is the FIRST NON-EMPTY line,
+// not simply the first line -- a leading blank line would otherwise
+// truncate to nothing). Display-only, and used only here and by `status`'s
+// human line (cli.ts): nothing stored changes, `--json` output still
+// carries the full, untouched title, and so does everywhere else that
+// already read it. `--scope <file>` as its own real flag is batch 11's
+// problem, not this one's -- this is strictly a rendering fix.
+const MAX_DISPLAY_TITLE_LENGTH = 80;
+
+export function truncateTitleForDisplay(title: string): string {
+  const lines = title.split(/\r?\n/);
+  const firstNonEmpty = lines.find((line) => line.trim().length > 0) ?? '';
+  if (firstNonEmpty === title && firstNonEmpty.length <= MAX_DISPLAY_TITLE_LENGTH) return title;
+  return `${firstNonEmpty.slice(0, MAX_DISPLAY_TITLE_LENGTH)}…`;
 }
 
 // Project spend against its cap comes first, since it is the one number
@@ -157,7 +179,7 @@ export function formatBoard(result: BoardResult): string {
       // itself, is the entire point of the design, and a reader needs to
       // see that at a glance, not infer it from the title happening to
       // start with "Plan:".
-      const title = t.kind === 'manager' ? `[MANAGER] ${t.title}` : t.title;
+      const title = t.kind === 'manager' ? `[MANAGER] ${truncateTitleForDisplay(t.title)}` : truncateTitleForDisplay(t.title);
       const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
       const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate)}`;
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';

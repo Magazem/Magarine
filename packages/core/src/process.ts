@@ -166,19 +166,50 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Resolves `name` to a real, directly-executable path, unwrapping npm's
-// Windows .cmd shims so callers never spawn through one. A shim's child
-// keeps running even if the shim itself is killed, which is the exact bug
-// that motivated this module (see docs/strategy/batch-2-spec.md, section 0).
-export function resolveExecutable(name: string): string {
+export interface ResolvedCommand {
+  executable: string;
+  /**
+   * Batch 10 (Role Q): non-empty only when `executable` is `process.execPath`
+   * and the real tool is a script it must run first (see
+   * `resolveWindowsShimCommand`) -- empty for a direct native executable.
+   * Must be spread BEFORE the caller's own args: `spawn(executable,
+   * [...prefixArgs, ...callerArgs])`.
+   */
+  prefixArgs: string[];
+}
+
+// Resolves `name` to something directly spawnable with `shell: false`,
+// unwrapping npm's Windows .cmd shims rather than spawning through one -- a
+// shim's child keeps running even if the shim itself is killed, the exact
+// bug that motivated this module (batch-2-spec.md section 0).
+//
+// Batch 10 (Role Q): redesigned from a single-string return, because a
+// shim's real target is sometimes a SCRIPT, not a binary -- `resolveExecutable`
+// used to pick the first quoted path that merely looked like a real
+// executable, which is exactly how it mis-resolved `pnpm` and `npm` (see
+// `resolveWindowsShimCommand`'s own comment). `{ executable: process.execPath,
+// prefixArgs: [scriptPath] }` runs that script through the CURRENT node —
+// the same node this process already is — instead of a second, possibly
+// absent one the shim would otherwise look for.
+export function resolveCommand(name: string): ResolvedCommand {
   const hit = findOnPath(name);
   if (!hit) {
     throw new Error(`executable not found on PATH: ${name}`);
   }
   if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(hit)) {
-    return resolveWindowsShim(hit);
+    return resolveWindowsShimCommand(hit, name);
   }
-  return hit;
+  return { executable: hit, prefixArgs: [] };
+}
+
+// Kept for every existing caller that only ever needs one spawnable path --
+// true of every shim actually in use by this codebase's own adapter today
+// (`claude`'s shim is the native-executable shape, `prefixArgs` always
+// empty). A caller resolving a name whose shim might be the script shape
+// (`doctor.ts`'s `pnpm` check is the one that needs this) must call
+// `resolveCommand` directly and use its `prefixArgs`.
+export function resolveExecutable(name: string): string {
+  return resolveCommand(name).executable;
 }
 
 function findOnPath(name: string): string | undefined {
@@ -203,25 +234,106 @@ function findOnPath(name: string): string | undefined {
   return undefined;
 }
 
-// npm's generated .cmd shims quote the real target path and invoke it with
-// the incoming args forwarded as %*. This pulls that quoted path out and
-// expands the %dp0%/%~dp0% token the shim sets to its own directory, which
-// is how a shim finds its sibling `node_modules` regardless of install
-// location. It deliberately never returns another .cmd/.bat, even if one
-// were nested inside another shim.
-function resolveWindowsShim(shimPath: string): string {
+// A `.cmd`/`.bat` shim's real target is one of two shapes. Parsing batch
+// files as a language is the wrong strategy -- these shim shapes are few
+// and known (see process.test.ts's synthetic fixtures for all three) -- so
+// this recognizes shapes by what's actually on disk, not by interpreting
+// the file's control flow:
+//
+// 1. A SIBLING NATIVE EXECUTABLE, named after `name` itself -- `claude.cmd`
+//    unconditionally invokes `...\claude-code\bin\claude.exe`, and its
+//    basename ending in `<name>.exe` is what identifies it, not merely
+//    being "a quoted path ending in .exe". A shim like pnpm's or npm's ALSO
+//    quotes a `.exe` path (`node.exe`, guarded by `IF EXIST` because it is
+//    often absent) -- that file existing or not is irrelevant, because it
+//    is the INTERPRETER the shim would use, never the tool itself. Matching
+//    by name is what tells the two apart; this is the defect that made
+//    `resolveExecutable('pnpm')` resolve to a `node.exe` that does not
+//    exist, and `resolveExecutable('npm')` resolve to unrelated text
+//    entirely (see docs/strategy/batch-10-owner-walk.md finding 1).
+// 2. Otherwise, THE SCRIPT the shim ultimately hands to node -- read off
+//    its own final invocation line (the last non-blank, non-label,
+//    non-comment line), either as a literal quoted path there (pnpm's
+//    `.cjs`) or, if that line only names a bare `%VARNAME%`, resolved back
+//    to that variable's own first (default, unconditional) `SET`
+//    assignment elsewhere in the file (npm's `.js`, whose only OTHER
+//    assignment sits inside an `IF EXIST` this function does not try to
+//    evaluate -- the common case, a plain global install with no
+//    project-local override, is what the default assignment gives). Run
+//    through the CURRENT node (`process.execPath`) -- never a second,
+//    possibly absent node.exe the shim itself would have looked for; this
+//    is exactly what the shim does when no such node.exe exists beside it.
+//
+// Never returns cmd.exe or another shim (batch-2 ruling, unchanged): if
+// neither shape resolves to a real file, this throws naming the shim rather
+// than falling back to a shell.
+function resolveWindowsShimCommand(shimPath: string, name: string): ResolvedCommand {
   const text = readFileSync(shimPath, 'utf8');
   const shimDir = dirname(shimPath);
-  const quoted = [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  // Two distinct batch tokens, both meaning "this shim's own directory":
+  // `%dp0%` is a REGULAR variable (claude.cmd/pnpm.cmd's `SET dp0=%~dp0`
+  // two-step form, closed with a trailing `%` like any other variable), but
+  // `%~dp0` is batch's special drive+path-of-argument-0 expansion, used
+  // directly with NO trailing `%` (npm.cmd's shape) -- matching only the
+  // closed form silently left `%~dp0` untouched in the npm shape, which
+  // `resolvePath` then joined onto this PROCESS's cwd instead of the
+  // shim's directory, so a real file's expansion never once matched.
+  const expand = (raw: string): string => resolvePath(raw.replace(/%~dp0|%dp0%/gi, `${shimDir}\\`));
 
-  for (const raw of quoted) {
-    if (raw.includes('%*')) continue;
-    const expanded = raw.replace(/%~?dp0%/gi, `${shimDir}\\`);
-    if (/\.(cmd|bat)$/i.test(expanded)) continue;
-    if (/\.(exe|js|mjs|cjs)$/i.test(expanded)) {
-      return resolvePath(expanded);
-    }
+  const nativeExe = findSiblingNativeExecutable(text, name, expand);
+  if (nativeExe) {
+    return { executable: nativeExe, prefixArgs: [] };
   }
 
-  throw new Error(`could not find a real executable inside shim: ${shimPath}`);
+  const scriptPath = findShimScriptPath(text, expand);
+  if (scriptPath) {
+    return { executable: process.execPath, prefixArgs: [scriptPath] };
+  }
+
+  throw new Error(`could not find a real executable or script inside shim: ${shimPath}`);
+}
+
+function quotedStrings(text: string): string[] {
+  return [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+}
+
+function findSiblingNativeExecutable(text: string, name: string, expand: (raw: string) => string): string | undefined {
+  const targetSuffix = `${name.toLowerCase()}.exe`;
+  for (const raw of quotedStrings(text)) {
+    if (raw.includes('%*')) continue;
+    if (!raw.toLowerCase().endsWith(targetSuffix)) continue;
+    const expanded = expand(raw);
+    if (existsSync(expanded)) return expanded;
+  }
+  return undefined;
+}
+
+function findShimScriptPath(text: string, expand: (raw: string) => string): string | undefined {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('::') && !line.startsWith('@') && !line.startsWith(':'));
+  const finalLine = lines[lines.length - 1];
+  if (!finalLine) return undefined;
+
+  const isBareVarToken = (raw: string): boolean => /^%[A-Za-z0-9_]+%$/.test(raw);
+
+  for (const raw of quotedStrings(finalLine)) {
+    if (raw === '%*' || isBareVarToken(raw)) continue;
+    const expanded = expand(raw);
+    if (/\.(js|mjs|cjs)$/i.test(expanded) && existsSync(expanded)) return expanded;
+  }
+
+  // The final line named no literal script path -- only bare %VARNAME%
+  // tokens (npm.cmd's shape: `"%NODE_EXE%" "%NPM_CLI_JS%" %*`). Resolve
+  // each back to that variable's own first SET assignment in the file.
+  const varTokens = finalLine.match(/%[A-Za-z0-9_]+%/g) ?? [];
+  for (const token of varTokens) {
+    const varName = token.slice(1, -1);
+    const assignment = text.match(new RegExp(`SET\\s+"${varName}=([^"]+)"`, 'i'));
+    if (!assignment) continue;
+    const expanded = expand(assignment[1]);
+    if (/\.(js|mjs|cjs)$/i.test(expanded) && existsSync(expanded)) return expanded;
+  }
+  return undefined;
 }

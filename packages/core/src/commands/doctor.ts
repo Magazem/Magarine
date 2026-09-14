@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkDaemonFile, type DaemonFileCheck } from '../daemon.ts';
 import { probeDaemonHealth } from '../daemonClient.ts';
-import { resolveExecutable } from '../process.ts';
+import { resolveCommand, type ResolvedCommand } from '../process.ts';
 
 // `magarine doctor`: the owner's own first stop when something is wrong.
 // Every line is PASS, FAIL, or SKIP with one plain sentence -- no stack
@@ -40,8 +40,8 @@ export interface DoctorOptions {
   paid?: boolean;
   /** Test-only seam: overrides Node's own reported version. Defaults to `process.versions.node`. */
   nodeVersion?: string;
-  /** Test-only seam: overrides `resolveExecutable` (process.ts) so a test can simulate "found"/"not found" without touching the real PATH. Defaults to the real one. */
-  resolveExecutableFn?: (name: string) => string;
+  /** Test-only seam: overrides `resolveCommand` (process.ts) so a test can simulate "found"/"not found"/"needs prefix args" without touching the real PATH. Defaults to the real one. */
+  resolveCommandFn?: (name: string) => ResolvedCommand;
   /** Test-only seam: overrides how an external command is actually run (real production behaviour: `spawnSync`). Lets a test script exact PASS/FAIL/JSON responses for `claude --version`, `claude auth status --json`, `pnpm --version`, and (under `--paid`) `claude -p`, without a real binary on PATH. */
   runProbeFn?: (exe: string, args: string[]) => ProbeResult;
   /** Test-only seam: overrides the daemon-file staleness check (daemon.ts/daemonClient.ts). Defaults to the real `checkDaemonFile` + `probeDaemonHealth`. */
@@ -60,7 +60,7 @@ function realRunProbe(exe: string, args: string[]): ProbeResult {
 }
 
 export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
-  const resolveExecutableFn = options.resolveExecutableFn ?? resolveExecutable;
+  const resolveCommandFn = options.resolveCommandFn ?? resolveCommand;
   const runProbe = options.runProbeFn ?? realRunProbe;
   const checkDaemonFileFn = options.checkDaemonFileFn ?? ((stateDir: string) => checkDaemonFile(stateDir, probeDaemonHealth));
   const nodeVersion = options.nodeVersion ?? process.versions.node;
@@ -78,24 +78,22 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
   });
 
   try {
-    const pnpmExe = resolveExecutableFn('pnpm');
-    const probe = runProbe(pnpmExe, ['--version']);
-    // Batch 10 owner walk, finding 1: `resolveExecutable` (process.ts, not
-    // owned by this role) mis-parses some npm-generated `.cmd` shims that
-    // contain a conditional `IF EXIST "%dp0%\node.exe"` branch, resolving
-    // `pnpm` to a path that does not exist even though `pnpm --version`
-    // works perfectly typed into a real terminal. A real process.ts fix has
-    // been routed to the Strategist. Until it lands, a probe failure here is
-    // SKIP, not FAIL: this is the FIRST command an owner runs, and telling
-    // them to "fix" a working tool because our own resolution is wrong is
-    // worse than saying plainly that this particular check couldn't be
-    // trusted this time.
+    const pnpm = resolveCommandFn('pnpm');
+    const probe = runProbe(pnpm.executable, [...pnpm.prefixArgs, '--version']);
+    // Batch 10 owner walk, finding 1 (now fixed at the source):
+    // `resolveExecutable` used to pick the first quoted path in pnpm's
+    // `.cmd` shim that merely looked like a real executable -- an absent
+    // `node.exe` next to it -- even though `pnpm --version` worked
+    // perfectly typed into a real terminal. `resolveCommand` (process.ts)
+    // now recognises the shim's real shape and returns the script it
+    // actually runs, executed through this process's own node; a probe
+    // failure here is therefore a genuine FAIL again, not an artifact of
+    // our own resolution being wrong. See process.test.ts's synthetic
+    // shim fixtures for the regression coverage.
     lines.push({
       name: 'pnpm',
-      status: probe.ok ? 'pass' : 'skip',
-      detail: probe.ok
-        ? probe.output
-        : `could not verify pnpm this way (its resolved path did not run: ${probe.output}). Run \`pnpm --version\` yourself -- if that works, pnpm is fine and this is a known issue in how this check finds it.`,
+      status: probe.ok ? 'pass' : 'fail',
+      detail: probe.ok ? probe.output : `pnpm was found but did not run (${probe.output}). Reinstall it and try again.`,
     });
   } catch {
     lines.push({
@@ -105,14 +103,16 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
     });
   }
 
-  let claudeExe: string | undefined;
+  let claudeCmd: ResolvedCommand | undefined;
   try {
-    claudeExe = resolveExecutableFn('claude');
-    const probe = runProbe(claudeExe, ['--version']);
+    claudeCmd = resolveCommandFn('claude');
+    const probe = runProbe(claudeCmd.executable, [...claudeCmd.prefixArgs, '--version']);
     lines.push({
       name: 'claude CLI',
       status: probe.ok ? 'pass' : 'fail',
-      detail: probe.ok ? `${probe.output} (${claudeExe})` : `claude was found but did not run (${probe.output}). Reinstall it and try again.`,
+      detail: probe.ok
+        ? `${probe.output} (${claudeCmd.executable})`
+        : `claude was found but did not run (${probe.output}). Reinstall it and try again.`,
     });
   } catch {
     lines.push({
@@ -148,8 +148,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
   // into the owner's email address ending up in a terminal, a log, or a
   // screenshot pasted back to us. Point them at running the command
   // themselves instead.
-  if (claudeExe) {
-    const probe = runProbe(claudeExe, ['auth', 'status', '--json']);
+  if (claudeCmd) {
+    const probe = runProbe(claudeCmd.executable, [...claudeCmd.prefixArgs, 'auth', 'status', '--json']);
     if (!probe.ok) {
       lines.push({
         name: 'claude login',
@@ -184,8 +184,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
     lines.push({ name: 'claude login', status: 'skip', detail: 'skipped -- claude is not installed (see the line above).' });
   }
 
-  if (options.paid && claudeExe) {
-    const probe = runProbe(claudeExe, ['-p', 'say ok', '--output-format', 'json']);
+  if (options.paid && claudeCmd) {
+    const probe = runProbe(claudeCmd.executable, [...claudeCmd.prefixArgs, '-p', 'say ok', '--output-format', 'json']);
     lines.push({
       name: 'claude live call (--paid)',
       status: probe.ok ? 'pass' : 'fail',
