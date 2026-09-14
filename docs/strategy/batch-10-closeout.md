@@ -231,3 +231,13 @@ individually flagged. That has been put to the owner as a statement of fact with
 and no recommendation, alongside the thing that matters most about option 3: **rewriting
 history does not un-publish.** Anything already fetched, cached or indexed stays out there.
 Nothing will be scrubbed on our own initiative.
+
+### Standing rule, from the Strategist, so this gap cannot recur
+
+> **Every owner decision that resolves one of my rulings is reported to me in your next
+> message, in one line, before anything else. I should never learn an outcome by checking
+> an API.**
+
+The failure was not the push, which was authorised. It was that a ruling was resolved and the
+person who made it was never told, so they had to discover it themselves — and until they did,
+the only reasonable assumption available to them was that their ruling had been ignored.
