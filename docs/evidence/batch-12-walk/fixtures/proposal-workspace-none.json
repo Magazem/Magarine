@@ -1,0 +1,77 @@
+[
+  {
+    "rationale": "Owner answered all three open questions: docs-only project (no CLI implementation ticket), tool name/commands/copyright are fixed (jot; add/list/search/delete; Copyright 2026 Yazan), and STORAGE.md should target Python 3 in a single-user, single-machine, no-network, no-concurrent-writer context. With every prior unknown resolved, all four tickets can now be proposed consistently from the same shared facts. README/LICENSE/CHANGELOG are fully specified mechanical writing tasks assigned to the cheapest capable model (haiku); STORAGE.md is the one task requiring real trade-off analysis and is assigned to opus.",
+    "commands": [
+      {
+        "type": "create_ticket",
+        "title": "Write README.md for jot",
+        "description": "Write README.md describing 'jot', a small note-taking CLI written in Python 3. Include a one-paragraph description of what the tool does and its core commands: `add` (create a note), `list` (show notes), `search` (full-text search notes), and `delete` (remove a note). Keep it concise -- a short usage example for each command is welcome but this is not a full user manual. Do not invent features beyond add/list/search/delete (e.g. no tags, no edit command, no sync) since those are not part of the tool's actual scope.",
+        "acceptance_criteria": [
+          "README.md exists at the workspace root",
+          "Contains a one-paragraph description identifying the tool by name ('jot') and what it does",
+          "Documents exactly the four commands: add, list, search, delete -- no invented commands or features",
+          "Written in clear prose/Markdown, no placeholder or TODO text"
+        ],
+        "model": "claude-haiku-4-5-20251001",
+        "model_reason": "Mechanical writing task with a fully fixed spec (tool name, commands, and format all given) -- no design judgment required."
+      },
+      {
+        "type": "create_ticket",
+        "title": "Write LICENSE.md with MIT text",
+        "description": "Write LICENSE.md containing the standard MIT License text, with copyright holder 'Yazan' and year 2026.",
+        "acceptance_criteria": [
+          "LICENSE.md exists at the workspace root",
+          "Contains the full, unmodified standard MIT License text",
+          "Copyright line reads exactly: Copyright (c) 2026 Yazan"
+        ],
+        "model": "claude-haiku-4-5-20251001",
+        "model_reason": "Verbatim boilerplate text with two fixed substitution values -- purely mechanical."
+      },
+      {
+        "type": "create_ticket",
+        "title": "Write CHANGELOG.md with 0.1.0 entry",
+        "description": "Write CHANGELOG.md for jot, following the Keep a Changelog style, containing a single entry for '0.1.0 -- initial release'. The entry should briefly note the initial feature set: add, list, search, and delete commands. Do not invent any other version entries or unreleased sections.",
+        "acceptance_criteria": [
+          "CHANGELOG.md exists at the workspace root",
+          "Contains exactly one version entry, labeled 0.1.0, described as the initial release",
+          "Entry mentions the add/list/search/delete commands as the initial feature set",
+          "No additional invented version entries"
+        ],
+        "model": "claude-haiku-4-5-20251001",
+        "model_reason": "Single fixed changelog entry with a given feature list -- mechanical, no design judgment."
+      },
+      {
+        "type": "create_ticket",
+        "title": "Design note storage format and write STORAGE.md",
+        "description": "Decide and document, in STORAGE.md, how jot (a Python 3, single-user, single-machine, local-file CLI with no network sync and no concurrent multi-process writers) should store notes on disk. The design must satisfy three constraints simultaneously: (1) full-text search stays fast as the collection grows to tens of thousands of notes, (2) an edit or write that is interrupted by the process being killed mid-write must never corrupt the on-disk data, and (3) the format should remain readable/inspectable by hand (e.g. with a text editor or basic shell tools) where practical. Evaluate at least two rejected alternatives (for example: SQLite with FTS5, an append-only JSONL log with periodic compaction, and one-file-per-note with a separate search index) and give concrete reasons for rejecting each, tied to the three constraints above and to the Python 3 / single-writer / local-only context. State a clear final recommendation with its own trade-offs acknowledged.",
+        "acceptance_criteria": [
+          "STORAGE.md exists at the workspace root",
+          "States a single clear recommended storage design/format",
+          "Explicitly addresses all three constraints: full-text search performance at tens-of-thousands-of-notes scale, crash-safety on a mid-write kill, and hand-readability",
+          "Documents at least two rejected alternatives with concrete reasons tied to the Python 3, single-user, single-machine, no-concurrent-writers context",
+          "Trade-offs of the chosen design are acknowledged, not just its benefits"
+        ],
+        "model": "claude-opus-5",
+        "model_reason": "The one substantive design task in this project -- requires weighing genuine engineering trade-offs (search performance vs. crash-safety vs. hand-readability) rather than mechanical writing."
+      }
+    ],
+    "created": [
+      {
+        "title": "Write README.md for jot",
+        "ticketId": "tkt_cfc68a5b-704f-41d0-95b6-c0ca904fab8a"
+      },
+      {
+        "title": "Write LICENSE.md with MIT text",
+        "ticketId": "tkt_144af820-6097-48a6-a528-856864753f23"
+      },
+      {
+        "title": "Write CHANGELOG.md with 0.1.0 entry",
+        "ticketId": "tkt_e90665ea-426e-4643-8379-6e2c8896628b"
+      },
+      {
+        "title": "Design note storage format and write STORAGE.md",
+        "ticketId": "tkt_679f0c2c-4589-49eb-b8c7-b56734038bb8"
+      }
+    ]
+  }
+]

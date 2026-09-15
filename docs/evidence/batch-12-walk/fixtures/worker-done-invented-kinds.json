@@ -1,0 +1,165 @@
+[
+  {
+    "ticket": "tkt_679f0c2c-4589-49eb-b8c7-b56734038bb8",
+    "payload": {
+      "status": "done",
+      "summary": "Wrote STORAGE.md at the workspace root. Recommends one-file-per-note (UTF-8 Markdown + front matter, date-sharded under notes/YYYY/MM/) as the source of truth, plus a derived, disposable SQLite FTS5 index; governing rule is 'note files are truth, index is derived and disposable'. Covers all three constraints: FTS5 inverted-index search with order-of-magnitude scale arithmetic at ~50k notes and a runtime FTS5 availability probe with scan-based fallback; crash safety via the complete durable-write sequence (same-directory mkstemp -> flush -> os.fsync -> os.replace -> POSIX parent-directory fsync), explicitly distinguishing SIGKILL (satisfied by temp+rename alone, since page-cache data survives process death) from power loss (needs fsync); and hand-readability via plain Markdown files usable with cat/grep/git. Documents three rejected alternatives with reasons tied to the Python 3 / single-user / single-machine / no-concurrent-writers context: SQLite-as-source-of-truth (opaque binary, no meaningful diffs, total-loss blast radius with no replica or ops team), append-only JSONL with compaction (newline-escaped bodies defeat hand-readability, O(total history) queries including deleted notes, whole-store rewrite at compaction, and the append-only shape solves a multi-writer problem jot does not have), and one-file-per-note with no index (seconds-long scans at 50k files, no ranking or stemming, rg would be a hard external dependency on Windows) - the last explicitly framed as distinct from the recommendation and retained as the FTS5-absent fallback. Trade-offs section leads with the index-drift window including the phantom-delete case, plus its mtime/size detection and self-heal path and jot reindex escape hatch, then O(n) reindex cost, dual-representation code surface, per-file inode/block overhead, slow tree copies, and the owned front-matter parsing surface. Docs-only ticket: no CLI code written, no other board files touched.",
+      "artifacts": [
+        {
+          "kind": "doc",
+          "path": "STORAGE.md"
+        }
+      ],
+      "checks": [
+        {
+          "name": "STORAGE.md exists at workspace root",
+          "status": "passed"
+        },
+        {
+          "name": "States a single clear recommended storage design",
+          "status": "passed"
+        },
+        {
+          "name": "Addresses full-text search performance at tens-of-thousands-of-notes scale",
+          "status": "passed"
+        },
+        {
+          "name": "Addresses crash-safety on a mid-write kill",
+          "status": "passed"
+        },
+        {
+          "name": "Addresses hand-readability",
+          "status": "passed"
+        },
+        {
+          "name": "Documents at least two rejected alternatives with context-tied reasons",
+          "status": "passed"
+        },
+        {
+          "name": "Acknowledges trade-offs of the chosen design",
+          "status": "passed"
+        }
+      ],
+      "blockers": [],
+      "questions": []
+    }
+  },
+  {
+    "ticket": "tkt_e90665ea-426e-4643-8379-6e2c8896628b",
+    "payload": {
+      "status": "done",
+      "summary": "Created CHANGELOG.md with 0.1.0 initial release entry containing add, list, search, and delete commands following Keep a Changelog format.",
+      "artifacts": [
+        {
+          "kind": "documentation",
+          "path": "CHANGELOG.md"
+        }
+      ],
+      "checks": [
+        {
+          "name": "CHANGELOG.md exists at workspace root",
+          "status": "passed"
+        },
+        {
+          "name": "Contains exactly one version entry labeled 0.1.0",
+          "status": "passed"
+        },
+        {
+          "name": "Entry describes initial release",
+          "status": "passed"
+        },
+        {
+          "name": "Entry mentions add, list, search, delete commands",
+          "status": "passed"
+        },
+        {
+          "name": "No additional invented version entries",
+          "status": "passed"
+        },
+        {
+          "name": "Follows Keep a Changelog format",
+          "status": "passed"
+        }
+      ],
+      "blockers": [],
+      "questions": []
+    }
+  },
+  {
+    "ticket": "tkt_144af820-6097-48a6-a528-856864753f23",
+    "payload": {
+      "status": "done",
+      "summary": "LICENSE.md written successfully with standard MIT License text, copyright line 'Copyright (c) 2026 Yazan', and all required acceptance criteria met.",
+      "artifacts": [
+        {
+          "kind": "license",
+          "path": "LICENSE.md"
+        }
+      ],
+      "checks": [
+        {
+          "name": "LICENSE.md exists at workspace root",
+          "status": "passed"
+        },
+        {
+          "name": "Contains full standard MIT License text",
+          "status": "passed"
+        },
+        {
+          "name": "Copyright line matches specification",
+          "status": "passed"
+        }
+      ],
+      "blockers": [],
+      "questions": []
+    }
+  },
+  {
+    "ticket": "tkt_cfc68a5b-704f-41d0-95b6-c0ca904fab8a",
+    "payload": {
+      "status": "done",
+      "summary": "README.md for jot written successfully. The file includes a one-paragraph description of the tool as a Python 3 note-taking CLI and documents all four core commands (add, list, search, delete) with concise usage examples. No invented features or placeholders included.",
+      "artifacts": [
+        {
+          "kind": "documentation",
+          "path": "README.md"
+        }
+      ],
+      "checks": [
+        {
+          "name": "README.md exists at workspace root",
+          "status": "passed"
+        },
+        {
+          "name": "Contains one-paragraph description identifying jot and its purpose",
+          "status": "passed"
+        },
+        {
+          "name": "Documents exactly four commands: add, list, search, delete",
+          "status": "passed"
+        },
+        {
+          "name": "No invented features or commands beyond the specified four",
+          "status": "passed"
+        },
+        {
+          "name": "Written in clear Markdown with no placeholders or TODO text",
+          "status": "passed"
+        }
+      ],
+      "blockers": [],
+      "questions": []
+    }
+  },
+  {
+    "ticket": "tkt_2029822c-d832-4d42-80ba-e7e680a6c93f",
+    "payload": {
+      "status": "done",
+      "summary": "Owner answered all three open questions: docs-only project (no CLI implementation ticket), tool name/commands/copyright are fixed (jot; add/list/search/delete; Copyright 2026 Yazan), and STORAGE.md should target Python 3 in a single-user, single-machine, no-network, no-concurrent-writer context. With every prior unknown resolved, all four tickets can now be proposed consistently from the same shared facts. README/LICENSE/CHANGELOG are fully specified mechanical writing tasks assigned to the cheapest capable model (haiku); STORAGE.md is the one task requiring real trade-off analysis and is assigned to opus.",
+      "artifacts": [],
+      "checks": [],
+      "blockers": [],
+      "questions": []
+    }
+  }
+]
