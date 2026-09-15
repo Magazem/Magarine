@@ -124,11 +124,29 @@ retire finished agents.
 | **Liaison** (sonnet) | the only channel to the owner |
 | **Butler** | creates assistants on request |
 
+## Decided by the owner (2026-09-16)
+
+1. **Typeface: IBM Plex Sans.** Confirmed. Aliased as "Magarine Sans" in `tokens.css`, so a
+   future change stays a one-line swap.
+2. **The Next.js port** in `propos/fleet-and-board/` is **a design reference only** — and the
+   owner has clarified the stack *was never their choice*: the tool that generated their
+   reference image happened to use it. **It carries no signal about their preferences. Do not
+   mine it for intent again.**
+3. **Non-Latin scripts: the owner personally will not need them, but future users might**, and
+   they left the timing to us. Recommendation with the Strategist: ship the Latin subset now,
+   make the page *say* when it is rendering outside the bundled subset rather than silently
+   falling back (rule 9), and carry wide-script support against a stated trigger — *when
+   Magarine has a user who is not the owner*. A CJK subset is megabytes against Latin's tens of
+   kilobytes, paid by every user on every load, and buys nothing for the only user who exists.
+
 ## Open with the owner
 
-1. **Typeface** — IBM Plex Sans (recommended) versus Inter. A token swap either way.
-2. **Non-Latin scripts** — will they ever write a scope in one? Decides the font subset.
-3. **The Next.js port** in `propos/fleet-and-board/` — mined for ideas, stack not adopted.
+1. **BLOCKING — has the owner seen and approved pass 3 as the page they will get?** Nothing on
+   disk records it, and the batch 14 spec made their yes the gate to building. **Role B does not
+   start until this is answered; Role A is unaffected.** The screens open directly in a browser
+   from `docs/design/pass3/`.
+2. **Permission for one small real run** (~coffee money in equivalent API cost) to watch the page
+   animate on a genuine event rather than a simulated one.
 
 ## Carried UNKNOWNs — stated, not assumed away
 
