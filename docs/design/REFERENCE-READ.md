@@ -1,157 +1,207 @@
 # Reading the owner's reference
 
-Interface Designer. 2026-09-15. A read of `propos/`, requested before anyone commits to pass 3.
-**Nothing here is built yet. Pass 3 has not started.**
+Interface Designer. 2026-09-15. **Supersedes my first version of this file entirely** — that one was written
+before I had read the owner's own 686-line brief, and it was wrong in its central judgement.
+**Pass 3 has not started.**
+
+Source of truth: `propos/Convert mockups to HTML/src/imports/pasted_text/magarine-visual-identity.md`.
 
 ---
 
-## 0. First: `propos/` holds two different things, and only one is the owner's new direction
+## 0. Two corrections, and the second one is mine
 
-| | what it is |
-|---|---|
-| `91451e7d-*.png` + `12ui-5132548c-*.html` + `12ui-63f305a1-*.web-project/` | **The owner's new visual direction.** One design, three formats. |
-| `fleet-and-board/` | **A Next.js port of my pass 2** — not a second proposal. |
-| `Convert mockups to HTML/` | An empty Figma→React/Vite scaffold. Boilerplate. |
+**The Orchestrator's:** they told me the reference "is not Brutalism". The owner's brief says *"Brutalism is part of
+the identity"*, *"Keep the brutalist DNA already present in the mockups"*, and asks for **Living Brutalism** — its
+evolution, not its replacement. Correct to flag.
 
-`fleet-and-board/` carries my pass-2 markup verbatim: the `35% / 19% / 12% / 20% / 14%` colgroup, the
-`num spent phrase` cost cell with "at least … live estimate", my `#828FA6` contrast fix, my comment prose
-("Brutalism does not ease"). Someone has taken my mocks and ported them — and **evolved** them: three themes now
-(OLED default, deep navy, warm paper), a second humanist family beside the mono, "Living Brutalism" separating
-zones by surface rather than heavy borders.
+**Mine, and it is larger.** I read the generated PNG as the target and wrote that *"the personas are the product's
+story made visible"*. The owner's brief says the exact opposite, emphatically:
 
-**Two things follow.** It is a fork of the pass the owner has not yet ruled on, so somebody should know it exists
-before it diverges further. And it is **Next.js + React + Tailwind + shadcn** — the build-step, component-kit
-stack this project explicitly ruled out. Adopting it would reverse that ruling, which is not a design decision.
+> Do NOT use: profile pictures · human avatars · robot mascots · cartoon characters · emojis · generic AI faces ·
+> generic glowing circles
 
-## 1. What the reference actually is
+**The generated image contains eight cartoon human avatars and a mascot.** It violates the owner's brief in the
+single area the brief is most emphatic about. I recommended adopting the one thing they explicitly forbade,
+because I treated a tool's output as the owner's intent. **The PNG is a failed interpretation, not the target.**
 
-Technically it is closer to us than it looks: **one inline `<style>`, zero `<script>`, 16 inline SVG icons**, no
-framework at runtime. Its only network dependency is three Google Fonts — **Inter** (UI text), **Share Tech Mono**
-(machine output), **Caveat** (handwritten annotations) — all three shippable as local files under the
-Strategist's new ruling. The 1 MB is **713 KB of inline base64 PNG**: 29 images, the agent portraits and the
-mascot.
+I also called `propos/Convert mockups to HTML/` "empty Figma boilerplate" from a depth-2 listing. The owner's
+entire brief was inside it. That was sloppy and it is what caused the error above.
 
-## 2. The read
+## 1. What the owner actually asked for
 
-**It is warm, and mine is not.** That is the finding. My pass 2 is correct, measured and cold. This is *likable*.
-The owner's "very AI generic" was never really about rounded versus square — Brutalism gave the page an identity,
-but an austere one, and austerity is not what "a team of AI workers for your ideas" wants to feel like.
+**The frame:** Magarine is an *AI-orchestration-first development environment*, not an IDE with AI. The feeling
+they want is *"I am operating a living system that develops software"*, and the test they set is that someone
+seeing it thinks **"What the hell is this? There are software agents actually operating inside this
+environment."** — not "that's a nice AI IDE."
 
-**Three things it does better than my pass 2, on the merits:**
+**The architecture is locked.** Fleet, Board, Needs You, Scope, Conversation, Tickets, Agents, Managers,
+Orchestrator, Activity, existing states, existing hierarchy. *"We are changing the VISUAL LANGUAGE, not the
+PRODUCT."* Our three mocks were fed in as the source of truth — which confirms the layout was approved and the
+skin was what they wanted evolved.
 
-1. **Columns beat a sorted table for the question people actually ask.** My board is one table ordered by
-   `STATUS_ORDER`; you read it row by row to learn the shape of the work. Columns show the shape at a glance — five
-   running, one blocked — without reading anything.
-2. **Colour carries status structurally**, in the column itself, not only in a pill at the end of a row.
-3. **The personas are the product's story made visible.** Named characters with faces are why the tagline lands.
+**Living Brutalism, defined by what it is not:** not black-borders-plus-white-plus-colourful-buttons-plus-shadows.
+Not huge borders round everything. Not every element a card. Not childish, not exaggerated shadows, not random
+colour. *"Structure can be brutalist. Every component does not need to be."* The blend they name is
+**brutalist structure + developer notebook + technical workstation + AI orchestration + living system**, and the
+emotional reference is *"a developer's notebook that became a living command center."*
 
-**The risk it carries:** colour is everywhere, so nothing is reserved. My pass 2 has a rule — green means live,
-actionable, or delivered, and nothing else. Here every column, tag and avatar is coloured. The reference survives
-this because NEEDS YOU is a separate rail with bright buttons, but the rule has to be re-established deliberately
-or the screen becomes decorative.
+**The most important new idea is agent presence** — and it is explicitly *not* avatars. It is
+*pixels · terminal processes · computational organisms · machine states · old technical displays · system
+signals · evolving patterns · data movement*. An agent has a small visual presence **that changes as it works**,
+across states: thinking, reading, planning, working, writing, testing, reviewing, waiting, blocked, done, failed.
 
-## 3. The criterion for the split
+**The motion rule is one line:** *"ANIMATE THE WORK, NOT THE INTERFACE."* Static structure, moving work. Layout
+calm, work moving. No floating particles, animated backgrounds, glowing, bouncing cards, decorative loaders.
 
-Not "is it pretty" but: **can the daemon actually produce this?**
+**Typography:** JetBrains Mono stays and is *"part of Magarine's identity"* — kept for ids, statuses, metadata,
+system information, agent states. **And they ask for a complementary human-readable face** for project names,
+descriptions, explanatory text, conversation.
 
-A screen that displays a number the system cannot compute is batch 13's failure in a new costume — output that
-reports more than was delivered. "DONE with nothing delivered" was made impossible at the contract level; a
-progress bar showing `67%` when nothing measures progress is the same lie, on the primary screen, where it is
-most believed. **The rule I would apply to this and to every future reference: if the daemon cannot produce the
-value, the element does not ship, however good it looks.**
+**Themes:** a true **OLED near-black** dark as a first-class environment, not an inverted light theme. A light
+theme that is *technical notebook + engineering documentation + physical work surface* in *"sophisticated
+paper/off-white tones"* — explicitly not sterile white SaaS.
+
+**Density:** *"DENSE BUT CALM."* It is a developer tool; do not make it spacious.
+
+## 2. The finding that changes what is possible: "make the work visible" is already in our data
+
+The brief's most ambitious ask — show *what an agent is doing*, not just `WORKING` — reads like a product change.
+**It is not. The daemon already produces it and then hides it.**
+
+`claudeCli.ts` runs the tool with `--output-format stream-json --verbose` and parses the stream line by line.
+`describeProgress()` already turns those lines into exactly the vocabulary the brief asks for:
+
+- `tool_use: Read` · `tool_use: Edit` · `tool_use: Bash` · `tool_use: Grep`
+- `thinking (~N tokens)`
+- `session initialized` · `tool result received`
+
+Each one is emitted as a `progress` event, and `scheduler.ts` **persists it** as a `worker_progress` event against
+the run, with its message in the payload — capped at 200 per run. The only reason nobody has ever seen one is
+`policy.ts`: `worker_progress: { visibility: 'internal' }`, so the activity view filters it out.
+
+**So "reading repository / writing implementation / running tests" is a visibility decision plus a read path, not
+new instrumentation.** That moves the brief's centrepiece from list B to list A, and it is the single most
+important thing in this document.
+
+Two honest limits: the phases are inferred from *which tool the worker called*, not from the worker declaring its
+intent — so `tool_use: Read` means "it read something", and calling that "reading repository" is a small
+interpretation. And the page polls every 4 seconds, which is coarse for a presence that is meant to feel live.
+
+## 3. `fleet-and-board/` deserves a correction too
+
+I called it a stray fork on the wrong stack. It is on the wrong stack — Next.js + React + Tailwind + shadcn, which
+is the build-step component-kit approach this project ruled out. **But it is a serious, on-brief attempt at exactly
+this evolution**, and I underrated it:
+
+- Three themes: **OLED default**, deep navy, **warm paper light** — precisely what §1 asks for.
+- A second humanist family beside the mono — precisely what §1 asks for.
+- "Living Brutalism" separating zones **by surface rather than heavy borders** — precisely *"structure can be
+  brutalist, every component does not need to be."*
+- **`components/agent-glyph.tsx`: a 16-cell pixel worker in a 4-wide grid that scans while a ticket is genuinely
+  running and is static otherwise** — with the stated principle that motion there always means real live
+  computation, never decoration.
+
+That last one is the owner's agent-presence idea, correctly interpreted, already prototyped. Whoever wrote it read
+the brief properly. **Its ideas should be mined; its stack should not be adopted.**
 
 ## 4. List A — visual direction, adoptable now, no product change
 
-Every item below re-arranges or restyles data we already have.
+1. **Living Brutalism as an evolution of pass 2**: keep the structure, hierarchy, technical labels, density and
+   restraint; drop the uniform heavy borders and the everything-is-a-card reflex. Separate zones by **surface**,
+   not by 2px rules everywhere.
+2. **OLED near-black dark theme** as the default environment, replacing my navy `#0F172A`.
+3. **Warm paper light theme** — off-white, notebook, ink rules. Replaces my cool slate `#F1F5F9`.
+4. **Reinstate the two-family split**: JetBrains Mono for ids/statuses/metadata/agent state, a humanist face for
+   names, descriptions and conversation. *(Worth noting: pass 1 had exactly this and I removed it when the all-mono
+   instruction came down. The owner has asked for it back.)*
+5. **Agent presence as a pixel/computational glyph** — never a face. Per-state behaviour, driven by real events.
+6. **Live work descriptions** from `worker_progress` — see §2.
+7. **Motion rule adopted verbatim**: animate the work, not the interface. This is a strict *superset* of my pass-2
+   rule and compatible with it.
+8. **State-expressive tickets**: active ≠ waiting, blocked communicates interruption, done settles.
+9. **Needs You reframed** from "inbox" to the handover moment — who is asking, what they were doing, why they
+   stopped, what decision is needed, what happens next. Our data supports all five.
+10. **Activity stays dense**, with live events getting a subtle signal rather than being replaced by a visualisation.
+11. Inline SVG icons; no icon font, no emoji.
 
-1. **The warm palette.** Deep navy grounds; teal, blue, purple, pink and yellow accents. (Authoritative values
-   should come from the `12ui` HTML's literal colours or a fresh database query — `design-tokens.json` is
-   anti-aliasing noise extracted from an image and is not a usable palette.)
-2. **Rounded corners and softer surfaces.** Reverses the brutalist `0px` deliberately.
-3. **Three typefaces, each with a job**: Inter for prose, Share Tech Mono for ids/commands/machine output, Caveat
-   for annotation *if it earns a role* — see §6.
-4. **Kanban columns for the board**, keyed to our real statuses — see §6 for the mapping question.
-5. **Ticket cards**: id, relative age, title, description, assignee, status. All real fields today.
-6. **NEEDS YOU as avatar-led cards** with the two real actions per event type. We already have exactly these three
-   shapes: Approve/Reject, Answer, Retry. This panel needs no product change at all.
-7. **Activity feed** with coloured dots and coloured actor names. We have the events.
-8. **Segmented top nav** — FLEET & BOARD / NEEDS YOU / SCOPE. All three views exist.
-9. **Sun/moon theme toggle.**
-10. **Inline SVG icons** — which is what the reference itself does, and what I recommended over an icon font.
-11. **Relative times** ("2h ago") over raw ISO, with the exact timestamp on demand.
+## 5. List B — needs a ruling before it can be drawn
 
-## 5. List B — product changes, the Strategist's call, not mine
+1. **Agent *identity* versus agent *presence*.** The brief wants agents to feel like entities. Our workers are
+   ephemeral per-ticket processes with no persistent identity. A glyph per *run* is honest and needs nothing new.
+   A *standing roster* of named agents does not exist. Which of the two is being asked for is a product question.
+2. **The eleven agent states.** `THINKING READING PLANNING WORKING WRITING TESTING REVIEWING WAITING BLOCKED DONE
+   FAILED` are **agent activity** states; our eight are **ticket** states. Some map from real data
+   (working/waiting/blocked/done/failed) and some from `worker_progress` (reading/writing/testing/thinking).
+   **`PLANNING` and `REVIEWING` I cannot currently source.** The mapping needs agreeing, and anything unsourceable
+   must not be drawn.
+3. **Un-hiding `worker_progress`.** It is `visibility: 'internal'` by deliberate policy decision, and there are
+   200 of them per run. Surfacing them is a policy change plus a read path — small, but not mine.
+4. **Orchestration made perceptible** (signals, handoffs, propagation). We have the events; whether the daemon can
+   express *delegation* as a relationship is worth checking before it is drawn.
+5. Still unbuildable and therefore not to be drawn: **progress percentages** (nothing measures completion),
+   **ticket tags**, **⌘K search**, **Agent Generator**, **per-ticket conversation threads**.
 
-For each, what the reference shows, why it does not exist, and the honest substitute if one exists.
+## 6. List C — where the owner's brief and the product as it exists actually conflict
 
-1. **Per-ticket progress percentage and progress bars.** *Nothing measures completion.* A worker is an opaque
-   process; we have status and attempts, not a fraction. **This is the single most dangerous element on the
-   screen.** Honest substitutes that are real: `attempts` as a segmented meter (1/3), or for a running ticket a
-   spend-against-budget bar. Both are true numbers. If neither is wanted, the bar goes.
-2. **Eight persistent named agents with portraits and live status.** Our workers are ephemeral per-ticket
-   processes; there is no standing roster. A sidebar of eight agents with live WORKING/READING/BLOCKED implies a
-   product we do not have. **Cheaper honest versions:** personify the two roles that *are* persistent (Manager and
-   worker), or attach a deterministic persona to each ticket derived from its id and show the model it ran.
-3. **"Agent Generator" / "Add new agent".** No such concept exists at any level.
-4. **Per-ticket conversation tabs** (`#142 #136 #135`). Our conversation is project-scoped; per-ticket we have
-   questions only. **Honest substitute:** keep the project thread and add a per-ticket *filter* — activity already
-   carries `entityId`, so filtering is real where threading is not.
-5. **Ticket tags** (`backend`, `security`, `ui`). No tag or label field on a ticket.
-6. **Global search with ⌘K** across tickets, agents and projects. No endpoint.
-7. **Desktop window chrome** (macOS traffic lights). We are a page served on loopback, not a desktop app. Drawing
-   fake window controls in a browser tab is a small lie that makes every other element less trustworthy.
-8. **Illustrations as payload.** 713 KB of PNG. The Strategist's ruling covers **fonts and icons**; illustrations
-   are not obviously inside it. That is a scope question, not something I should assume either way.
+The brief states, repeatedly: *"These HTML files are ONLY VISUAL MOCKUPS of a **native Windows desktop
+application**. They are NOT a web application."* and *"Do not introduce web-specific visual conventions."*
 
-## 6. Three open questions I cannot settle alone
+**What exists:** a daemon serving one HTML page over loopback HTTP, authenticated by a token pasted into a
+browser tab and kept in `sessionStorage`, refreshed by a 4-second `setInterval`.
 
-**a. The column set.** The reference shows five columns; we have eight statuses. My proposal:
-`WAITING (OPEN + READY)` · `IN PROGRESS` · `REVIEW` · `BLOCKED` · `FAILED` · `DONE (+ CANCELLED, struck through)`
-— six columns, covering all eight, nothing hidden. `BLOCKED` and `FAILED` stay separate because they need
-*different actions* from the owner. **A column set that does not cover the state machine silently hides tickets,
-and "nothing is ever hidden" is a rule I already committed to.**
+**The concrete conflicts:**
 
-**b. Where the table goes.** The reference has a grid/list toggle in the corner. **I propose the approved pass-2
-table becomes the list view** — it is denser, it survives narrow widths, and it is the thing the owner already
-signed off. Kanban is the grid view and the default. Below the breakpoint where six columns stop fitting, the
-board falls back to the list view rather than crushing. This also gives `blockedBy` and the PAUSED banner a home:
-the banner spans above the columns as it does now, and `blocked by #id` sits on the card.
+| | the brief implies | we have |
+|---|---|---|
+| Shell | a native window, own title bar, OS menus | a browser tab with browser chrome we do not control |
+| Auth | app has its own session | a token pasted into a web page |
+| Liveness | continuous, event-driven | 4-second polling |
+| Notification | OS notifications / tray for "Needs You" | nothing outside the tab |
+| Interaction | keyboard shortcuts, context menus, resizable split panes, layout persisted across sessions | a scrolling page, no persisted layout |
+| Conventions | desktop software | a Refresh button, a page `<title>`, link-blue accents, browser scroll |
 
-**c. Caveat.** This is the highest-risk item in list A, not a safe one. In the reference **every Caveat string is
-an annotation about the mockup** — "Give your agents unique identities!" is the tool talking to the owner, not UI
-copy. Adopting the font without a real role means inventing handwriting-flavoured chrome. It is also the most
-visible carrier of the warmth the owner responded to. **The owner should decide whether the product speaks in
-that voice**, and where — a tagline and empty states are defensible; scattered annotations are not.
+**The question underneath, which is the Strategist's and nobody else's.** There are two readings:
 
-## 7. What survives from pass 2 unchanged
+- **(i) Framing.** "Native Windows app" is instruction *to the design tool* — stop making web-flavoured choices.
+  The served page remains the product. Nothing technical changes.
+- **(ii) Literal.** The served page is a prototype and the real product is a native application. Then
+  `packages/core/src/ui/page.ts` is scaffolding, and batch 14's "wire it up" step targets something intended to be
+  replaced — which is worth knowing *before* wiring it.
 
-Worth stating so it is not thrown out with the brutalism. **None of this is skin:**
+**The size of that conflict depends entirely on one unasked question: native *how*?** If the answer is Electron or
+Tauri, both render HTML and CSS, and **everything in list A ports directly** — the visual language, the tokens,
+the glyph, the themes are the implementation, not a picture of it. Only a genuinely native shell (WinUI/XAML)
+discards the CSS, and even then the design system, information architecture and state semantics survive.
 
-- The measured contrast discipline and the ≥4.5:1 floor in both themes.
-- The wrapping rules — `minmax(0, 1fr)`, `min-width: 0`, `overflow-wrap: anywhere` on machine strings.
-- **The inbox reason shown in full, never truncated.**
-- The `<details>` disclosure pattern for model, cost and failure reasons.
-- **The artefact-by-kind rule** — `file` shows its path, text-bearing kinds show kind and length, never the body.
-- Fidelity to `board.ts`'s real `STATUS_ORDER` and to the real status union.
-- Real strings everywhere, never lorem ipsum.
-- The pause banner that names the command that clears it.
+**What survives under every reading:** the layout the owner approved, the concepts, the contrast discipline, the
+wrapping rules, reason-never-truncated, artefact-by-kind, `STATUS_ORDER` fidelity, real strings.
 
-And, most importantly: **the layout and UX the owner already approved.** Pass 3 keeps them. Adopting kanban is a
-change to how the *board panel* renders, inside the approved three-column frame — it does not reopen what was
-signed off.
+## 7. Where pass 2 stands against the brief
+
+**Right, and keep:** brutalist structure and hierarchy · technical labels · density · square restraint ·
+JetBrains Mono as identity · motion meaning real work (my one blinking marker is the same principle the brief
+states, just applied to one element instead of many) · every honesty rule.
+
+**Wrong against the brief, and change:** every component bordered and carded (*"do not put huge borders around
+everything"*) · all-mono (they want the second family back) · navy rather than OLED · cool-slate light rather
+than warm paper · agents as text rows with no presence · work shown as a status word rather than as what the agent
+is doing.
+
+**So the verdict is neither "approved" nor "rejected": it is the right family, the wrong execution, and the brief
+is a list of the specific corrections.**
 
 ## 8. Recommendation
 
-**Pass 3 = the warm reskin, plus the board becoming kanban. Not a third from-scratch pass.**
-
-1. Adopt list A whole. It is a real change and it answers the rejection directly.
-2. Take nothing from list B into the mock until the Strategist rules. Where an honest substitute exists (attempts
-   meter, per-ticket filter, role personas) I would show the substitute and label it as such, so the owner sees a
-   screen that could actually be built.
-3. Settle §6a, §6b and §6c before drawing.
-4. Same constraints as before: static mocks, no framework, no runtime fetch, fonts as local files.
-5. **Do not port `fleet-and-board/`.** It is a fork of the pass under review, on a stack this project ruled out.
-
-**One caution, plainly.** The owner has not given a verdict on pass 2. This reference tells us what they want far
-better than a verdict would, and I would act on it — but it should be recorded as *superseding* pass 2's skin, not
-as pass 2 having failed. The layout it is built on is the layout they approved.
+1. **Answer §6 first.** Not the whole native-app question — just *native how?* If it is Electron or Tauri, pass 3
+   is unblocked immediately and everything ports. That one answer decides whether pass 3 is a design that ships or
+   a picture of one.
+2. **Pass 3 is Living Brutalism applied to the approved layout**: OLED dark, warm paper light, two families back,
+   surfaces instead of uniform borders — plus the two ideas that make it Magarine rather than a recolour: **the
+   agent glyph** and **live work descriptions from `worker_progress`**.
+3. **Un-hide `worker_progress` first**, or at minimum confirm someone will. It is the difference between designing
+   agent presence against real data and inventing it — and inventing it is the failure mode I have been arguing
+   against all batch.
+4. **Mine `fleet-and-board/` for its ideas** — the three themes and `agent-glyph.tsx` are on-brief and already
+   thought through. Do not adopt its stack.
+5. **Ignore the generated PNG's avatars and mascot.** They contradict the owner's own brief. The PNG is still
+   useful for the kanban column idea and the general warmth, but it is not authoritative — the brief is.
