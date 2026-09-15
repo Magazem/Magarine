@@ -150,6 +150,13 @@ retire finished agents.
 
 ## Carried UNKNOWNs — stated, not assumed away
 
+- **Playwright is broken on this machine and is not available.** Verified 2026-09-16:
+  `ms-playwright/chromium-1194/chrome-win/` holds only `chrome.dll` and a manifest — no
+  `chrome.exe` anywhere under `ms-playwright`, and no playwright npm package installed.
+  **Use system Chrome headless** at `C:\Program Files\Google\Chrome\Application\chrome.exe`;
+  it needs an absolute `--screenshot=` path and its own `--user-data-dir` or it fails with
+  access-denied. Do not spend a turn rediscovering this.
+
 - **The owner's own design, as a second skin.** Their words: *"add an extra theme from the one I
   proposed, after we have the product working"* — and *"i don't want it lost."* Ruling 13 says it
   is a **skin, not a palette**: same six product regions, different arrangement and visual
