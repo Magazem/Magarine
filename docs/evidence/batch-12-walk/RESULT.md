@@ -114,3 +114,40 @@ nothing in twenty cold runs triggers it. **It remains unproven and is not claime
 20/20 cold runs green, **zero leaked directories after every run**, from a cleared baseline.
 Three mutations repeated at random, each failing exactly the test named for it; one of them
 (`model_reason`) I had already verified independently earlier.
+
+---
+
+## CORRECTION to Finding 1, added after Role S checked the preserved fixture
+
+**I wrote that "the Manager chose `workspace_type: NONE`". That is not what the evidence shows,
+and the engineer caught it by reading the fixture I saved rather than trusting my description
+of it.**
+
+The Run B proposals contain **no `workspace_type` field at all.** `store.ts:401` defaults a
+ticket to `'NONE'` when the field is absent. So for the incident that lost the work, the
+Manager did not choose badly — **it did not choose, and our default chose destruction for it.**
+
+Checking every proposal recorded across these walks makes the real picture clear, and it is
+worse than either version:
+
+| proposal | `workspace_type` | outcome |
+|---|---|---|
+| 1 | explicitly `NONE` | — |
+| 2 | explicitly `NONE` | — |
+| 3 (Run A) | explicitly **`DIRECTORY`** | **files delivered** |
+| 4 (Run B) | **absent** | work discarded |
+| 5 (Run B) | **absent** | work discarded |
+
+**So the Manager's behaviour is inconsistent across identical-shaped work:** it set `DIRECTORY`
+once and got it right, set `NONE` twice, and omitted the field twice — and omission silently
+resolves to the destructive option.
+
+**This strengthens the Strategist's ruling rather than weakening it.** Guidance would not have
+fixed this: a Manager that omits a field cannot be guided into omitting it *correctly*, and a
+default of `NONE` for work tickets is a loaded gun regardless of what the Manager does.
+**Removing the choice handles all three observed behaviours at once** — explicit wrong, absent,
+and explicit right.
+
+**What I got wrong, precisely:** I attributed to the Manager's judgement a failure that was
+partly our default's. I had the fixture in hand when I wrote it and described it instead of
+reading it. The engineer read it.
