@@ -12,3 +12,9 @@ node_modules/
 # Screenshot tool scratch (browser profile + throwaway captures).
 # Evidence screenshots belong in docs/evidence/, committed deliberately.
 .shots/
+
+# Engineer scratch at the repo root (build/probe helpers).
+*.tmp.cjs
+*.tmp.js
+*.tmp.css
+*.tmp.html

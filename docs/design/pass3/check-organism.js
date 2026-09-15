@@ -2,13 +2,18 @@
 // ===========================================================================
 // Magarine — automated checker for the agent organism generator.
 //
-//   node docs/design/pass3/check-organism.js [page.html]
+//   node docs/design/pass3/check-organism.js [organism.js]
 //   node docs/design/pass3/check-organism.js --self-test
 //
-// IT EXTRACTS THE GENERATOR FROM THE SHIPPED PAGE, not from a copy. An earlier
-// reference copy drifted from the page it claimed to describe, so proofs run
-// against it did not mean what they said. There is no second implementation to
-// keep in sync: if this passes, the thing that actually renders passes.
+// IT READS THE ONE GENERATOR FILE THE PRODUCT SERVES -- by default
+// packages/core/ui/organism.js -- not a copy of it. Batch 15 ruling 11: pass 3
+// inlined the generator in each screen and this checker extracted it from a
+// page; the product has exactly one copy, the page includes it with
+// <script src="/ui/organism.js">, and the daemon serves that route from this
+// same file byte-identical. An earlier reference copy drifted from the page it
+// claimed to describe, so proofs run against it did not mean what they said.
+// There is still no second implementation to keep in sync: if this passes, the
+// thing that actually renders passes.
 //
 // TWO RULES THIS FILE HAS TO OBEY, both learned the hard way on this batch:
 //
@@ -25,8 +30,8 @@
 //   property has an absolute floor, THIS FILE owns the constant, and the
 //   generator's own declaration is checked against it rather than trusted.
 //
-// --self-test mutates the page in six ways and asserts this checker rejects
-// every one. Run it after touching either file.
+// --self-test mutates the generator file in six ways and asserts this checker
+// rejects every one. Run it after touching either file.
 //
 // Exit code 0 on success, 1 on any failure.
 // ===========================================================================
@@ -49,16 +54,22 @@ var HARD_MAX_LIT = 19;
 var FAMILY_NAMES = ['core', 'ring', 'lattice'];
 var SYMMETRY_NAMES = ['mirror-x', 'mirror-y', 'quad'];
 
-function extractGenerator(html) {
-  var start = html.indexOf('var GLYPH_VERSION');
-  if (start < 0) throw new Error('generator not found');
-  var marker = html.indexOf('return cells;', start);
-  var end = html.indexOf('\n  }\n', marker);
-  if (marker < 0 || end < 0) throw new Error('could not find the end of organism()');
-  var src = html.slice(start, end + 5);
-  src += '\nreturn { organism: organism, tierOf: tierOf, splitSeed: splitSeed,'
-      +  ' TIER_TRAITS: TIER_TRAITS, GRID: GRID, MIN_LIT: MIN_LIT, MAX_LIT: MAX_LIT };';
-  return { api: new Function(src)(), src: src };
+// Ruling 11: the generator is a FILE, and this evaluates that file's own
+// source. organism.js assigns its API onto `globalThis`; shadowing globalThis
+// with a bare object here means the evaluation cannot touch this process's real
+// global, and the API comes back from the same bytes the daemon serves.
+function loadGenerator(file) {
+  var CR = String.fromCharCode(13);
+  var src = fs.readFileSync(file, 'utf8').split(CR).join('');
+  if (src.indexOf('var GLYPH_VERSION') < 0) throw new Error('generator not found in ' + file);
+  var NL = String.fromCharCode(10);
+  var api = new Function(
+    'var globalThis = Object.create(null);' + NL + src + NL + 'return globalThis.MagarineOrganism;'
+  )();
+  if (!api || typeof api.organism !== 'function') {
+    throw new Error(file + ' did not define globalThis.MagarineOrganism.organism');
+  }
+  return { api: api, src: src };
 }
 
 function symmetric(cells, sym, GRID) {
@@ -74,9 +85,7 @@ function symmetric(cells, sym, GRID) {
 }
 
 function run(pagePath, quiet) {
-  var CR = String.fromCharCode(13);
-  var html = fs.readFileSync(pagePath, 'utf8').split(CR).join('');
-  var got = extractGenerator(html);
+  var got = loadGenerator(pagePath);
   var G = got.api;
   var GRID = G.GRID;
   var failures = [];
@@ -87,7 +96,7 @@ function run(pagePath, quiet) {
     if (!ok) failures.push(name);
   }
 
-  log('generator extracted from ' + path.basename(pagePath) + ' (' + got.src.length + ' chars)');
+  log('generator read from ' + path.basename(pagePath) + ' (' + got.src.length + ' chars)');
   log('');
   log('1. symmetry and lit-count, ' + SEEDS_PER_TIER + ' seeds per tier');
 
@@ -230,8 +239,9 @@ function selfTest(pagePath) {
   var bad = 0;
 
   console.log('SELF-TEST: every check group must be able to fail.');
+  console.log('  subject: ' + pagePath);
   console.log('');
-  console.log('  baseline (unmutated page) must PASS');
+  console.log('  baseline (unmutated generator) must PASS');
   var base = child.spawnSync(process.execPath, [__filename, pagePath], { encoding: 'utf8' });
   console.log('    ' + (base.status === 0 ? 'PASS' : 'FAIL') + '  exit ' + base.status);
   if (base.status !== 0) bad++;
@@ -244,7 +254,7 @@ function selfTest(pagePath) {
       bad++;
       return;
     }
-    var f = path.join(tmp, 'mutant' + i + '.html');
+    var f = path.join(tmp, 'mutant' + i + '.js');
     fs.writeFileSync(f, mutated);
     var res = child.spawnSync(process.execPath, [__filename, f], { encoding: 'utf8' });
     var caught = res.status === 1;
@@ -266,6 +276,9 @@ function selfTest(pagePath) {
 var args = process.argv.slice(2);
 var selfTestMode = args.indexOf('--self-test') >= 0;
 var pageArg = args.filter(function (a) { return a.indexOf('--') !== 0; })[0];
-var PAGE = pageArg ? path.resolve(pageArg) : path.join(__dirname, '1-fleet-and-board.html');
+// Ruling 11's default subject: the one file the daemon serves as
+// GET /ui/organism.js and the page loads with <script src>.
+var PAGE = pageArg ? path.resolve(pageArg)
+                   : path.join(__dirname, '..', '..', '..', 'packages', 'core', 'ui', 'organism.js');
 
 process.exit(selfTestMode ? selfTest(PAGE) : run(PAGE, false));

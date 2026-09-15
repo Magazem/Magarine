@@ -58,8 +58,14 @@ symmetry, status = colour. Batch 15: purpose = family, policy = symmetry, name-h
 draw; **the tier has no channel in the organism after batch 15, by design.** Density is struck
 as an identity signal and survives only as a weight.
 
-**Sequence from here:** 15 = worker profiles, avatar seeds, expected artefacts, server-sent
-events. 16 = the Windows window host. 17 = per-ticket discussion, tags, shortcuts.
+**Sequence from here (RESEQUENCED by `batch-15-spec.md` section 2):** 15 = batch 14 step 2 —
+the daemon read path, the event stream, static assets, expected artefacts, and pass 3 built as
+the served page. 16 = worker profiles and avatar seeds. 17 = the Windows window host. 18 =
+per-ticket discussion, tags, shortcuts, and the owner's second skin.
+
+**Note:** `docs/design/pass3/BRIEF.md` section 7 still says `mgr` "arrives with profiles in
+batch 15" and marks `bell · 16`. Stale for the same reason. **The spec is authoritative over
+the brief and this file.**
 
 ## How this team works — the rules that were earned, not assumed
 
