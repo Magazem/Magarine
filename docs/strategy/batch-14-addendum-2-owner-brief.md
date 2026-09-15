@@ -48,3 +48,48 @@ Living Brutalism as the brief defines it, dense but calm, JetBrains Mono for tec
 
 ## 3. Consequence for the route
 Batch 15: worker profiles with the generator, per-ticket discussion, tags, expected artefacts. Batch 16: the native Windows window host. Everything parked stays parked.
+
+---
+
+## Rulings 7 and 8 — agent presence, and what "native" means
+
+### 7. `worker_progress` is exposed through a read path, not by flipping the policy row
+
+**The Strategist refused the fix the designer and I both proposed, and was right.** We said
+un-hide the row. The architecture document's own table says worker progress is *internal and
+appears in Activity collapsed* — and **651 events across a few runs would drown the feed** if
+that row became `activity`. Flipping it would have contradicted the architecture document and
+made the activity view useless in the same stroke.
+
+Instead:
+
+- the policy row **stays internal**
+- the daemon gains **`GET /tickets/{id}/progress`**, the latest progress events per run
+- every board and fleet row carries **`latest_activity`** — the most recent progress event for a
+  running ticket
+- the CLI gets **`activity --progress --ticket`**
+- **one pure function, with a test**, maps tool names to the brief's states:
+  `Read`/`Grep`/`Glob` → reading; `Edit`/`Write` → writing; `Bash` → running, or **testing** when
+  the command names a test runner; `StructuredOutput` → finishing; a text line → reporting
+- the glyph **animates on a new event and is static otherwise** — exactly the rule stated in the
+  owner's own `agent-glyph.tsx`, which is ported by hand as the first glyph
+
+**So the designer designs against real fields, which is what it asked for.**
+
+### 8. Native how: the design is the implementation, not a picture of it
+
+Whatever hosts the page on Windows renders our HTML and CSS. **A shell that discards the CSS is
+not on the route.** The shell is batch 16 and the choice — Tauri, WebView2 or Electron — is a
+spike then.
+
+**With one clarification of the no-build rule that unblocks packaging:** *no build step* means
+**the owner installs nothing beyond what the README says and runs no build.** Producing a
+Windows installer is **our** work and may use a build **on our side**. The promise was always
+about their machine, not ours.
+
+The designer's conflict list resolves: the native window replaces the browser tab and **the
+shell passes the token, so nothing is pasted**; event-driven liveness is a server-sent-events
+route on the daemon, plain HTTP, batch 15; OS notifications for Needs You arrive with the shell
+in 16; keyboard shortcuts and persisted layout are page features from 15; context menus and
+split panes later. **In the mocks: draw the native window without browser chrome, and mark
+shell-only affordances as such.**
