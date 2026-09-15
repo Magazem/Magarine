@@ -1,0 +1,102 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+@import 'tailwindcss';
+
+@theme inline {
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font-sans: "Inter", system-ui, sans-serif;
+
+  --color-bg:           #080C14;
+  --color-surface:      #0F172A;
+  --color-surface-2:    #1B2336;
+  --color-surface-3:    #232E44;
+  --color-border:       #2D3B55;
+  --color-border-2:     #3D4F6E;
+  --color-fg:           #E8EDF5;
+  --color-fg-muted:     #7A8BA8;
+  --color-fg-faint:     #4A5A72;
+
+  /* Status palette - saturated, unmissable */
+  --color-blocked:      #F59E0B;
+  --color-failed:       #EF4444;
+  --color-progress:     #22C55E;
+  --color-review:       #A855F7;
+  --color-ready:        #38BDF8;
+  --color-done:         #4A5A72;
+  --color-open:         #4A5A72;
+
+  --color-accent:       #22C55E;
+  --color-accent-dim:   #166534;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  background: #080C14;
+  color: #E8EDF5;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar treatment */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2D3B55; }
+::-webkit-scrollbar-thumb:hover { background: #3D4F6E; }
+
+/* Selection */
+::selection { background: #22C55E33; }
+
+/* Keyframes for agent animations */
+@keyframes pixel-think {
+  0%, 100% { opacity: 1; }
+  33% { opacity: 0.3; }
+  66% { opacity: 0.7; }
+}
+
+@keyframes pixel-scan {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(100%); }
+}
+
+@keyframes pixel-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.15); opacity: 0.7; }
+}
+
+@keyframes pixel-write {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes pixel-test {
+  0%, 25%, 50%, 75%, 100% { opacity: 1; }
+  12.5%, 37.5%, 62.5%, 87.5% { opacity: 0.2; }
+}
+
+@keyframes pixel-breathe {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+  50% { box-shadow: 0 0 0 3px rgba(34, 197, 94, 0); }
+}
+
+@keyframes new-entry {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes blocked-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}

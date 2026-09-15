@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "interactions": [
+    {
+      "nodeId": "layer-15",
+      "actionId": "layer-15",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-16",
+      "actionId": "layer-16",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-18",
+      "actionId": "layer-18",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-27",
+      "actionId": "layer-27",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-71",
+      "actionId": "layer-71",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-79",
+      "actionId": "layer-79",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-82",
+      "actionId": "layer-82",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-83",
+      "actionId": "layer-83",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-84",
+      "actionId": "layer-84",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-85",
+      "actionId": "layer-85",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-86",
+      "actionId": "layer-86",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-87",
+      "actionId": "layer-87",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-88",
+      "actionId": "layer-88",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-89",
+      "actionId": "layer-89",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-90",
+      "actionId": "layer-90",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-193",
+      "actionId": "layer-193",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-202",
+      "actionId": "layer-202",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-203",
+      "actionId": "layer-203",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-209",
+      "actionId": "layer-209",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-210",
+      "actionId": "layer-210",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-216",
+      "actionId": "layer-216",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-217",
+      "actionId": "layer-217",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-219",
+      "actionId": "layer-219",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-220",
+      "actionId": "layer-220",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-221",
+      "actionId": "layer-221",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-222",
+      "actionId": "layer-222",
+      "reason": "The source image does not declare navigation or application behavior."
+    },
+    {
+      "nodeId": "layer-223",
+      "actionId": "layer-223",
+      "reason": "The source image does not declare navigation or application behavior."
+    }
+  ]
+}
