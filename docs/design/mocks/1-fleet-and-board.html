@@ -490,7 +490,14 @@
 
   .artifacts { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s2); }
 
-  /* Delivered files carry the green: something real came out of that ticket. */
+  /* Delivered artefacts carry the green: something real came out of that ticket.
+     The chip is the SAME whatever the kind, and that is the point - it names the
+     kind and then one short fact about it. A 'file' kind shows its path, which
+     is short. A text-bearing kind (manager_assessment, manager_reply, text,
+     reference) shows its LENGTH, never its body: the real run had a board cell
+     printing an entire 1643-character assessment inline, which is unreadable and
+     pushes the row across several screens. The body belongs in the disclosure
+     underneath, not in the cell. */
   .artifact {
     display: inline-flex;
     align-items: center;
@@ -746,7 +753,7 @@
     <span class="project-name">UI Walk</span>
     <span class="mono meta-faint">proj_393c405c-25ac-4220-a95d-21cf66838c6a</span>
     <span class="spacer"></span>
-    <span class="tag">$0.37 equivalent</span>
+    <span class="tag">at least $0.40 equivalent</span>
     <span class="meta-faint">last refreshed 8:45:17&nbsp;AM</span>
     <button class="btn btn-ghost" type="button">Refresh</button>
     <button class="btn btn-ghost" id="themeToggle" type="button">Light</button>
@@ -799,6 +806,14 @@
           <span class="shortid">tkt_72f34caf</span>
         </button>
       </li>
+      <li class="fleet-child">
+        <button type="button">
+          <span class="pill done"><span class="dot" aria-hidden="true"></span>Done</span>
+          <span class="tag">MGR</span>
+          <div class="title">Manager: assess: four of six tickets are done</div>
+          <span class="shortid">tkt_2a9f1c07</span>
+        </button>
+      </li>
     </ul>
 
     <p class="fleet-label">Other projects</p>
@@ -814,17 +829,19 @@
     <section class="panel">
       <div class="panel-head">
         <h2>Board</h2>
-        <span class="count">5 tickets</span>
+        <span class="count">6 tickets</span>
         <span class="spacer"></span>
         <span class="pill in_progress"><span class="dot" aria-hidden="true"></span>1 running</span>
       </div>
 
       <div class="panel-body" style="padding-top: var(--s2); padding-bottom: 0;">
         <details class="note">
-          <summary>Equivalent API cost: $0.37 (no cap set)</summary>
+          <summary>Equivalent API cost: at least $0.40 (no cap set)</summary>
           <div class="note-body">
             On a subscription, the real constraint is session limits, not dollars. The figure is what the tool
-            would have billed at metered rates; it is not money leaving your account.
+            would have billed at metered rates; it is not money leaving your account. It says "at least" because
+            one ticket is still running and its cost so far is a live estimate, which makes the total a lower
+            bound as well.
           </div>
         </details>
       </div>
@@ -914,6 +931,28 @@
             <td><span class="pill done"><span class="dot" aria-hidden="true"></span>Done</span></td>
             <td class="num low">0/3</td>
             <td class="num low">$0.00</td>
+            <td></td>
+          </tr>
+
+          <tr>
+            <td>
+              <div class="cell-title"><span class="tag">MGR</span> Manager: assess: four of six tickets are done</div>
+              <div class="cell-id">tkt_2a9f1c07-13b8-4e5a-9d42-6f0c81ba5e73</div>
+              <div class="artifacts">
+                <span class="artifact"><span class="kind">manager_assessment</span> 1643 chars</span>
+              </div>
+              <details class="note">
+                <summary>read it</summary>
+                <div class="note-body">
+                  Four of six tickets are done and the remaining two are blocked on one decision from you. The word
+                  limit in the scope is being met; wal.md came back at 380 words. Nothing here needs a bigger model
+                  &mdash; the spec is fixed and the writing is mechanical.
+                </div>
+              </details>
+            </td>
+            <td><span class="pill done"><span class="dot" aria-hidden="true"></span>Done</span></td>
+            <td class="num low">0/3</td>
+            <td class="num spent">$0.03</td>
             <td></td>
           </tr>
 

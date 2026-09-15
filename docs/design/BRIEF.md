@@ -133,6 +133,15 @@ Every string in the mocks is real, from `docs/evidence/batch-11-page/` and from 
 4. **A long scope document scrolls inside its own panel**, with a fade at the foot so a cut-off line reads as
    "there is more" rather than as a bug. It never pushes the conversation below the fold.
 
+5. **An artefact chip shows its kind and one short fact, never its body.** Batch 13 put artefacts on the board so
+   DONE reads as what it produced, and for `kind=file` that works, because a path is short. **For a text-bearing
+   kind it does not, and the real run proved it**: the CLI board rendered a manager ticket as `artifacts (2):`
+   followed by the entire **1643-character** assessment inline in a table cell — unreadable, and the row ran across
+   several screens. So the rendering **branches on kind**: `file` shows its path; `text`, `reference`,
+   `manager_reply` and `manager_assessment` show the kind and a length (or a first line), with the body in a
+   `<details>` underneath. The chip is otherwise identical, so the board stays one scannable column of short
+   things. Screen 1's last row is this case, drawn correctly.
+
 Footnotes — the model and its justification, the cost explanation, a failure reason — are `<details>` disclosures
 marked `[+]` / `[-]`, not hover tooltips: keyboard-reachable, and they stop a long justification from dominating
 the row it footnotes.
@@ -172,7 +181,11 @@ board scrolls **inside its own panel** rather than overlapping or widening the p
 - The mocks contain **no backtick and no `${`**, so the markup pastes into `page.ts`'s template literal unescaped.
   Keep it that way — check before committing.
 - The theme is one attribute on `<html>` plus a few lines of script. No module, no CDN, nothing to build.
-- The board shows artefacts beside DONE (`FILE introduction.md`), per batch 13 §1c. `BoardTicket` does not carry
-  them yet; that field is the one thing here the implementation needs that does not exist today.
+- The board shows artefacts beside DONE, per batch 13 §1c. `BoardTicket` does not carry them yet; that field is
+  the one thing here the implementation needs that does not exist today.
+- **The chip rendering assumes no kind carries its content in `path`, and that now genuinely holds** — confirmed
+  on real data: every real deliverable came back `kind=file` with a real path and null text, and the manager's
+  assessment came back `kind=manager_assessment` with an empty path and 1643 characters of text. Rule 5 in §4 is
+  what the board must do with the second of those.
 - The mocks compose states from across the real captures so every status appears somewhere. The strings are real;
   the particular combination on one screen is arranged.

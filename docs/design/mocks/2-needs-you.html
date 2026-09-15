@@ -490,7 +490,14 @@
 
   .artifacts { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s2); }
 
-  /* Delivered files carry the green: something real came out of that ticket. */
+  /* Delivered artefacts carry the green: something real came out of that ticket.
+     The chip is the SAME whatever the kind, and that is the point - it names the
+     kind and then one short fact about it. A 'file' kind shows its path, which
+     is short. A text-bearing kind (manager_assessment, manager_reply, text,
+     reference) shows its LENGTH, never its body: the real run had a board cell
+     printing an entire 1643-character assessment inline, which is unreadable and
+     pushes the row across several screens. The body belongs in the disclosure
+     underneath, not in the cell. */
   .artifact {
     display: inline-flex;
     align-items: center;
