@@ -150,6 +150,14 @@ retire finished agents.
 
 ## Carried UNKNOWNs — stated, not assumed away
 
+- **The owner's own design, as a second skin.** Their words: *"add an extra theme from the one I
+  proposed, after we have the product working"* — and *"i don't want it lost."* Ruling 13 says it
+  is a **skin, not a palette**: same six product regions, different arrangement and visual
+  language. Source of truth is the owner's plain HTML and reference image under `propos/`, which
+  are authoritative for this skin. (`propos/fleet-and-board/` is **not** — that is a generator's
+  artefact, never evidence of preference.) Trigger: not before the window host closes at batch 17;
+  a candidate for batch 18. Batch 15 builds the page so it is possible.
+
 - **Wide font subsets.** Trigger, in the ruling's words: *"Ship the wide subsets when Magarine
   has a user who is not the owner."* Batch 15 ships Latin only. The owner will not need other
   scripts; future users might. Not "later" — that trigger.
