@@ -150,6 +150,10 @@ retire finished agents.
 
 ## Carried UNKNOWNs — stated, not assumed away
 
+- **Wide font subsets.** Trigger, in the ruling's words: *"Ship the wide subsets when Magarine
+  has a user who is not the owner."* Batch 15 ships Latin only. The owner will not need other
+  scripts; future users might. Not "later" — that trigger.
+
 - The **fallback-rate marker** has only ever seen synthetic data; no real run has named a model
   outside `pricing.ts`.
 - **Migration 0012** has only run against a synthetic legacy database.
