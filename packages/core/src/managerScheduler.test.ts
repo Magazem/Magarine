@@ -1,6 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { openDb } from './db/index.ts';
 import { MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
 import { buildManagerBriefing } from './managerEnvelope.ts';
@@ -112,6 +113,49 @@ test('a proposal setting model and model_reason on both create_ticket and update
   const updated = getTicket(db, existing.id)!;
   assert.equal(updated.model, 'claude-haiku-4-5-20251001');
   assert.equal(updated.modelReason, 'purely mechanical, read-only work');
+});
+
+// Batch 13 item 4: the ACTUAL Run B proposal, preserved by the Orchestrator
+// before the temp state was lost
+// (docs/evidence/batch-12-walk/fixtures/proposal-workspace-none.json) --
+// not a hand-invented shape. IMPORTANT, and flagged to the Orchestrator
+// before this test was written: the real fixture has NO `workspace_type`
+// field anywhere on any of its four create_ticket commands -- Run B's
+// tickets landed on NONE by OMISSION-AND-DEFAULT (the pre-batch-13 default
+// for a work ticket with no explicit workspace_type), not by an explicit
+// choice. So this fixture cannot exercise "a proposal that sets
+// workspace_type is rejected" (proposal.test.ts's synthetic tests cover
+// that ruling instead, since it has to hold regardless of what Run B
+// happened to emit) -- what THIS fixture actually proves is the root-cause
+// fix: replayed unmodified through the real applied path, every ticket it
+// creates now defaults to DIRECTORY, so Run B's incident cannot recur.
+const runBProposalFixturePath = fileURLToPath(
+  new URL('../../../docs/evidence/batch-12-walk/fixtures/proposal-workspace-none.json', import.meta.url)
+);
+const runBProposalFixture = (
+  JSON.parse(readFileSync(runBProposalFixturePath, 'utf8')) as Array<{ rationale: string; commands: unknown[] }>
+)[0];
+
+test('Run B fixture: the actual four-ticket proposal that landed on NONE by default now creates all four tickets as DIRECTORY', async () => {
+  assert.equal(runBProposalFixture.commands.length, 4, 'sanity: the real fixture must still have its four create_ticket commands');
+  assert.ok(
+    runBProposalFixture.commands.every((c) => !('workspace_type' in (c as Record<string, unknown>))),
+    'sanity: confirming (again, at test time) the real fixture never set workspace_type explicitly'
+  );
+
+  const { db, project, adapter } = setupProject();
+  const managerTicket = makeManagerTicket(db, project.id);
+  adapter.setScript(managerTicket.id, { kind: 'manager_proposal', proposal: runBProposalFixture });
+
+  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
+  const workTickets = listTickets(db, project.id).filter((t) => t.kind === 'work');
+  assert.equal(workTickets.length, 4, 'all four tickets from the real proposal must have been created');
+  for (const t of workTickets) {
+    assert.equal(t.workspaceType, 'DIRECTORY', `"${t.title}" must default to DIRECTORY now, not the NONE Run B actually got`);
+  }
 });
 
 test('an invalid proposal, driven through a real tick(), is rejected whole (retryable), and creates nothing', async () => {
