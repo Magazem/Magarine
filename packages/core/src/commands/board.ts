@@ -1,11 +1,23 @@
 import type { Db } from '../db/index.ts';
 import { isKnownModel } from '../pricing.ts';
-import { getDependencies, getProject, getTicket, listTickets } from '../store.ts';
+import { getDependencies, getProject, getTicket, listArtifactsForTicket, listTickets } from '../store.ts';
 import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
 import { describeProjectPause } from './inbox.ts';
 
 // `board`: every ticket in a project, its attempts, its cost, and what is
 // still blocking it. Read-only; touches no other role's files.
+
+// Batch 13 ruling 1c: "the board and the page show each ticket's artefacts
+// next to its status, count and paths, so a DONE row is legible as what it
+// produced." One field regardless of kind (a resolved path for 'file', the
+// worker's own text/URL otherwise), same display-only shape as
+// TicketEnvelopeArtifact (types.ts) and for the same reason: this is
+// rendering, not a validation boundary, so it does not need to be
+// exhaustive about every kind separately.
+export interface BoardArtifact {
+  kind: string;
+  content: string;
+}
 
 export interface BoardTicket {
   id: string;
@@ -24,6 +36,8 @@ export interface BoardTicket {
   model: string | null;
   /** Batch 12 item 3: the Manager's one-line justification, required by proposal.ts whenever a create_ticket/update_ticket command sets model. Null for a ticket whose model was never explicitly set (including one set directly via `ticket add --model`, which carries no reason -- see proposal.ts's own comment on why the requirement is scoped to the Manager's two commands). */
   modelReason: string | null;
+  /** Batch 13 ruling 1c: every artefact this ticket has declared, across every run -- so a DONE row is legible as what it actually produced, not just that it succeeded. */
+  artifacts: BoardArtifact[];
   blockedBy: string[];
 }
 
@@ -150,6 +164,10 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
         usedFallbackRate: c.usedFallbackRate,
         model: t.model,
         modelReason: t.modelReason,
+        artifacts: listArtifactsForTicket(db, t.id).map((a) => ({
+          kind: a.kind,
+          content: a.kind === 'file' ? a.pathOrUri : (a.text ?? ''),
+        })),
         blockedBy: blockingDependencies(db, t),
       };
     }),
@@ -231,8 +249,16 @@ export function formatBoard(result: BoardResult): string {
       const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
       const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate, t.usedFallbackRate)}`;
       const model = t.model ? `model ${t.model}${t.modelReason ? ` (${t.modelReason})` : ''}` : '';
+      // Batch 13 ruling 1c: a DONE row must be legible as what it actually
+      // produced, not just that it succeeded -- count and content, so
+      // "reported done" and "delivered nothing" can never look the same on
+      // this board again.
+      const artifacts =
+        t.artifacts.length > 0
+          ? `artifacts (${t.artifacts.length}): ${t.artifacts.map((a) => a.content).join(', ')}`
+          : '';
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
-      const parts = [t.id, t.status, title, attempts, cost, model, blocked].filter((p) => p.length > 0);
+      const parts = [t.id, t.status, title, attempts, cost, model, artifacts, blocked].filter((p) => p.length > 0);
       return parts.join('\t');
     })
     .join('\n');

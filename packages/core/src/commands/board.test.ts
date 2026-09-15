@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../db/index.ts';
-import { createProject, createTicket, pauseProjectAdapter, updateTicketFields } from '../store.ts';
+import { createArtifact, createProject, createRun, createTicket, pauseProjectAdapter, updateTicketFields } from '../store.ts';
 import { buildBoard, formatBoard, truncateTitleForDisplay } from './board.ts';
 
 // Batch 9: a manager ticket must be distinguishable from a work ticket on
@@ -40,6 +40,36 @@ test('buildBoard carries kind for both a work ticket and a manager ticket', () =
 // explicitly set shows no model column at all (it is silently the project
 // default, nothing to explain), one that was carries the model and, when
 // present, its reason right next to it.
+// Batch 13 ruling 1c: "the board and the page show each ticket's artefacts
+// next to its status, count and paths, so a DONE row is legible as what it
+// produced." A ticket with no artefacts shows no artifacts segment at all
+// (nothing to legibly show); one with artefacts shows the count and every
+// artefact's own content (a resolved path for 'file', free text otherwise).
+test('buildBoard/formatBoard carry each ticket\'s artefacts (count and content), and show nothing for a ticket with none', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const delivered = createTicket(db, { projectId: project.id, title: 'Delivered work' });
+  const run = createRun(db, { ticketId: delivered.id, attempt: 1, adapter: 'test' });
+  createArtifact(db, { ticketId: delivered.id, runId: run.id, projectId: project.id, kind: 'file', pathOrUri: '/tmp/proj/out.txt' });
+  createArtifact(db, { ticketId: delivered.id, runId: run.id, projectId: project.id, kind: 'text', text: 'a note' });
+  const empty = createTicket(db, { projectId: project.id, title: 'No artefacts yet' });
+
+  const board = buildBoard(db, project.id);
+  const deliveredEntry = board.tickets.find((t) => t.id === delivered.id)!;
+  assert.deepEqual(deliveredEntry.artifacts, [
+    { kind: 'file', content: '/tmp/proj/out.txt' },
+    { kind: 'text', content: 'a note' },
+  ]);
+  const emptyEntry = board.tickets.find((t) => t.id === empty.id)!;
+  assert.deepEqual(emptyEntry.artifacts, []);
+
+  const text = formatBoard(board);
+  const deliveredLine = text.split('\n').find((line) => line.includes(delivered.id))!;
+  assert.match(deliveredLine, /artifacts \(2\): \/tmp\/proj\/out\.txt, a note/);
+  const emptyLine = text.split('\n').find((line) => line.includes(empty.id))!;
+  assert.doesNotMatch(emptyLine, /artifacts \(/, 'a ticket with no artefacts must show no artifacts segment');
+});
+
 test('buildBoard/formatBoard carry model and modelReason for a ticket whose model was explicitly set, and show neither for one that was not', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });

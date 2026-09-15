@@ -71,7 +71,7 @@ export const PAGE_HTML = `<!doctype html>
 
 <h2>Board</h2>
 <div class="muted">Equivalent API cost -- what the tool would have billed at metered rates. On a subscription, this is not money leaving your account; the real constraint is session limits.</div>
-<table id="boardTable"><thead><tr><th>id</th><th>status</th><th>title</th><th>attempts</th><th>equivalent API cost</th><th>blocked by</th><th></th></tr></thead><tbody></tbody></table>
+<table id="boardTable"><thead><tr><th>id</th><th>status</th><th>title</th><th>attempts</th><th>equivalent API cost</th><th>artifacts</th><th>blocked by</th><th></th></tr></thead><tbody></tbody></table>
 
 <h2>Inbox</h2>
 <div id="inboxList"></div>
@@ -210,12 +210,19 @@ export const PAGE_HTML = `<!doctype html>
       var kindPrefix = t.kind === 'manager' ? '[MANAGER] ' : '';
       var costText = t.costIsEstimate ? ('at least $' + t.costUsd.toFixed(2) + ', live estimate') : ('$' + t.costUsd.toFixed(2));
       if (t.usedFallbackRate) { costText += ' (estimated at fallback rate)'; }
+      // Batch 13 ruling 1c: a DONE row must be legible as what it actually
+      // produced -- count and content, so "reported done" and "delivered
+      // nothing" can never look the same on the page either.
+      var artifactsText = (t.artifacts || []).length === 0
+        ? '(none)'
+        : (t.artifacts.length + ': ' + t.artifacts.map(function (a) { return a.content; }).join(', '));
       tr.innerHTML =
         '<td>' + t.id + '</td>' +
         '<td>' + t.status + '</td>' +
         '<td>' + kindPrefix + escapeHtml(t.title) + '</td>' +
         '<td>' + t.attemptCount + '/' + t.maxAttempts + '</td>' +
         '<td>' + costText + '</td>' +
+        '<td>' + escapeHtml(artifactsText) + '</td>' +
         '<td>' + (t.blockedBy || []).join(', ') + '</td>';
       var actionsTd = document.createElement('td');
       if (t.status === 'IN_PROGRESS') {

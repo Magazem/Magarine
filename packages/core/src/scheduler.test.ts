@@ -1,7 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from './db/index.ts';
@@ -303,6 +303,69 @@ test('a malformed result is treated as a retryable failure, not a crash', async 
   assert.equal(getTicket(db, ticket.id)!.attemptCount, 1);
 });
 
+// Batch 13 ruling 1c: "DONE requires something delivered" -- the exact
+// shape of the batch-12 finding (four tickets reported DONE, the board
+// said success, zero files existed). A work ticket's done result with an
+// empty artifacts array is now malformed and retryable, same treatment as
+// a schema-invalid result, naming the reason.
+test('a work ticket\'s done result declaring zero artifacts is malformed and retryable, naming "done with nothing delivered"', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'reports done but writes nothing', maxAttempts: 3, workspaceType: 'NONE' });
+  adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [] });
+
+  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const result = await tick(deps);
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'READY', 'done with nothing delivered is retryable, not accepted');
+  assert.equal(getTicket(db, ticket.id)!.attemptCount, 1);
+  const failureEvent = listEventsForEntity(db, 'ticket', ticket.id).find((e) => e.eventType === 'worker_failed_retryable');
+  assert.ok(failureEvent, 'expected a retryable worker_failure transition');
+  const payload = failureEvent!.payload as { errors?: string[] };
+  assert.ok(payload.errors?.some((e) => e.includes('done with nothing delivered')));
+});
+
+// The other half of the same ruling: a MANAGER ticket's done is a proposal
+// to apply, not a deliverable -- applyManagerTicketDone (scheduler.ts)
+// reads proposal.json straight off disk by its own fixed path, entirely
+// independent of whatever the result's own `artifacts` array declares, so
+// a manager ticket can validly report done with a genuinely EMPTY
+// artifacts array (not even a `file` artifact naming proposal.json) as
+// long as the file exists. Uses TestAdapter (full manual control) rather
+// than FakeAdapter's own `manager_proposal` script, which always declares
+// the proposal file as an artifact when given one -- this test needs to
+// rule that out to prove kind-scoping, not artifact count, is what exempts
+// manager tickets.
+test('a manager ticket\'s done result declaring zero artifacts (not even the proposal file itself) is unaffected by the delivery rule -- only work tickets are checked', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const managerTicket = createTicket(db, {
+    projectId: project.id,
+    title: 'Plan: mission',
+    kind: 'manager',
+    workspaceType: 'NONE',
+  });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  const s = started[0];
+  const workspacePath = adapter.startedWith.get(s.handle.id)!.workspace!.path!;
+  mkdirSync(join(workspacePath, '.orchestrator'), { recursive: true });
+  writeFileSync(
+    join(workspacePath, '.orchestrator', 'proposal.json'),
+    JSON.stringify({ rationale: 'nothing to propose yet', commands: [] })
+  );
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'nothing to propose', artifacts: [], checks: [], blockers: [], questions: [] },
+  });
+  await s.done;
+
+  assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE', 'a manager ticket needs no artefact to land DONE');
+});
+
 test('a worker question keeps the ticket IN_PROGRESS and the run continues to a final result', async () => {
   const { db, project, adapter } = setupProject(1);
   const ticket = createTicket(db, { projectId: project.id, title: 'asks a question', workspaceType: 'NONE' });
@@ -452,7 +515,7 @@ test("a NONE dependent finds its dependency's file under .orchestrator/inputs/<d
 
     adapter.emit(dependentStarted.handle.id, {
       type: 'result_raw',
-      raw: { status: 'done', summary: 'consumed it', artifacts: [], checks: [], blockers: [], questions: [] },
+      raw: { status: 'done', summary: 'consumed it', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
     });
     await dependentStarted.done;
   } finally {
@@ -499,7 +562,7 @@ test("a shared-directory (DIRECTORY) dependent's envelope lists the dependency's
 
     adapter.emit(dependentStarted.handle.id, {
       type: 'result_raw',
-      raw: { status: 'done', summary: 'done', artifacts: [], checks: [], blockers: [], questions: [] },
+      raw: { status: 'done', summary: 'done', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
     });
     await dependentStarted.done;
   } finally {
@@ -679,7 +742,7 @@ test('the envelope carries the ticket budget override when set, else the project
   for (const s of started) {
     adapter.emit(s.handle.id, {
       type: 'result_raw',
-      raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+      raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
     });
     await s.done;
   }
@@ -700,7 +763,7 @@ test('progress events are persisted as worker_progress internal events on the ru
   }
   adapter.emit(s.handle.id, {
     type: 'result_raw',
-    raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
   });
   await s.done;
 
@@ -801,7 +864,7 @@ test('a progress event flagging unknownModel raises exactly one unknown_model_ra
 
   adapter.emit(s.handle.id, { type: 'progress', message: 'turn 1', costUsd: 0.01, unknownModel: 'claude-mystery-9' });
   adapter.emit(s.handle.id, { type: 'progress', message: 'turn 2', costUsd: 0.02, unknownModel: 'claude-mystery-9' });
-  adapter.emit(s.handle.id, { type: 'result_raw', raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] } });
+  adapter.emit(s.handle.id, { type: 'result_raw', raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] } });
   await s.done;
 
   const events = listEventsForEntity(db, 'run', s.runId);
@@ -827,7 +890,7 @@ test('a progress event with no unknownModel flag never raises unknown_model_rate
   const s = started[0];
 
   adapter.emit(s.handle.id, { type: 'progress', message: 'turn 1', costUsd: 0.01 });
-  adapter.emit(s.handle.id, { type: 'result_raw', raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] } });
+  adapter.emit(s.handle.id, { type: 'result_raw', raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] } });
   await s.done;
 
   const events = listEventsForEntity(db, 'run', s.runId);
@@ -846,7 +909,7 @@ test("batch 6 item 4: a completed run's terminal result_raw event flagging unkno
 
   adapter.emit(s.handle.id, {
     type: 'result_raw',
-    raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
     unknownModel: 'claude-mystery-9',
   });
   await s.done;
@@ -1079,7 +1142,7 @@ test('a late non-terminal event after settlement is dropped without minting a la
 
   adapter.emit(s.handle.id, {
     type: 'result_raw',
-    raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
   });
   await s.done;
 
@@ -1104,7 +1167,7 @@ test('a late terminal event after settlement merges its usage into the run row o
 
   adapter.emit(s.handle.id, {
     type: 'result_raw',
-    raw: { status: 'done', summary: 'first and only real outcome', artifacts: [], checks: [], blockers: [], questions: [] },
+    raw: { status: 'done', summary: 'first and only real outcome', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
   });
   await s.done;
 
@@ -1143,7 +1206,7 @@ test('a late terminal event never overwrites usage the settled run already recor
 
   adapter.emit(s.handle.id, {
     type: 'result_raw',
-    raw: { status: 'done', summary: 'ok', artifacts: [], checks: [], blockers: [], questions: [] },
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
     usage: { total_cost_usd: 1 },
   });
   await s.done;
@@ -1189,7 +1252,7 @@ test('a throwing transition inside the observe callback is caught, recorded, and
 
   adapter.emit(goodStarted.handle.id, {
     type: 'result_raw',
-    raw: { status: 'done', summary: 'fine', artifacts: [], checks: [], blockers: [], questions: [] },
+    raw: { status: 'done', summary: 'fine', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
   });
   await goodStarted.done;
 
@@ -1224,7 +1287,7 @@ test('a progress event at or under the ceiling never stops the worker', async ()
 
   adapter.emit(s.handle.id, {
     type: 'result_raw',
-    raw: { status: 'done', summary: 'finished on budget', artifacts: [], checks: [], blockers: [], questions: [] },
+    raw: { status: 'done', summary: 'finished on budget', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
   });
   await s.done;
 

@@ -1,6 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -456,4 +456,57 @@ test('adapter_unavailable: a real not-logged-in worker returns the ticket to REA
   // `claude` tool out to produce the real thing is not ours to do, so the
   // classification and the whole downstream path are proven, and the act of a
   // real tool reporting the auth failure today is not re-proven.
+});
+
+// Batch 13 item 4: the ACTUAL recorded worker outputs from the run that
+// found this batch's finding, preserved by the Orchestrator before the
+// temp state was lost (docs/evidence/batch-12-walk/fixtures/
+// worker-done-invented-kinds.json) -- not hand-invented shapes. Four real
+// work tickets reported `done` with an artefact whose `kind` was
+// `documentation`, `license`, `documentation` and `doc` respectively (a
+// fifth entry in the same file is the MANAGER ticket's own planning-turn
+// result, not a work ticket with an invented kind, and is not used here).
+// Under the pre-batch-13 contract `verifyArtifacts` skipped every kind
+// other than 'file' entirely, so none of these were ever checked -- the
+// board said DONE, four files never existed. Replayed here through the
+// REAL spawned pipeline (the real ClaudeCliAdapter, the real fake claude
+// executable, the real classifyOutcome/validateWorkerResult), each must
+// now be a retryable malformed result naming the invented kind.
+const runBFixturePath = fileURLToPath(
+  new URL('../../../docs/evidence/batch-12-walk/fixtures/worker-done-invented-kinds.json', import.meta.url)
+);
+const runBWorkerFixtures = (
+  JSON.parse(readFileSync(runBFixturePath, 'utf8')) as Array<{ ticket: string; payload: { artifacts: Array<{ kind: string; path: string }> } }>
+).filter((entry) => entry.payload.artifacts.length > 0 && entry.payload.artifacts[0].kind !== 'file');
+
+test('Run B fixture: every real recorded invented-kind artefact (documentation, license, doc) is now a retryable malformed result through the real spawned pipeline', async () => {
+  assert.equal(runBWorkerFixtures.length, 4, 'sanity: the real fixture must still have its four invented-kind entries');
+  const invented = new Set(runBWorkerFixtures.flatMap((f) => f.payload.artifacts.map((a) => a.kind)));
+  assert.deepEqual([...invented].sort(), ['doc', 'documentation', 'license'].sort());
+
+  for (const fixture of runBWorkerFixtures) {
+    const { db, projectId, ticketId } = setUp();
+    const adapter = buildAdapter({
+      stdoutFile: recordedStreamStdout,
+      exitCode: 0,
+      createFiles: {
+        '.orchestrator/result.json': JSON.stringify(fixture.payload),
+      },
+    });
+
+    const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+    await Promise.all(result.started.map((s) => s.done));
+
+    const ticket = getTicket(db, ticketId)!;
+    assert.equal(
+      ticket.status,
+      'READY',
+      `kind "${fixture.payload.artifacts[0].kind}" must be retryable, not accepted as DONE (Run B's actual failure)`
+    );
+    assert.equal(ticket.attemptCount, 1);
+    const failureEvent = listEventsForEntity(db, 'ticket', ticketId).find((e) => e.eventType === 'worker_failed_retryable');
+    assert.ok(failureEvent, 'expected a retryable worker_failure transition');
+    const payload = failureEvent!.payload as { message?: string };
+    assert.match(payload.message ?? '', /malformed result/);
+  }
 });

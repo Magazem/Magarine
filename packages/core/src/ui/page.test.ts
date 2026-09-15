@@ -40,3 +40,9 @@ test('the page labels cost "equivalent API cost" and names the subscription/sess
   assert.match(PAGE_HTML, /equivalent API cost/i);
   assert.match(PAGE_HTML, /session limits/);
 });
+
+// Batch 13 ruling 1c: "the board and the page show each ticket's artefacts
+// next to its status, count and paths."
+test('the page\'s board table has an artifacts column', () => {
+  assert.match(PAGE_HTML, /<th>artifacts<\/th>/);
+});
