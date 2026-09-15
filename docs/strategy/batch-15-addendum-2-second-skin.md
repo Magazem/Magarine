@@ -14,7 +14,7 @@ The Orchestrator verified `propos/` is fully tracked, 119 files, reference image
 The owner called it "an extra theme". Pass 3's `tokens.css` already carries three themes, and they vary colour only (oled, dark, paper). The owner's proposal varies more than colour:
 
 - The owner's plain HTML (HARD, `propos/12ui-5132548c-....html`, about 1 MB) has the same regions as pass 3: agents, board, a board filter, needs-you, conversation, activity. Same product, as the owner's own brief demands: "we are changing the VISUAL LANGUAGE, not the PRODUCT."
-- It arranges them by absolute positioning with a different visual language, and it carries decorative elements pass 3 deliberately has none of (HARD, 32 references to avatars, mascot, or handwriting in the file).
+- It arranges them by absolute positioning with a different visual language, and it carries decorative elements pass 3 deliberately has none of (HARD, case-insensitive occurrence counts in the file: "avatar" 26, "mascot" 1, "Caveat", the handwriting typeface, 5; the word "handwriting" itself does not appear. An earlier version of this sentence gave 32, which was the number of lines matching any of those three terms, not the number of references, and named handwriting where the file names the typeface).
 
 Same regions, different arrangement, different language, extra decoration. That is a **skin**. "Add it later as a theme" is therefore not a token swap. It is a second stylesheet and token set that must be able to restyle, respace, retype and **rearrange** the same regions and add decoration by CSS, without touching the page's structure or script.
 

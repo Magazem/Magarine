@@ -8,3 +8,7 @@ node_modules/
 
 # Stray test-output logs
 *.log
+
+# Screenshot tool scratch (browser profile + throwaway captures).
+# Evidence screenshots belong in docs/evidence/, committed deliberately.
+.shots/
