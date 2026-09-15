@@ -189,3 +189,30 @@ board scrolls **inside its own panel** rather than overlapping or widening the p
   what the board must do with the second of those.
 - The mocks compose states from across the real captures so every status appears somewhere. The strings are real;
   the particular combination on one screen is arranged.
+
+## 7. Recommendation after the "fonts may ship as files" ruling
+
+The ruling lifts the constraint that forced base64. **My recommendation is to split the answer**, because the
+shipped page and these mocks are handed to different people under different conditions.
+
+**The shipped page: serve the `.woff2` from `ui/`.** Not for size — 42 KB either way is nothing on loopback — but
+because a 42 KB base64 literal sits in `page.ts`, the one file every future UI change touches, and makes any font
+change an unreviewable diff. As a served file, adding the second subset the owner may ask for is **a file drop plus
+one `@font-face` block**, not a regenerate-and-paste. Structure it as one `@font-face` per subset with its own
+`unicode-range` from the start, so latin-only today and latin-plus-something tomorrow differ by an added block.
+
+**This introduces one failure mode that must be tested, and it is the silent kind.** If the font route 404s, or the
+path does not resolve from wherever the daemon is installed, **nothing errors — the page just falls back to system
+mono and silently becomes the generic thing the owner rejected.** That is exactly the shape batch 13 ruled against:
+a wrong outcome that reports success. So the route needs a test asserting 200 and `content-type: font/woff2`, and
+`doctor` is the natural place to check it on a real install.
+
+**These mocks: keep the base64.** They get opened from disk, possibly forwarded, possibly moved. One file cannot
+half-work; a file plus a sibling can. I did check whether a sibling `.woff2` loads over `file://` — **in Chrome it
+does**, so this is a preference rather than a constraint, but I only verified Chrome and the mocks' whole value is
+that they open first time for whoever the owner hands them to.
+
+**Keep the ASCII tree.** Box-drawing is available again, but the ASCII version is better brutalism, not a
+compromise, and it depends on no glyph coverage at all, so it survives whatever happens to the subset. If real
+icons are wanted later, **inline SVG with `currentColor` beats an icon font**: an icon font reintroduces exactly
+the tofu failure mode we just left, and an SVG that fails to load leaves a visible gap rather than a wrong glyph.
