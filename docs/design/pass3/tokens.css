@@ -70,7 +70,7 @@
     --line-soft: #17171C;
     --fg:        #ECECEF;
     --fg-2:      #A2A2AC;
-    --fg-3:      #797986;   /* 4.61:1 on --surface; #70707C measured 4.05:1 */
+    --fg-3:      #828290;   /* 4.57:1 against bg, surface, surface-2 AND surface-3 */
     --ring:      #FFFFFF;
 
     --st-waiting:  #8A8A96;
@@ -79,7 +79,7 @@
     --st-blocked:  #F2B33D;
     --st-failed:   #FF6B6B;
     --st-done:     #3FD68B;
-    --st-cancelled:#7A7A86;  /* 4.67:1 on --surface; #767682 measured 4.41:1 */
+    --st-cancelled:#82828F;  /* 4.57:1 against every surface */
     --on-status:   #000000;
   }
 
@@ -94,7 +94,7 @@
     --line-soft: #1A2538;
     --fg:        #E9EEF7;
     --fg-2:      #A3B1C6;
-    --fg-3:      #73859E;   /* 4.62:1 on --surface; #71829B measured 4.44:1 */
+    --fg-3:      #8094AF;   /* 4.57:1 against every surface */
     --ring:      #FFFFFF;
 
     --st-waiting:  #8FA0B8;
@@ -103,7 +103,7 @@
     --st-blocked:  #F5BA4B;
     --st-failed:   #FF7A7A;
     --st-done:     #49DD95;
-    --st-cancelled:#7A8AA3;
+    --st-cancelled:#8394AF;  /* 4.60:1 against every surface */
     --on-status:   #0B1120;
   }
 
@@ -120,18 +120,26 @@
     --line-soft: #DAD3C4;
     --fg:        #1A1813;
     --fg-2:      #55503F;
-    --fg-3:      #6E6959;   /* 4.99:1 on --surface; #7A7462 measured 4.25:1 */
+    --fg-3:      #696455;   /* 4.57:1 against every surface */
     --ring:      #1A1813;
 
     --st-waiting:  #6A6455;
     --st-active:   #145FA8;
     --st-review:   #6B3FA0;
-    --st-blocked:  #96601A;
+    --st-blocked:  #8C5918;  /* 4.57:1 against every surface */
     --st-failed:   #A8322B;
     --st-done:     #17703F;
-    --st-cancelled:#6E6959;  /* 4.99:1 on --surface */
+    --st-cancelled:#696455;  /* 4.57:1 against every surface */
     --on-status:   #FBF9F4;
   }
+
+  /* CONTRAST RULE, and it is the one I got wrong once: a foreground token must
+     be measured against the LIGHTEST SURFACE IT CAN LAND ON, not against the
+     one it usually sits on. --surface-2 is the topbar background and every
+     hover state; --surface-3 is unused today but is a background token and will
+     be used eventually. Every --fg-* and --st-* below clears 4.5:1 against bg,
+     surface, surface-2 and surface-3 in all three themes. Re-measure all four
+     whenever one of them moves. */
 
   /* ============================================================== base ==== */
   * { box-sizing: border-box; }
@@ -165,196 +173,378 @@
 
   :focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 
-  /* ========================================================= AGENT GLYPH === */
-  /* The brief: agents are computational presences — pixels, machine states,
-     system signals. Never a face, never a mascot.
+  /* ===================================================== AGENT ORGANISM === */
+  /* THREE CHANNELS, AND THEY MUST NOT COLLIDE.
+       IDENTITY = SHAPE   the lit cells. Deterministic, stable forever.
+       ACTIVITY = MOTION  which cells light and in what order when an event
+                          lands. Set by JS at tick time as --d per cell.
+       STATUS   = COLOUR  one colour per ticket, inherited via currentColor.
+     Identity has the better claim on shape because it must be CONSTANT. An
+     agent has to be recognisable at 18px before you read anything.
 
-     THE RULE, from ruling 7: the glyph ANIMATES ON A NEW EVENT AND IS STATIC
-     OTHERWISE. It is not a loader. Motion here always means a real
-     worker_progress event just arrived. Between events it holds the pattern of
-     the last state it was told about.
-
-     The glyph is MONOCHROME and takes its ticket's status colour. Activity is
-     carried by PATTERN and MOTION, status by COLOUR — so the two systems never
-     compete and the screen stays "dense but calm". */
-  .glyph {
+     THE RULE: it animates when a real worker_progress event arrives, once,
+     and is static otherwise. It is not a loader. Motion always means real
+     computation. */
+  .org {
     display: inline-grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 1px;
-    width: 18px; height: 18px;
-    vertical-align: -3px;
-    color: var(--st-active);
+    width: 20px; height: 20px;
+    flex: none;
+    vertical-align: -4px;
+    color: var(--st-waiting);
   }
 
-  .glyph i {
-    display: block;
-    background: currentColor;
-    opacity: 0.16;
-    border-radius: 0;
+  .org.sm { width: 16px; height: 16px; }
+  .org.lg { width: 44px; height: 44px; gap: 2px; }
+
+  .org i { display: block; background: currentColor; opacity: 0.13; }
+  .org i.on { opacity: 0.92; }
+
+  /* One pass, played on a real event. --d is written by the tick handler and
+     is the only thing that differs between activity states. */
+  .org.tick i {
+    animation: org-cell var(--tick) var(--ease) 1;
+    animation-delay: calc(var(--d, 0) * 1ms);
   }
 
-  /* --- resting patterns: what each state looks like BETWEEN events ------- */
-  /* reading — a scan column parked mid-sweep */
-  .glyph.reading   i:nth-child(4n+2) { opacity: 0.85; }
-  /* writing — output accumulating from the bottom */
-  .glyph.writing   i:nth-child(n+9)  { opacity: 0.85; }
-  /* running — alternating cells, a process cycling */
-  .glyph.running   i:nth-child(odd)  { opacity: 0.7; }
-  /* testing — sparse, scattered probes */
-  .glyph.testing   i:nth-child(3n+1) { opacity: 0.8; }
-  /* finishing — three rows assembled, the last still empty. Deliberately
-     distinct from "done", which is solid: at 18px a single missing cell is not
-     a difference anyone can see. */
-  .glyph.finishing i:nth-child(-n+12) { opacity: 0.85; }
-  /* reporting — one full row, a line of output */
-  .glyph.reporting i:nth-child(n+5):nth-child(-n+8) { opacity: 0.9; }
-  /* waiting — a single idle cell */
-  .glyph.waiting   i:nth-child(6)    { opacity: 0.55; }
-  /* blocked — an interrupted pattern, a visible gap */
-  .glyph.blocked   i:nth-child(n+1):nth-child(-n+6) { opacity: 0.8; }
-  /* done — settled, solid */
-  .glyph.done      i                 { opacity: 0.9; }
-  /* failed — disrupted, corners only */
-  .glyph.failed    i:nth-child(1),
-  .glyph.failed    i:nth-child(4),
-  .glyph.failed    i:nth-child(13),
-  .glyph.failed    i:nth-child(16)   { opacity: 0.9; }
-
-  /* --- the tick: ONE pass, played when an event arrives ----------------- */
-  /* Applied by adding .tick and removing it on animationend. Each column is
-     delayed by its index, so the pass reads as a sweep through the cells
-     rather than a flash. */
-  .glyph.tick i { animation: cell-tick var(--tick) var(--ease) 1; }
-  .glyph.tick i:nth-child(4n+1) { animation-delay: 0ms; }
-  .glyph.tick i:nth-child(4n+2) { animation-delay: 45ms; }
-  .glyph.tick i:nth-child(4n+3) { animation-delay: 90ms; }
-  .glyph.tick i:nth-child(4n+4) { animation-delay: 135ms; }
-
-  @keyframes cell-tick {
-    0%   { opacity: 0.16; }
-    35%  { opacity: 1; }
+  @keyframes org-cell {
+    0%   { }
+    30%  { opacity: 1; transform: scale(1.35); }
     100% { }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .glyph.tick i { animation: none; }
+    .org.tick i { animation: none; }
   }
 
-  /* ============================================================== BOARD === */
-  /* Six columns. Every TicketStatus has a visible home — a column set that
-     hides a status is forbidden, so CANCELLED shares DONE's terminal column
-     rather than being dropped. */
-  .columns {
+  /* ============================================================= shell ==== */
+  /* NO BROWSER CHROME. The operating system draws the window frame; this is
+     the application's own surface, edge to edge. Nothing here imitates a tab,
+     a URL bar, or window controls. */
+  .app {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: var(--s2);
-    align-items: start;
+    grid-template-columns: 260px minmax(0, 1fr) 360px;
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "top top top" "fleet centre rail";
+    height: 100vh;
   }
 
-  .col { min-width: 0; }
+  .topbar { grid-area: top; }
+  .fleet  { grid-area: fleet; }
+  .centre { grid-area: centre; }
+  .rail   { grid-area: rail; }
 
-  /* The column head is the only place a status colour is used as a fill. It is
-     a 2px cap over the column, not a box around it — structure without
-     turning every element into a card. */
-  .col-head {
-    display: flex;
-    align-items: center;
-    gap: var(--s2);
-    padding: var(--s2) var(--s2) var(--s2) var(--s3);
-    background: var(--surface);
-    border-top: var(--rule-2) solid var(--col);
-    color: var(--fg);
+  .fleet, .centre, .rail { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+
+  /* Zones separate by SURFACE, not by a heavy rule around everything --
+     "structure can be brutalist, every component does not need to be". */
+  .fleet  { background: var(--surface); padding: var(--s4) var(--s3) var(--s6); }
+  .centre { background: var(--bg); padding: var(--s4) var(--s4) var(--s6); }
+  .rail   { background: var(--surface); padding: var(--s4) var(--s3) var(--s6); }
+
+  @media (max-width: 1180px) {
+    .app {
+      grid-template-columns: 252px minmax(0, 1fr);
+      grid-template-rows: auto auto auto;
+      grid-template-areas: "top top" "fleet centre" "rail rail";
+      height: auto;
+    }
+    .fleet, .centre, .rail { overflow: visible; }
+  }
+  @media (max-width: 860px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "fleet" "centre" "rail"; }
   }
 
-  .col-head .name {
-    font-family: var(--font-mono);
-    font-size: var(--t-2xs);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--col);
-  }
-
-  .col-head .count {
-    margin-left: auto;
-    font-family: var(--font-mono);
-    font-size: var(--t-2xs);
-    color: var(--fg-3);
-  }
-
-  .col-body { display: flex; flex-direction: column; gap: 1px; margin-top: 1px; }
-
-  /* A ticket is a surface, not a bordered card. Its left edge carries the
-     status colour so a column of them reads as one block of work. */
-  .ticket {
-    background: var(--surface);
-    border-left: var(--rule-2) solid var(--col);
-    padding: var(--s2) var(--s3);
-  }
-  .ticket:hover { background: var(--surface-2); }
-
-  .ticket .id {
-    font-family: var(--font-mono);
-    font-size: var(--t-2xs);
-    color: var(--fg-3);
-  }
-
-  .ticket .title {
-    font-size: var(--t-md);
-    line-height: var(--lh-tight);
-    margin: 3px 0 var(--s2);
-  }
-
-  /* The live line. This is the brief's "make the work visible", and it is
-     drawn from latest_activity — a real field, never invented. */
-  .ticket .live {
-    display: flex;
-    align-items: center;
-    gap: var(--s2);
-    font-family: var(--font-mono);
-    font-size: var(--t-2xs);
-    color: var(--fg-2);
-    overflow-wrap: anywhere;
-  }
-
-  .ticket.is-cancelled .title { text-decoration: line-through; color: var(--fg-3); }
-
-  /* ============================================================ gallery === */
-  /* Presentation chrome for this document only. Not product CSS. */
-  .sheet { padding: var(--s5) var(--s6) var(--s6); max-width: 1180px; }
-  .sheet h1 { font-size: var(--t-xl); font-weight: 600; letter-spacing: -0.01em; margin: 0 0 var(--s1); }
-  .sheet h2 {
-    font-family: var(--font-mono);
-    font-size: var(--t-xs); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--fg-3);
-    margin: var(--s6) 0 var(--s3);
-    padding-bottom: var(--s2);
+  .topbar {
+    display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+    padding: var(--s3) var(--s4);
+    background: var(--surface-2);
     border-bottom: var(--rule) solid var(--line);
   }
-  .sheet p { max-width: 74ch; color: var(--fg-2); }
-  .note { color: var(--fg-3); font-size: var(--t-sm); max-width: 74ch; }
-  .row { display: flex; gap: var(--s4); flex-wrap: wrap; align-items: flex-start; }
-  .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 1px; }
-  .sw { background: var(--surface); padding: var(--s2); }
-  .sw b { display: block; height: 28px; margin-bottom: var(--s2); }
-  .sw code { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); }
-  .sw span { font-family: var(--font-mono); font-size: var(--t-2xs); display: block; color: var(--fg-2); }
-  table.map { border-collapse: collapse; font-size: var(--t-sm); }
-  table.map th, table.map td { text-align: left; padding: var(--s2) var(--s3); border-bottom: var(--rule) solid var(--line-soft); }
-  table.map th { font-family: var(--font-mono); font-size: var(--t-2xs); letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-3); }
-  table.map td.k { font-family: var(--font-mono); color: var(--fg); }
-  .states { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1px; }
-  .state { background: var(--surface); padding: var(--s3); display: flex; align-items: center; gap: var(--s3); }
-  .state .n { font-family: var(--font-mono); font-size: var(--t-xs); }
-  .state .src { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); display: block; }
-  .themebar { display: flex; gap: var(--s2); margin-bottom: var(--s5); }
-  .tbtn {
+  .topbar > * { min-width: 0; }
+
+  .brand {
+    margin: 0; font-family: var(--font-mono);
+    font-size: var(--t-lg); font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+  }
+  .brand b { color: var(--st-active); font-weight: 700; }
+
+  .proj { font-size: var(--t-md); font-weight: 600; }
+  .proj .id { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); display: block; }
+
+  .spacer { flex: 1 1 auto; }
+
+  .nav { display: flex; gap: 1px; background: var(--line); padding: 1px; }
+  .nav a {
     font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
     letter-spacing: 0.1em; text-transform: uppercase;
+    padding: var(--s2) var(--s3); background: var(--surface-2); color: var(--fg-2); text-decoration: none;
+  }
+  .nav a[aria-current="page"] { background: var(--fg); color: var(--bg); }
+  .nav a .n { color: var(--st-blocked); }
+
+  .btn {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
     background: transparent; color: var(--fg-2);
     border: var(--rule) solid var(--line); border-radius: var(--r);
     padding: var(--s2) var(--s3); cursor: pointer;
   }
-  .tbtn[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-  .specimen-sans { font-size: 1rem; line-height: 1.5; max-width: 60ch; }
-  .specimen-mono { font-family: var(--font-mono); font-size: var(--t-sm); }
+  .btn:hover { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .btn-go { background: var(--st-active); border-color: var(--st-active); color: var(--on-status); }
+  .btn-go:hover { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+
+  .field {
+    background: var(--bg); color: var(--fg);
+    border: var(--rule) solid var(--line); border-radius: var(--r);
+    padding: var(--s2) var(--s3); font-family: var(--font-sans); font-size: var(--t-md);
+    width: 100%; min-width: 0;
+  }
+  .field::placeholder { color: var(--fg-3); }
+
+  /* A marker for anything the page cannot do until the shell exists. Named
+     with its batch so it reads as a plan, not a promise. */
+  .shell-only {
+    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--fg-3); border: var(--rule) solid var(--line);
+    padding: 0 3px; border-radius: var(--r); white-space: nowrap;
+  }
+
+  /* ============================================================= panel ==== */
+  .panel { margin-bottom: var(--s4); }
+  .panel-head {
+    display: flex; align-items: center; gap: var(--s2);
+    padding: 0 0 var(--s2);
+    border-bottom: var(--rule) solid var(--line);
+    margin-bottom: var(--s3);
+  }
+  .panel-head h2 {
+    margin: 0; font-family: var(--font-mono);
+    font-size: var(--t-2xs); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--fg-2);
+  }
+  .panel-head .count { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); }
+
+  /* ============================================================= fleet ==== */
+  .fleet-row {
+    display: flex; gap: var(--s3); align-items: flex-start;
+    padding: var(--s2) var(--s2);
+    border-left: var(--rule-2) solid transparent;
+    cursor: pointer;
+  }
+  .fleet-row:hover { background: var(--surface-2); }
+  .fleet-row[aria-current="true"] { background: var(--surface-2); border-left-color: var(--st-active); }
+
+  .fleet-row .who { min-width: 0; flex: 1 1 auto; }
+  .fleet-row .who > span { display: block; }
+  .fleet-row .name {
+    font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .fleet-row .tier { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); letter-spacing: 0.08em; }
+  /* The live line. Drawn from latest_activity -- never invented. */
+  .fleet-row .doing {
+    font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2);
+    overflow-wrap: anywhere; margin-top: 2px;
+  }
+  .fleet-row .doing.idle { color: var(--fg-3); }
+
+  /* ============================================================= board ==== */
+  .boardbar { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s3); flex-wrap: wrap; }
+
+  .toggle { display: flex; gap: 1px; background: var(--line); padding: 1px; }
+  .toggle button {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    background: var(--surface); color: var(--fg-2); border: 0; padding: var(--s1) var(--s3); cursor: pointer;
+  }
+  .toggle button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+
+  .columns { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--s2); align-items: start; }
+  /* Six across only when there is genuinely room for it. Measured: at 1500px
+     six columns are ~120px each and every title wraps to three lines, which is
+     "dense and chaotic". Wrapping to two rows of three keeps all six columns
+     visible -- nothing is hidden -- and the cards become readable. */
+  @media (max-width: 1600px) { .columns { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 860px)  { .columns { grid-template-columns: minmax(0, 1fr); } }
+
+  .col { min-width: 0; }
+  .col-head {
+    display: flex; align-items: center; gap: var(--s2);
+    padding: var(--s2) var(--s2) var(--s2) var(--s2);
+    border-top: var(--rule-2) solid var(--col);
+    background: var(--surface);
+  }
+  .col-head .name {
+    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--col);
+  }
+  .col-head .count { margin-left: auto; font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); }
+  .col-body { display: flex; flex-direction: column; gap: 1px; margin-top: 1px; }
+
+  .ticket {
+    background: var(--surface);
+    border-left: var(--rule-2) solid var(--col);
+    padding: var(--s2) var(--s3) var(--s3);
+  }
+  .ticket:hover { background: var(--surface-2); }
+  .ticket .tid { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); overflow-wrap: anywhere; }
+  .ticket .title { font-size: var(--t-md); line-height: var(--lh-tight); margin: 3px 0 var(--s2); }
+  .ticket .foot { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+  .ticket .doing {
+    font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2);
+    overflow-wrap: anywhere; min-width: 0;
+  }
+  .ticket .doing.idle { color: var(--fg-3); }
+  .ticket.is-cancelled .title { text-decoration: line-through; color: var(--fg-3); }
+  .ticket .dep { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); overflow-wrap: anywhere; margin-top: var(--s1); }
+
+  /* Delivered artefacts. "file" shows its path; a text-bearing kind shows its
+     kind and a LENGTH, never its body -- the CLI printed 1643 characters into
+     a table cell and that is the defect this rule exists to prevent. */
+  .arts { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s2); min-width: 0; }
+  /* Inline-block, not flex: normal inline flow wraps BETWEEN the kind and the
+     value and never squeezes one on top of the other. A flex chip with two
+     nowrap children overlapped them when the column got narrow. */
+  .art {
+    display: inline-block; max-width: 100%;
+    font-family: var(--font-mono); font-size: 0.5625rem; line-height: 1.6;
+    border: var(--rule) solid var(--st-done); color: var(--fg);
+  }
+  /* the kind is a name and must never break mid-word; only the value may */
+  .art .k {
+    display: inline-block; white-space: nowrap;
+    background: var(--st-done); color: var(--on-status);
+    font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 0 3px; margin-right: 4px;
+  }
+  .art span:last-child { padding-right: 4px; overflow-wrap: anywhere; }
+  .art span:last-child { padding-right: 4px; overflow-wrap: anywhere; }
+
+  /* the pass-2 table, kept as the list view -- nothing approved is thrown away */
+  .listview { display: none; }
+  .listview.on { display: block; }
+  .columns.off { display: none; }
+  table.grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.grid th {
+    text-align: left; font-family: var(--font-mono);
+    font-size: 0.5625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--fg-3); padding: var(--s2); border-bottom: var(--rule) solid var(--line);
+  }
+  table.grid td { padding: var(--s2); border-bottom: var(--rule) solid var(--line-soft); vertical-align: top; }
+  table.grid tbody tr:hover td { background: var(--surface-2); }
+  .num { font-family: var(--font-mono); font-size: var(--t-2xs); white-space: nowrap; color: var(--fg-2); }
+  .num.phrase { white-space: normal; }
+
+  /* ========================================================= needs you ==== */
+  /* Not an inbox: the moment autonomous work hands control back. Who asked,
+     what they were doing, why they stopped, what is needed, what happens next. */
+  .ask {
+    background: var(--surface);
+    border-left: var(--rule-2) solid var(--col, var(--st-blocked));
+    padding: var(--s3);
+  }
+  .ask + .ask { margin-top: var(--s2); }
+  .centre .ask { background: var(--surface); }
+  .ask-head { display: flex; gap: var(--s3); align-items: flex-start; margin-bottom: var(--s2); }
+  .ask-head .who { min-width: 0; flex: 1 1 auto; }
+  .ask-head .name {
+    font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .ask-head .tid { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); overflow-wrap: anywhere; display: block; }
+  .ask-head .when { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); white-space: nowrap; }
+
+  .ask .step { display: flex; gap: var(--s2); margin-bottom: var(--s2); }
+  .ask .step .k {
+    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3);
+    flex: none; width: 74px; padding-top: 2px;
+  }
+  /* The reason is never truncated, clamped, or scrolled away. It wraps, in
+     full, however long. That is this panel's entire purpose. */
+  .ask .step .v { min-width: 0; overflow-wrap: anywhere; max-width: 72ch; }
+
+  .cmd {
+    display: block; font-family: var(--font-mono); font-size: var(--t-2xs);
+    color: var(--st-active); background: var(--bg);
+    border: var(--rule) solid var(--line);
+    padding: var(--s2); margin-top: var(--s2);
+    overflow-wrap: anywhere; white-space: pre-wrap;
+  }
+  .cmd::before { content: "$ "; color: var(--fg-3); }
+
+  .acts { display: flex; gap: var(--s2); align-items: stretch; margin-top: var(--s3); flex-wrap: wrap; }
+  .acts .field { flex: 1 1 12rem; }
+
+  /* ========================================================== activity ==== */
+  .feed { display: flex; flex-direction: column; }
+  .ev {
+    display: flex; gap: var(--s2); align-items: baseline;
+    padding: 3px 0; border-bottom: var(--rule) solid var(--line-soft);
+    font-family: var(--font-mono); font-size: var(--t-2xs);
+  }
+  .ev .t { color: var(--fg-3); white-space: nowrap; }
+  .ev .k { color: var(--fg); overflow-wrap: anywhere; }
+  .ev .k.bad { color: var(--st-failed); }
+  .ev .k.need { color: var(--st-blocked); }
+  .ev .k.good { color: var(--st-done); }
+  .ev .e { color: var(--fg-3); margin-left: auto; white-space: nowrap; }
+
+  /* ===================================================== scope + talk ===== */
+  .scope-wrap { position: relative; }
+  .scope {
+    font-family: var(--font-mono); font-size: var(--t-2xs); line-height: 1.8;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    background: var(--surface); color: var(--fg-2);
+    padding: var(--s3); margin: 0; max-height: 19rem; overflow-y: auto;
+  }
+  .scope-wrap::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.25rem;
+    background: linear-gradient(to bottom, rgba(0,0,0,0), var(--surface)); pointer-events: none;
+  }
+
+  .tabs { display: flex; gap: 1px; background: var(--line); padding: 1px; margin-bottom: var(--s3); flex-wrap: wrap; }
+  .tabs button {
+    font-family: var(--font-mono); font-size: var(--t-2xs);
+    background: var(--surface); color: var(--fg-2); border: 0;
+    padding: var(--s1) var(--s2); cursor: pointer;
+  }
+  .tabs button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+
+  .entry { padding: var(--s2) 0 var(--s3) var(--s3); border-left: var(--rule-2) solid var(--line); }
+  .entry + .entry { margin-top: var(--s2); }
+  .entry .who { display: flex; gap: var(--s2); align-items: baseline; margin-bottom: 3px; }
+  .entry .who .name {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .entry .who .at { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); }
+  .entry .text { overflow-wrap: anywhere; max-width: 76ch; }
+  .entry.owner_message { border-left-color: var(--fg-3); }
+  .entry.manager_reply { border-left-color: var(--st-done); }
+  .entry.manager_assessment { border-left-color: var(--st-review); }
+  .entry.question { border-left-color: var(--st-blocked); }
+  .entry.scope_updated { border-left-color: var(--line); color: var(--fg-2); }
+
+  .composer { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s2); align-items: flex-end; }
+
+  /* ============================================================= misc ===== */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  .legend {
+    margin-top: var(--s5); padding-top: var(--s3);
+    border-top: var(--rule) solid var(--line);
+    font-size: var(--t-2xs); color: var(--fg-3); max-width: 78ch;
+  }
+  .legend b { color: var(--fg-2); font-weight: 600; }
+  .banner {
+    background: var(--surface); border-left: var(--s2) solid var(--st-blocked);
+    padding: var(--s3); margin-bottom: var(--s3);
+  }
+  .banner .h {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--st-blocked); margin-bottom: var(--s2);
+  }
+  .banner .b { overflow-wrap: anywhere; max-width: 76ch; }
