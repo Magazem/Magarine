@@ -203,8 +203,8 @@ test('startDaemonLoop ticks every project in the database, not just one', async 
   const adapter = new FakeAdapter();
   const projectA = createProject(db, { name: 'a', maxParallelWorkers: 1 });
   const projectB = createProject(db, { name: 'b', maxParallelWorkers: 1 });
-  const ticketA = createTicket(db, { projectId: projectA.id, title: 'ta' });
-  const ticketB = createTicket(db, { projectId: projectB.id, title: 'tb' });
+  const ticketA = createTicket(db, { projectId: projectA.id, title: 'ta', workspaceType: 'NONE' });
+  const ticketB = createTicket(db, { projectId: projectB.id, title: 'tb', workspaceType: 'NONE' });
   // Both tickets are OPEN with no dependencies; startDaemonLoop's first tick
   // calls scheduler.ts's tick() per project, and tick() itself resolves
   // readiness before picking up READY tickets -- no separate promotion step
@@ -238,7 +238,7 @@ test('startDaemonLoop ticks every project in the database, not just one', async 
 test('startDaemonLoop recovers an orphaned "running" run at startup, before its first tick', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
-  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 3 });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 3, workspaceType: 'NONE' });
   // Simulate a crash: a run left 'running' in the DB with no live handle,
   // the same fixture recovery.test.ts uses for recoverOrphanedRuns directly.
   recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'r1' });
@@ -277,7 +277,7 @@ test('startDaemonLoop recovers an orphaned "running" run at startup, before its 
 test('DaemonLoop.stop() cancels a hanging worker back to READY without consuming an attempt, and clears the live map', async (t) => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
-  const ticket = createTicket(db, { projectId: project.id, title: 'hangs forever' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'hangs forever', workspaceType: 'NONE' });
   const adapter = new FakeAdapter();
   adapter.setScript(ticket.id, { kind: 'hang' });
 
@@ -333,8 +333,8 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
   const db = openDb(':memory:');
   const projectA = createProject(db, { name: 'a', maxParallelWorkers: 1 });
   const projectB = createProject(db, { name: 'b', maxParallelWorkers: 1 });
-  const ticketA = createTicket(db, { projectId: projectA.id, title: 'ta' });
-  const ticketB = createTicket(db, { projectId: projectB.id, title: 'tb' });
+  const ticketA = createTicket(db, { projectId: projectA.id, title: 'ta', workspaceType: 'NONE' });
+  const ticketB = createTicket(db, { projectId: projectB.id, title: 'tb', workspaceType: 'NONE' });
   const adapter = new FakeAdapter();
   adapter.setScript(ticketA.id, { kind: 'hang' });
   adapter.setScript(ticketB.id, { kind: 'hang' });
@@ -391,7 +391,7 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
   // ever tick()s the one project it was asked for).
   await loop.cancelTicket(ticketA.id);
   assert.equal(getTicket(db, ticketA.id)!.status, 'CANCELLED');
-  const ticketA2 = createTicket(db, { projectId: projectA.id, title: 'ta2' });
+  const ticketA2 = createTicket(db, { projectId: projectA.id, title: 'ta2', workspaceType: 'NONE' });
   const resultA2 = await loop.forceTick(projectA.id);
   assert.deepEqual(
     resultA2.started.map((s) => s.ticketId),
@@ -415,14 +415,14 @@ test('the daemon never runs more workers than its machine-wide --max-parallel, e
   const projectA = createProject(db, { name: 'a', maxParallelWorkers: 5 });
   const projectB = createProject(db, { name: 'b', maxParallelWorkers: 5 });
   const ticketsA = [
-    createTicket(db, { projectId: projectA.id, title: 'a1' }),
-    createTicket(db, { projectId: projectA.id, title: 'a2' }),
-    createTicket(db, { projectId: projectA.id, title: 'a3' }),
+    createTicket(db, { projectId: projectA.id, title: 'a1', workspaceType: 'NONE' }),
+    createTicket(db, { projectId: projectA.id, title: 'a2', workspaceType: 'NONE' }),
+    createTicket(db, { projectId: projectA.id, title: 'a3', workspaceType: 'NONE' }),
   ];
   const ticketsB = [
-    createTicket(db, { projectId: projectB.id, title: 'b1' }),
-    createTicket(db, { projectId: projectB.id, title: 'b2' }),
-    createTicket(db, { projectId: projectB.id, title: 'b3' }),
+    createTicket(db, { projectId: projectB.id, title: 'b1', workspaceType: 'NONE' }),
+    createTicket(db, { projectId: projectB.id, title: 'b2', workspaceType: 'NONE' }),
+    createTicket(db, { projectId: projectB.id, title: 'b3', workspaceType: 'NONE' }),
   ];
   const adapter = new FakeAdapter();
   for (const t of [...ticketsA, ...ticketsB]) adapter.setScript(t.id, { kind: 'hang' });
@@ -483,8 +483,8 @@ test('DaemonLoop.cancelTicket cancels a live run for the given ticket, and repor
   // "never started a run" without also needing a dependency graph to hold
   // it back.
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
-  const hangTicket = createTicket(db, { projectId: project.id, title: 'hangs' });
-  const idleTicket = createTicket(db, { projectId: project.id, title: 'never started' });
+  const hangTicket = createTicket(db, { projectId: project.id, title: 'hangs', workspaceType: 'NONE' });
+  const idleTicket = createTicket(db, { projectId: project.id, title: 'never started', workspaceType: 'NONE' });
   const adapter = new FakeAdapter();
   adapter.setScript(hangTicket.id, { kind: 'hang' });
 

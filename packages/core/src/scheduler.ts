@@ -7,7 +7,7 @@ import { isManagerDailyCapReached, MANAGER_DAILY_CAP_DEFAULT } from './manager.t
 import { applyManagerProposal } from './managerApply.ts';
 import { buildManagerEnvelope } from './managerEnvelope.ts';
 import { classify } from './policy.ts';
-import { validateWorkerResult } from './resultContract.ts';
+import { artifactContent, validateWorkerResult } from './resultContract.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import { prepareWorkspace } from './workspace.ts';
 import {
@@ -96,10 +96,12 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
 
       const artifacts: TicketEnvelopeArtifact[] = listArtifactsForTicket(db, d.dependsOnTicketId).map((a) => ({
         kind: a.kind,
-        path:
+        content:
           a.kind === 'file' && ticket.workspaceType === 'NONE'
             ? dependencyInputRelativePath(d.dependsOnTicketId, a.pathOrUri)
-            : a.pathOrUri,
+            : a.kind === 'file'
+              ? a.pathOrUri
+              : (a.text ?? ''),
       }));
 
       return { ticketId: d.dependsOnTicketId, title: dep?.title ?? '', summary, artifacts };
@@ -181,7 +183,7 @@ function captureDirectoryArtifacts(
         runId: run.id,
         projectId: ticket.projectId,
         kind: artifact.kind,
-        pathOrUri: artifact.path,
+        text: artifactContent(artifact),
       });
       continue;
     }
@@ -230,7 +232,7 @@ function captureNoneModeArtifacts(
         runId: run.id,
         projectId: ticket.projectId,
         kind: artifact.kind,
-        pathOrUri: artifact.path,
+        text: artifactContent(artifact),
       });
       continue;
     }
@@ -670,6 +672,27 @@ async function applyWorkerEventInner(
       }
 
       const result = validated.data;
+
+      // Batch 13 ruling 1c: "DONE requires something delivered." A work
+      // ticket's `done` with zero artifacts is the exact shape of the
+      // batch-12 finding (the board said success, four tickets, zero files)
+      // -- treated identically to a schema-invalid result: retryable,
+      // malformed, naming the reason. Checked BEFORE captureArtifacts
+      // (which would no-op on an empty array regardless) and scoped to
+      // `kind === 'work'` only -- a manager ticket's "done" is a proposal
+      // to apply, not a deliverable, and an empty commands array with just
+      // a rationale is an explicitly valid manager outcome (proposal.ts).
+      if (result.status === 'done' && ticket.kind === 'work' && result.artifacts.length === 0) {
+        finishRun(db, run.id, { status: 'failed', failureClass: 'malformed_result' });
+        recordTicketTransition(db, {
+          ticketId: ticket.id,
+          event: 'worker_failure',
+          idempotencyKey: `worker_failure:${run.id}`,
+          payload: { errors: ['done with nothing delivered'], retryable: true, failureClass: 'malformed_result' },
+        });
+        return true;
+      }
+
       // Captured once here, ahead of the per-status branching below, since
       // a worker can declare artifacts regardless of which terminal status
       // it reports — capturing only on 'done' would lose them for a run

@@ -207,8 +207,8 @@ test('manager_proposal script with extraArtifacts declares them alongside (or in
       kind: 'manager_proposal',
       proposal: { rationale: 'r', commands: [] },
       extraArtifacts: [
-        { kind: 'manager_reply', path: 'Here is my reply.' },
-        { kind: 'manager_assessment', path: 'Here is my assessment.' },
+        { kind: 'manager_reply', text: 'Here is my reply.' },
+        { kind: 'manager_assessment', text: 'Here is my assessment.' },
       ],
     });
     const handle = await adapter.startWorker({ ticket: envelope('t1'), workspace: { type: 'NONE', path: workspace }, systemPolicy: 'p' });
@@ -221,14 +221,14 @@ test('manager_proposal script with extraArtifacts declares them alongside (or in
       });
     });
 
-    const terminal = events.at(-1)! as { type: string; raw: { artifacts: Array<{ kind: string; path: string }> } };
+    const terminal = events.at(-1)! as { type: string; raw: { artifacts: Array<Record<string, string>> } };
     assert.deepEqual(terminal.raw.artifacts, [
       { kind: 'file', path: '.orchestrator/proposal.json' },
-      { kind: 'manager_reply', path: 'Here is my reply.' },
-      { kind: 'manager_assessment', path: 'Here is my assessment.' },
+      { kind: 'manager_reply', text: 'Here is my reply.' },
+      { kind: 'manager_assessment', text: 'Here is my assessment.' },
     ]);
-    // No file is ever written for a non-'file' extraArtifact -- the path is
-    // opaque text, not a filesystem location (see managerEnvelope.ts's
+    // No file is ever written for a non-'file' extraArtifact -- the text is
+    // opaque content, not a filesystem location (see managerEnvelope.ts's
     // MANAGER_EXPECTED_OUTPUT_FORMAT).
     assert.equal(existsSync(join(workspace, 'Here is my reply.')), false);
   } finally {

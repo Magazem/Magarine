@@ -226,7 +226,7 @@ test('a manager ticket at the daily cap is skipped (continue), not spawned, but 
   }
 
   const cappedManagerTicket = makeManagerTicket(db, project.id);
-  const workTicket = createTicket(db, { projectId: project.id, title: 'Ordinary work' });
+  const workTicket = createTicket(db, { projectId: project.id, title: 'Ordinary work', workspaceType: 'NONE' });
   adapter.setScript(workTicket.id, { kind: 'succeed' });
 
   // maxParallelWorkers=2 so BOTH tickets are considered in the SAME tick's

@@ -384,7 +384,7 @@ test('the conversation interleaves discuss events and manager_reply/manager_asse
     runId: firstRun.id,
     projectId: project.id,
     kind: 'manager_reply',
-    pathOrUri: 'First manager reply.',
+    text: 'First manager reply.',
   });
   await tick();
 

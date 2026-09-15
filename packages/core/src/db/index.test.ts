@@ -35,6 +35,7 @@ test('runMigrations is idempotent: applying twice does not error or duplicate ro
     '0009_pause_reason',
     '0010_backfill_workspace_root_from_scope_path',
     '0011_ticket_model_reason',
+    '0012_artifact_text_column',
   ]);
 });
 
@@ -103,6 +104,7 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     '0009_pause_reason',
     '0010_backfill_workspace_root_from_scope_path',
     '0011_ticket_model_reason',
+    '0012_artifact_text_column',
   ]);
   assert.equal(snapshot.usageJsonInputTokens, 1);
 });

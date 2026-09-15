@@ -203,6 +203,48 @@ test('update_ticket setting model without model_reason is rejected; with one it 
   assert.equal(withReason.valid, true, withReason.valid ? '' : JSON.stringify((withReason as { errors: string[] }).errors));
 });
 
+// Batch 13 ruling 1a: "agents do not decide where work lives" -- neither
+// create_ticket nor update_ticket may set workspace_type at all any more,
+// even to a value that was previously legal (e.g. 'DIRECTORY' itself).
+// Checked as a raw payload (not via the typed ManagerCommand union, which
+// no longer has the field), since a smuggled key must be caught the same
+// way "status" already is on update_ticket.
+test('create_ticket carrying a "workspace_type" field is rejected outright, naming the field, even when its value would have been valid before this batch', () => {
+  const result = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        { type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], workspace_type: 'DIRECTORY' },
+      ],
+    },
+    emptyBoard()
+  );
+  assert.equal(result.valid, false);
+  if (!result.valid) {
+    assert.ok(result.errors.some((e) => e.includes('workspace_type')));
+  }
+});
+
+test('update_ticket carrying a "workspace_type" field is rejected outright, naming the field', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }]);
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', workspace_type: 'NONE' }] },
+    board
+  );
+  assert.equal(result.valid, false);
+  if (!result.valid) {
+    assert.ok(result.errors.some((e) => e.includes('workspace_type')));
+  }
+});
+
+test('create_ticket with no workspace_type field at all is accepted (the ordinary case)', () => {
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [] }] },
+    emptyBoard()
+  );
+  assert.equal(result.valid, true);
+});
+
 test('add_dependency missing fields, change_priority with a non-number priority, and request_user_decision missing question are each rejected', () => {
   assert.equal(validateProposal({ rationale: 'r', commands: [{ type: 'add_dependency', ticket_id: 'x' }] }, emptyBoard()).valid, false);
   assert.equal(

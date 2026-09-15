@@ -42,7 +42,7 @@ export function buildConversation(db: Db, projectId: string): ConversationEntry[
 
     for (const artifact of listArtifactsForTicket(db, ticket.id)) {
       if (artifact.kind !== 'manager_reply' && artifact.kind !== 'manager_assessment') continue;
-      entries.push({ kind: artifact.kind, text: artifact.pathOrUri, createdAt: artifact.createdAt });
+      entries.push({ kind: artifact.kind, text: artifact.text ?? '', createdAt: artifact.createdAt });
     }
 
     const questionEvents = listEventsForEntity(db, 'ticket', ticket.id)

@@ -8,6 +8,7 @@ import type {
   Workspace,
   WorkerEvent,
   WorkerHandle,
+  WorkerResultArtifact,
   WorkerResultStatus,
 } from '../types.ts';
 
@@ -16,7 +17,13 @@ import type {
 // permanent"). Behaviour is scripted per ticket id by the test.
 
 export type FakeScript =
-  | { kind: 'succeed'; delayMs?: number; usage?: unknown }
+  // Batch 13 ruling 1c: "done requires delivery" -- `artifacts` defaults to
+  // a real file written into the given workspace (see
+  // defaultSuccessArtifacts below), not an empty array, so the fake's own
+  // definition of an ordinary successful worker matches what the daemon
+  // now requires of one. Pass `artifacts: []` explicitly to script the
+  // "reported done but delivered nothing" malformed case on purpose.
+  | { kind: 'succeed'; delayMs?: number; usage?: unknown; artifacts?: WorkerResultArtifact[] }
   | { kind: 'retryable_failure'; delayMs?: number; message?: string; usage?: unknown }
   | { kind: 'question'; delayMs?: number; message?: string; usage?: unknown }
   | { kind: 'needs_user_decision'; delayMs?: number; blockers?: string[]; usage?: unknown }
@@ -59,11 +66,11 @@ export type FakeScript =
   // alongside (or instead of) the proposal.json declaration above -- what a
   // fake-adapter test needs to drive discuss/interview outcomes end to end
   // (managerScheduler.test.ts's per-artefact-kind tests), specifically
-  // `manager_reply`/`manager_assessment`, whose `path` field carries reply/
+  // `manager_reply`/`manager_assessment`, whose `text` field carries reply/
   // assessment TEXT rather than a real file (see managerEnvelope.ts's
   // MANAGER_EXPECTED_OUTPUT_FORMAT) -- no file is written for these, unlike
   // the `proposal` field above, since captureArtifacts (scheduler.ts) never
-  // resolves a non-'file' kind's path against the filesystem either.
+  // resolves a non-'file' kind's field against the filesystem either.
   | {
       kind: 'manager_proposal';
       delayMs?: number;
@@ -71,7 +78,7 @@ export type FakeScript =
       resultStatus?: WorkerResultStatus;
       summary?: string;
       usage?: unknown;
-      extraArtifacts?: Array<{ kind: string; path: string }>;
+      extraArtifacts?: WorkerResultArtifact[];
     }
   | { kind: 'hang' };
 
@@ -83,6 +90,23 @@ interface HandleState {
   postStopTimer?: NodeJS.Timeout;
   /** Batch 9: the real workspace path this handle's ticket was given, captured from startWorker's `input.workspace` -- needed so a `manager_proposal` script can write a real proposal.json into it. Undefined if no workspace was given (never true in production; only a hand-written test calling startWorker without one could hit this). */
   workspacePath?: string;
+}
+
+// Batch 13 ruling 1c: writes a real file into `workspacePath` and declares
+// it, so the fake's own idea of "an ordinary successful worker" delivers
+// something, the same way a real one now must -- a `text` artifact would
+// satisfy the zero-artifact check without putting anything on disk, which
+// is the batch-12 failure mode wearing a different hat. Falls back to
+// `text` only when no workspace exists at all (a hand-written test calling
+// startWorker without one -- see HandleState's own comment; never true in
+// production), since there is nowhere on disk to write.
+function defaultSuccessArtifacts(workspacePath: string | undefined): WorkerResultArtifact[] {
+  if (!workspacePath) {
+    return [{ kind: 'text', text: 'fake success' }];
+  }
+  const fileName = 'fake-success.txt';
+  writeFileSync(join(workspacePath, fileName), 'fake success');
+  return [{ kind: 'file', path: fileName }];
 }
 
 export class FakeAdapter implements AgentAdapter {
@@ -138,7 +162,7 @@ export class FakeAdapter implements AgentAdapter {
             raw: {
               status: 'done',
               summary: 'fake success',
-              artifacts: [],
+              artifacts: script.artifacts ?? defaultSuccessArtifacts(state.workspacePath),
               checks: [],
               blockers: [],
               questions: [],
@@ -165,7 +189,7 @@ export class FakeAdapter implements AgentAdapter {
             raw: {
               status: 'done',
               summary: 'fake success after question',
-              artifacts: [],
+              artifacts: defaultSuccessArtifacts(state.workspacePath),
               checks: [],
               blockers: [],
               questions: [],
@@ -249,7 +273,7 @@ export class FakeAdapter implements AgentAdapter {
         break;
 
       case 'manager_proposal': {
-        const artifacts: Array<{ kind: string; path: string }> = [];
+        const artifacts: WorkerResultArtifact[] = [];
         if (script.proposal !== undefined) {
           if (!state.workspacePath) {
             throw new Error('manager_proposal script requires startWorker to have been given a workspace');

@@ -57,6 +57,12 @@ function setUp(): { db: ReturnType<typeof openDb>; projectId: string; ticketId: 
     description: 'do the thing',
     kind: 'work',
     acceptanceCriteria: ['hello.txt exists'],
+    // Batch 13: this file's own tests are about the worker-result pipeline
+    // (status/failure-class handling), not workspace selection -- explicit
+    // NONE preserves that exact scope now that DIRECTORY is the ticket
+    // default (see store.ts's createTicket) and would otherwise need a real
+    // `workspaceRoot` this file's setUp() never configured.
+    workspaceType: 'NONE',
   });
   return { db, projectId: project.id, ticketId: ticket.id };
 }

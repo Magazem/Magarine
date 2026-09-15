@@ -114,7 +114,7 @@ test('0010 backfills workspace_root from dirname(scope_path) for a legacy row th
     '0007_manager_kind',
     '0008_project_scope_path',
     '0009_pause_reason',
-    '0010_backfill_workspace_root_from_scope_path', '0011_ticket_model_reason',
+    '0010_backfill_workspace_root_from_scope_path', '0011_ticket_model_reason', '0012_artifact_text_column',
   ]);
 
   assert.equal(

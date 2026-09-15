@@ -281,4 +281,22 @@ export const MIGRATIONS: Migration[] = [
     id: '0011_ticket_model_reason',
     sql: `ALTER TABLE tickets ADD COLUMN model_reason TEXT;`,
   },
+  {
+    // Batch 13 ruling 1b: a non-file artefact kind (manager_reply,
+    // manager_assessment) no longer carries its content in `path_or_uri` --
+    // that column stays NOT NULL (an empty string for these rows going
+    // forward, to avoid a SQLite table rebuild for a column most rows still
+    // use for its real purpose), and the actual text moves to this new
+    // column. Existing rows of the two kinds that have ever been produced
+    // in this codebase (manager_reply/manager_assessment; 'text' and
+    // 'reference' are new this batch and have no legacy rows) have their
+    // real content sitting in path_or_uri today -- this migration moves it.
+    id: '0012_artifact_text_column',
+    sql: `ALTER TABLE artifacts ADD COLUMN text TEXT;`,
+    run: (db) => {
+      db.prepare(
+        `UPDATE artifacts SET text = path_or_uri, path_or_uri = '' WHERE kind IN ('manager_reply', 'manager_assessment')`
+      ).run();
+    },
+  },
 ];

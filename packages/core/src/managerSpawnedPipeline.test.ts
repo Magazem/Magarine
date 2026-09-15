@@ -277,7 +277,7 @@ test('SYNTHETIC: a manager_reply artifact survives the real verifyArtifacts pipe
       '.orchestrator/result.json': JSON.stringify({
         status: 'done',
         summary: 'replied to the owner',
-        artifacts: [{ kind: 'manager_reply', path: 'Dropping the export feature -- done, see updated scope.' }],
+        artifacts: [{ kind: 'manager_reply', text: 'Dropping the export feature -- done, see updated scope.' }],
         checks: [],
         blockers: [],
         questions: [],
@@ -293,7 +293,7 @@ test('SYNTHETIC: a manager_reply artifact survives the real verifyArtifacts pipe
   const artifacts = listArtifactsForTicket(db, managerTicket.id);
   const reply = artifacts.find((a) => a.kind === 'manager_reply');
   assert.ok(reply, 'expected a manager_reply artifact to survive verifyArtifacts and be captured');
-  assert.equal(reply!.pathOrUri, 'Dropping the export feature -- done, see updated scope.');
+  assert.equal(reply!.text, 'Dropping the export feature -- done, see updated scope.');
 });
 
 test('SYNTHETIC: a manager_assessment artifact survives the real verifyArtifacts pipeline, alongside a request_user_decision proposal (interview mode)', async () => {
@@ -313,7 +313,7 @@ test('SYNTHETIC: a manager_assessment artifact survives the real verifyArtifacts
       '.orchestrator/result.json': JSON.stringify({
         status: 'done',
         summary: 'assessed the fresh project',
-        artifacts: [{ kind: 'manager_assessment', path: 'The scope is thin; I need to know which platforms to target.' }],
+        artifacts: [{ kind: 'manager_assessment', text: 'The scope is thin; I need to know which platforms to target.' }],
         checks: [],
         blockers: [],
         questions: [],

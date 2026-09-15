@@ -123,9 +123,9 @@ class TestAdapter implements AgentAdapter {
 
 test('T1 and T2 run in the same tick while T3 waits, then T3 runs once both are DONE', async () => {
   const { db, project, adapter } = setupProject(2);
-  const t1 = createTicket(db, { projectId: project.id, title: 'T1' });
-  const t2 = createTicket(db, { projectId: project.id, title: 'T2' });
-  const t3 = createTicket(db, { projectId: project.id, title: 'T3' });
+  const t1 = createTicket(db, { projectId: project.id, title: 'T1', workspaceType: 'NONE' });
+  const t2 = createTicket(db, { projectId: project.id, title: 'T2', workspaceType: 'NONE' });
+  const t3 = createTicket(db, { projectId: project.id, title: 'T3', workspaceType: 'NONE' });
   addDependency(db, { ticketId: t3.id, dependsOnTicketId: t1.id });
   addDependency(db, { ticketId: t3.id, dependsOnTicketId: t2.id });
 
@@ -162,8 +162,8 @@ test('tick() refuses to start a ticket that is READY in the row but not actually
   // run work off a status it hasn't re-verified, independent of whether
   // resolveReadiness ran correctly.
   const { db, project, adapter } = setupProject(1);
-  const blocker = createTicket(db, { projectId: project.id, title: 'BLOCKER' });
-  const dependent = createTicket(db, { projectId: project.id, title: 'DEPENDENT' });
+  const blocker = createTicket(db, { projectId: project.id, title: 'BLOCKER', workspaceType: 'NONE' });
+  const dependent = createTicket(db, { projectId: project.id, title: 'DEPENDENT', workspaceType: 'NONE' });
   addDependency(db, { ticketId: dependent.id, dependsOnTicketId: blocker.id });
   db.prepare("UPDATE tickets SET status = 'READY' WHERE id = ?").run(dependent.id);
 
@@ -180,9 +180,9 @@ test('tick() refuses to start a ticket that is READY in the row but not actually
 
 test('the concurrency cap holds even when workers hang', async () => {
   const { db, project, adapter } = setupProject(2);
-  const t1 = createTicket(db, { projectId: project.id, title: 'T1' });
-  const t2 = createTicket(db, { projectId: project.id, title: 'T2' });
-  const t3 = createTicket(db, { projectId: project.id, title: 'T3' });
+  const t1 = createTicket(db, { projectId: project.id, title: 'T1', workspaceType: 'NONE' });
+  const t2 = createTicket(db, { projectId: project.id, title: 'T2', workspaceType: 'NONE' });
+  const t3 = createTicket(db, { projectId: project.id, title: 'T3', workspaceType: 'NONE' });
   adapter.setScript(t1.id, { kind: 'hang' });
   adapter.setScript(t2.id, { kind: 'hang' });
   adapter.setScript(t3.id, { kind: 'succeed' });
@@ -211,7 +211,7 @@ test('the concurrency cap holds even when workers hang', async () => {
 
 test('retry exhaustion reaches FAILED after max_attempts retryable failures', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'flaky', maxAttempts: 2 });
+  const ticket = createTicket(db, { projectId: project.id, title: 'flaky', maxAttempts: 2, workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'retryable_failure' });
 
   const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
@@ -234,7 +234,7 @@ test('retry exhaustion reaches FAILED after max_attempts retryable failures', as
 // the owner has raised the ticket's budget.
 test('budget_insufficient (the worker\'s own budget self-stop): FAILED, attempt_count unchanged, inbox carries the worker\'s reasoning, retry after raising the budget returns to READY', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'sixteen files', maxAttempts: 2 });
+  const ticket = createTicket(db, { projectId: project.id, title: 'sixteen files', maxAttempts: 2, workspaceType: 'NONE' });
   const reasoning =
     'Stopped after creating file01.txt (verified) because per-call cost (~$0.08-0.09/pair) makes ' +
     'completing all 16 files impossible within the $0.25 budget ceiling.';
@@ -292,7 +292,7 @@ test('budget_insufficient (the worker\'s own budget self-stop): FAILED, attempt_
 
 test('a malformed result is treated as a retryable failure, not a crash', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'bad json', maxAttempts: 3 });
+  const ticket = createTicket(db, { projectId: project.id, title: 'bad json', maxAttempts: 3, workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'malformed_result' });
 
   const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
@@ -305,7 +305,7 @@ test('a malformed result is treated as a retryable failure, not a crash', async 
 
 test('a worker question keeps the ticket IN_PROGRESS and the run continues to a final result', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'asks a question' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'asks a question', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'question' });
 
   const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
@@ -317,7 +317,7 @@ test('a worker question keeps the ticket IN_PROGRESS and the run continues to a 
 
 test('needs_user_decision moves the ticket to BLOCKED', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'needs a human' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'needs a human', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'needs_user_decision' });
 
   const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
@@ -329,7 +329,7 @@ test('needs_user_decision moves the ticket to BLOCKED', async () => {
 
 test('run usage reported by the adapter is persisted on the run row', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'reports usage' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'reports usage', workspaceType: 'NONE' });
   const usage = { inputTokens: 1200, outputTokens: 340, cacheReadTokens: 900, cacheWriteTokens: 100 };
   adapter.setScript(ticket.id, { kind: 'succeed', usage });
 
@@ -343,9 +343,9 @@ test('run usage reported by the adapter is persisted on the run row', async () =
 
 test('runUntilIdle drives a full dependency chain to completion without manual ticks', async () => {
   const { db, project, adapter } = setupProject(2);
-  const t1 = createTicket(db, { projectId: project.id, title: 'T1' });
-  const t2 = createTicket(db, { projectId: project.id, title: 'T2' });
-  const t3 = createTicket(db, { projectId: project.id, title: 'T3' });
+  const t1 = createTicket(db, { projectId: project.id, title: 'T1', workspaceType: 'NONE' });
+  const t2 = createTicket(db, { projectId: project.id, title: 'T2', workspaceType: 'NONE' });
+  const t3 = createTicket(db, { projectId: project.id, title: 'T3', workspaceType: 'NONE' });
   addDependency(db, { ticketId: t3.id, dependsOnTicketId: t1.id });
   addDependency(db, { ticketId: t3.id, dependsOnTicketId: t2.id });
   adapter.setScript(t1.id, { kind: 'succeed' });
@@ -366,7 +366,7 @@ test('an adapter_unavailable failure leaves attempt_count unchanged, records an 
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'needs auth' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'needs auth', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
@@ -446,7 +446,7 @@ test("a NONE dependent finds its dependency's file under .orchestrator/inputs/<d
     const envelope = adapter.startedWith.get(dependentStarted.handle.id)!.ticket;
     assert.equal(envelope.completedDependencies.length, 1);
     assert.equal(
-      envelope.completedDependencies[0].artifacts[0].path,
+      envelope.completedDependencies[0].artifacts[0].content,
       join('.orchestrator', 'inputs', dep.id, 'out.txt')
     );
 
@@ -494,7 +494,7 @@ test("a shared-directory (DIRECTORY) dependent's envelope lists the dependency's
 
     assert.equal(envelope.completedDependencies.length, 1);
     assert.equal(envelope.completedDependencies[0].artifacts.length, 1);
-    assert.equal(envelope.completedDependencies[0].artifacts[0].path, join(workspaceRoot, 'alpha.txt'));
+    assert.equal(envelope.completedDependencies[0].artifacts[0].content, join(workspaceRoot, 'alpha.txt'));
     assert.equal(envelope.completedDependencies[0].summary, 'wrote alpha');
 
     adapter.emit(dependentStarted.handle.id, {
@@ -562,9 +562,58 @@ test('two concurrent runs declaring the same path in a shared DIRECTORY workspac
   }
 });
 
+// Batch 13 item 1: a DIRECTORY-mode ticket declaring a non-'file' artifact
+// (its content carried in "text", per resultContract.ts's per-kind field
+// map) must be captured with that content stored in the artifact row's own
+// `text` column, not lost or mis-routed into `pathOrUri` -- the exact
+// column split this batch introduced to close the batch-11 "content in a
+// field called path" smell. Also has DONE deliver a real file, per batch
+// 13's own "done requires delivery" rule -- proving the two rules compose,
+// not just each in isolation.
+test('a DIRECTORY-mode ticket declaring a non-file artefact captures its content in the artifact row\'s text column, not pathOrUri', async () => {
+  const db = openDb(':memory:');
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-directory-textkind-'));
+  try {
+    const project = createProject(db, { name: 'p', maxParallelWorkers: 1, workspaceRoot });
+    const adapter = new TestAdapter();
+    const t1 = createTicket(db, { projectId: project.id, title: 'writer', workspaceType: 'DIRECTORY' });
+
+    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const { started } = await tick(deps);
+    writeFileSync(join(workspaceRoot, 'out.txt'), 'real file');
+
+    adapter.emit(started[0].handle.id, {
+      type: 'result_raw',
+      raw: {
+        status: 'done',
+        summary: 'wrote a file and left a reference note',
+        artifacts: [
+          { kind: 'file', path: 'out.txt' },
+          { kind: 'reference', text: 'see the design doc from the prior ticket' },
+        ],
+        checks: [],
+        blockers: [],
+        questions: [],
+      },
+    });
+    await started[0].done;
+
+    const artifacts = listArtifactsForTicket(db, t1.id);
+    const reference = artifacts.find((a) => a.kind === 'reference')!;
+    assert.equal(reference.text, 'see the design doc from the prior ticket');
+    assert.equal(reference.pathOrUri, '', 'a non-file kind must not leave real content in pathOrUri');
+
+    const file = artifacts.find((a) => a.kind === 'file')!;
+    assert.equal(file.pathOrUri, join(workspaceRoot, 'out.txt'));
+    assert.equal(file.text, null);
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('SIGINT during a hanging fake run stops the worker, cancels the run without consuming an attempt, and leaves no ticket stuck IN_PROGRESS', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'hangs forever' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'hangs forever', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'hang' });
 
   const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
@@ -589,7 +638,7 @@ test('SchedulerDeps.runTimeoutMs cancels a hanging run without consuming an atte
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'hangs' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'hangs', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, runTimeoutMs: 30, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -610,11 +659,12 @@ test('the envelope carries the ticket budget override when set, else the project
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 2, maxBudgetUsd: 2 });
   const adapter = new TestAdapter();
-  const defaultTicket = createTicket(db, { projectId: project.id, title: 'default budget' });
+  const defaultTicket = createTicket(db, { projectId: project.id, title: 'default budget', workspaceType: 'NONE' });
   const overriddenTicket = createTicket(db, {
     projectId: project.id,
     title: 'override budget',
     maxBudgetUsdOverride: 9.5,
+    workspaceType: 'NONE',
   });
 
   const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
@@ -639,7 +689,7 @@ test('progress events are persisted as worker_progress internal events on the ru
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'chatty' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'chatty', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -666,7 +716,7 @@ test('a progress event whose cumulative costUsd crosses the ceiling stops the wo
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'chatty and expensive' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'chatty and expensive', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -707,7 +757,7 @@ test("the tool's own budget stop (claudeCli.ts's classifyOutcome, surfaced as a 
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'tool reports its own budget stop' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'tool reports its own budget stop', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -743,7 +793,7 @@ test('a progress event flagging unknownModel raises exactly one unknown_model_ra
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 5 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'runs an unrecognized model' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'runs an unrecognized model', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -770,7 +820,7 @@ test('a progress event with no unknownModel flag never raises unknown_model_rate
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 5 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'runs a recognized model' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'runs a recognized model', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -788,7 +838,7 @@ test("batch 6 item 4: a completed run's terminal result_raw event flagging unkno
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 5 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'completes on an unrecognized model' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'completes on an unrecognized model', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -819,8 +869,8 @@ test('a project spend cap shrinks a ticket\'s ceiling to what remains, rather th
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 0.6, maxSpendUsd: 1.0 });
   const adapter = new FakeAdapter();
-  const first = createTicket(db, { projectId: project.id, title: 'first' });
-  const second = createTicket(db, { projectId: project.id, title: 'second' });
+  const first = createTicket(db, { projectId: project.id, title: 'first', workspaceType: 'NONE' });
+  const second = createTicket(db, { projectId: project.id, title: 'second', workspaceType: 'NONE' });
   adapter.setScript(first.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
   // 0.5 sits BELOW the ticket's own 0.6 ceiling but ABOVE the 0.4 the cap
   // has left (1.0 - 0.6). If the shrunk ceiling actually reached the
@@ -882,8 +932,8 @@ test('a project spend cap refuses to spawn, pausing the project with reason spen
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 0.6, maxSpendUsd: 1.0 });
   const adapter = new FakeAdapter();
-  const first = createTicket(db, { projectId: project.id, title: 'first' });
-  const second = createTicket(db, { projectId: project.id, title: 'second' });
+  const first = createTicket(db, { projectId: project.id, title: 'first', workspaceType: 'NONE' });
+  const second = createTicket(db, { projectId: project.id, title: 'second', workspaceType: 'NONE' });
   adapter.setScript(first.id, { kind: 'succeed', usage: { total_cost_usd: 0.8 } });
   adapter.setScript(second.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
 
@@ -924,7 +974,7 @@ test('a project spend cap refuses to spawn, pausing the project with reason spen
 
 test('a project with no max_spend_usd set never refuses a spawn on spend-cap grounds', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'succeed' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
@@ -962,7 +1012,7 @@ test('a project with no max_spend_usd set never refuses a spawn on spend-cap gro
 // batch-4-closeout.md section 2's exact `InvalidTransitionError` text.
 test('a post-stop terminal event from a budget stop must not crash the daemon (batch 5 reproduction)', async () => {
   const { db, project, adapter } = setupProject(1);
-  const ticket = createTicket(db, { projectId: project.id, title: 'over budget' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'over budget', workspaceType: 'NONE' });
   // project.maxBudgetUsd defaults to 2.0 (createProject's default); this
   // reports a cumulative cost far past it, so scheduler.ts's own budget
   // guard (applyWorkerEventInner's 'progress' case) fires and calls
@@ -1021,7 +1071,7 @@ test('a late non-terminal event after settlement is dropped without minting a la
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, then keeps chattering' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, then keeps chattering', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
   const { started } = await tick(deps);
@@ -1046,7 +1096,7 @@ test('a late terminal event after settlement merges its usage into the run row o
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, no usage yet' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, no usage yet', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -1085,7 +1135,7 @@ test('a late terminal event never overwrites usage the settled run already recor
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, with usage' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'settles once, with usage', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -1118,8 +1168,8 @@ test('a throwing transition inside the observe callback is caught, recorded, and
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 2 });
   const adapter = new TestAdapter();
-  const bad = createTicket(db, { projectId: project.id, title: 'malformed event' });
-  const good = createTicket(db, { projectId: project.id, title: 'well-behaved' });
+  const bad = createTicket(db, { projectId: project.id, title: 'malformed event', workspaceType: 'NONE' });
+  const good = createTicket(db, { projectId: project.id, title: 'well-behaved', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
@@ -1163,7 +1213,7 @@ test('a progress event at or under the ceiling never stops the worker', async ()
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1, maxBudgetUsd: 1 });
   const adapter = new TestAdapter();
-  const ticket = createTicket(db, { projectId: project.id, title: 'exactly on budget' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'exactly on budget', workspaceType: 'NONE' });
 
   const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);

@@ -16,6 +16,44 @@ export const WORKER_RESULT_STATUS_VALUES: WorkerResultStatus[] = [
   'budget_insufficient',
 ];
 
+// Batch 13 ruling 1b: artefact kinds are an enumeration, and each kind has
+// exactly one required content field -- closes the batch-11 smell of a
+// non-file kind (manager_reply/manager_assessment) jamming its real content
+// into a field literally named "path". This table is the single source
+// both the JSON schema handed to the tool (below) and the hand-rolled
+// validator (validateArtifactShape) read, so the schema and the validator
+// cannot drift apart from each other -- see resultContract.test.ts's test
+// that feeds the schema's own embedded examples through the validator.
+export const ARTIFACT_KINDS = ['file', 'text', 'url', 'reference', 'manager_reply', 'manager_assessment'] as const;
+export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+
+export const ARTIFACT_KIND_FIELD: Record<ArtifactKind, 'path' | 'text' | 'url'> = {
+  file: 'path',
+  text: 'text',
+  url: 'url',
+  reference: 'text',
+  manager_reply: 'text',
+  manager_assessment: 'text',
+};
+
+function exampleArtifactFor(kind: ArtifactKind): Record<string, string> {
+  const field = ARTIFACT_KIND_FIELD[kind];
+  const value = field === 'path' ? 'src/example.ts' : field === 'url' ? 'https://example.com/reference' : 'example content, verbatim';
+  return { kind, [field]: value };
+}
+
+// Batch 13 item 1: `verifyArtifacts` (claudeCli.ts) still only resolves
+// `kind === 'file'` against the filesystem; every other kind's required
+// field is validated here (shape only -- there is nothing on disk to check
+// for free text or a URL). Reads whichever field `ARTIFACT_KIND_FIELD`
+// names for the given kind, so a caller never has to special-case a kind by
+// name.
+export function artifactContent(artifact: Record<string, unknown> & { kind: string }): string {
+  const field = ARTIFACT_KIND_FIELD[artifact.kind as ArtifactKind];
+  const value = artifact[field];
+  return typeof value === 'string' ? value : '';
+}
+
 export const WORKER_RESULT_JSON_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
   title: 'WorkerResult',
@@ -28,11 +66,22 @@ export const WORKER_RESULT_JSON_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['kind', 'path'],
-        properties: {
-          kind: { type: 'string' },
-          path: { type: 'string' },
-        },
+        // `enum: [kind]` rather than `const: kind` per branch -- both are
+        // valid draft-07, but `enum` with one value is understood by every
+        // JSON-Schema-aware consumer, including ones only expecting
+        // draft-06-and-earlier vocabulary; this schema is not merely
+        // documentation, it is passed to the real tool as `--json-schema`
+        // (see claudeCli.ts), so a construct the tool's own schema handling
+        // does not recognize would degrade a real run in a way no test here
+        // could ever catch.
+        oneOf: ARTIFACT_KINDS.map((kind) => ({
+          required: ['kind', ARTIFACT_KIND_FIELD[kind]],
+          properties: {
+            kind: { type: 'string', enum: [kind] },
+            [ARTIFACT_KIND_FIELD[kind]]: { type: 'string' },
+          },
+          examples: [exampleArtifactFor(kind)],
+        })),
       },
     },
     checks: {
@@ -57,6 +106,26 @@ export type ValidationResult =
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Batch 13 item 1: one artefact's shape against the enumeration above --
+// pulled out of validateWorkerResult's loop so resultContract.test.ts can
+// feed the JSON schema's own embedded examples through this exact function
+// (via validateWorkerResult) and prove schema and validator agree, rather
+// than trusting they were kept in sync by hand.
+function validateArtifactShape(item: unknown, index: number): string[] {
+  const prefix = `artifacts[${index}]`;
+  if (!isPlainObject(item) || typeof item.kind !== 'string') {
+    return [`${prefix} must be an object with a string "kind"`];
+  }
+  if (!(ARTIFACT_KINDS as readonly string[]).includes(item.kind)) {
+    return [`${prefix}.kind "${item.kind}" is not one of ${ARTIFACT_KINDS.join(', ')}`];
+  }
+  const field = ARTIFACT_KIND_FIELD[item.kind as ArtifactKind];
+  if (typeof item[field] !== 'string') {
+    return [`${prefix} with kind "${item.kind}" must have a string "${field}" field`];
+  }
+  return [];
 }
 
 // Hand-rolled validator for the schema above. Deliberately not a general
@@ -87,11 +156,7 @@ export function validateWorkerResult(raw: unknown): ValidationResult {
     if (!Array.isArray(raw.artifacts)) {
       errors.push('artifacts must be an array');
     } else {
-      raw.artifacts.forEach((item, i) => {
-        if (!isPlainObject(item) || typeof item.kind !== 'string' || typeof item.path !== 'string') {
-          errors.push(`artifacts[${i}] must be { kind: string, path: string }`);
-        }
-      });
+      raw.artifacts.forEach((item, i) => errors.push(...validateArtifactShape(item, i)));
     }
   }
 

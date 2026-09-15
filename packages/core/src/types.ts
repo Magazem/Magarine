@@ -118,7 +118,10 @@ export interface Artifact {
   ticketId: string;
   runId: string;
   kind: string;
+  /** Meaningful only for kind 'file' (a resolved filesystem path, checked on disk); an empty string for every other kind -- see `text` below. Stays NOT NULL at the db layer (`path_or_uri`) rather than nullable, to avoid a SQLite table rebuild for a column most rows still use. */
   pathOrUri: string;
+  /** Batch 13: the artefact's own content for every kind other than 'file' -- 'url', 'text', 'reference', 'manager_reply', 'manager_assessment' all store here regardless of which field name the worker's JSON used (see resultContract.ts's `artifactContent`); null for 'file'. Closes the batch-11 smell of this content having previously been stored in `pathOrUri` (see db/schema.ts's 0012 migration). */
+  text: string | null;
   description: string | null;
   checksum: string | null;
   createdAt: string;
@@ -135,8 +138,8 @@ export interface Workspace {
 
 export interface TicketEnvelopeArtifact {
   kind: string;
-  /** A resolved filesystem path for kind 'file'; free-form text/URI for any other kind. */
-  path: string;
+  /** Batch 13: the artefact's own content -- a resolved filesystem path for kind 'file', a URL for kind 'url', or free-form text for every other kind (renamed from "path", which is what let a non-file kind's real text collide with a field name that means "a location on disk" -- see resultContract.ts's per-kind field enumeration, which this display shape does not need to duplicate exhaustively since it is prompt rendering, not a validation boundary). */
+  content: string;
 }
 
 export interface TicketEnvelope {
@@ -187,10 +190,18 @@ export interface WorkerResultCheck {
   status: 'passed' | 'failed';
 }
 
-export interface WorkerResultArtifact {
-  kind: string;
-  path: string;
-}
+// Batch 13 ruling 1b: a discriminated union, one required content field per
+// kind -- `file` keeps `path` (resolved and checked on disk, see
+// claudeCli.ts's verifyArtifacts), everything else carries `text` or `url`
+// instead, so a non-file kind's real content can never again collide with a
+// field name that means "a location on disk" (see resultContract.ts's
+// header comment on the batch-11 smell this closes). `resultContract.ts`'s
+// `ARTIFACT_KINDS`/`ARTIFACT_KIND_FIELD` are the single source this union's
+// shape and the runtime validator both answer to.
+export type WorkerResultArtifact =
+  | { kind: 'file'; path: string }
+  | { kind: 'url'; url: string }
+  | { kind: 'text' | 'reference' | 'manager_reply' | 'manager_assessment'; text: string };
 
 export interface WorkerResult {
   status: WorkerResultStatus;

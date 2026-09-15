@@ -398,7 +398,18 @@ export function createTicket(
     JSON.stringify(input.acceptanceCriteria ?? []),
     input.priority ?? 0,
     input.maxAttempts ?? 3,
-    input.workspaceType ?? 'NONE',
+    // Batch 13 ruling 1a: "agents do not decide where work lives" -- a
+    // ticket with no explicit workspaceType defaults to DIRECTORY, the
+    // project's one shared folder, not NONE's throwaway temp directory.
+    // manager.ts's planProject/discussProject always pass 'NONE' explicitly
+    // for the manager tickets they create, so this default change is
+    // invisible to them; it only changes what an omitted workspaceType
+    // means for a WORK ticket, whether created via `ticket add` (no
+    // `--workspace` flag) or the Manager's create_ticket (which no longer
+    // accepts workspace_type at all -- see proposal.ts). `NONE` remains
+    // reachable, just never by silent omission: `ticket add --workspace
+    // NONE` still sets it explicitly.
+    input.workspaceType ?? 'DIRECTORY',
     input.workspaceRef ?? null,
     input.maxBudgetUsdOverride ?? null,
     input.model ?? null,
@@ -793,6 +804,7 @@ interface ArtifactRow {
   run_id: string | null;
   kind: string;
   path_or_uri: string;
+  text: string | null;
   description: string | null;
   checksum: string | null;
   created_at: string;
@@ -805,12 +817,19 @@ function rowToArtifact(row: ArtifactRow): Artifact {
     runId: row.run_id ?? '',
     kind: row.kind,
     pathOrUri: row.path_or_uri,
+    text: row.text,
     description: row.description,
     checksum: row.checksum,
     createdAt: row.created_at,
   };
 }
 
+// Batch 13: `pathOrUri` and `text` are both accepted but mutually
+// exclusive in practice -- a caller passes whichever `resultContract.ts`'s
+// `ARTIFACT_KIND_FIELD` names for the artifact's own kind (`pathOrUri` for
+// 'file'/'url', `text` for everything else). `pathOrUri` defaults to an
+// empty string (not null) because the db column stays NOT NULL -- see
+// db/schema.ts's 0012 migration for why a table rebuild was avoided.
 export function createArtifact(
   db: Db,
   input: {
@@ -818,33 +837,27 @@ export function createArtifact(
     runId: string;
     projectId: string;
     kind: string;
-    pathOrUri: string;
+    pathOrUri?: string | null;
+    text?: string | null;
     description?: string | null;
     checksum?: string | null;
   }
 ): Artifact {
   const now = new Date().toISOString();
   const id = newId('art');
+  const pathOrUri = input.pathOrUri ?? '';
+  const text = input.text ?? null;
   db.prepare(
-    `INSERT INTO artifacts (id, ticket_id, run_id, project_id, kind, path_or_uri, description, checksum, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    input.ticketId,
-    input.runId,
-    input.projectId,
-    input.kind,
-    input.pathOrUri,
-    input.description ?? null,
-    input.checksum ?? null,
-    now
-  );
+    `INSERT INTO artifacts (id, ticket_id, run_id, project_id, kind, path_or_uri, text, description, checksum, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, input.ticketId, input.runId, input.projectId, input.kind, pathOrUri, text, input.description ?? null, input.checksum ?? null, now);
   return {
     id,
     ticketId: input.ticketId,
     runId: input.runId,
     kind: input.kind,
-    pathOrUri: input.pathOrUri,
+    pathOrUri,
+    text,
     description: input.description ?? null,
     checksum: input.checksum ?? null,
     createdAt: now,

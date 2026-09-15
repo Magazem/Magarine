@@ -1,5 +1,5 @@
 import { MIN_BUDGET_USD } from './store.ts';
-import type { TicketStatus, WorkspaceType } from './types.ts';
+import type { TicketStatus } from './types.ts';
 
 // The Manager's typed command schema, per docs/strategy/batch-9-spec.md
 // section 2 ("The command schema, exactly the document's list") -- FIVE
@@ -34,7 +34,15 @@ export interface CreateTicketCommand {
    * dependency-resolution pass.
    */
   depends_on?: string[];
-  workspace_type?: WorkspaceType;
+  // Batch 13 ruling 1a: "agents do not decide where work lives" -- there is
+  // deliberately no `workspace_type` field here any more. A work ticket
+  // always runs in the project's one directory (store.ts's createTicket
+  // default is now DIRECTORY); validateCommandShape rejects a raw proposal
+  // that smuggles the key in anyway, the same defensive pattern
+  // update_ticket already used for "status" (see that command's own
+  // comment). `NONE` is still reachable, just never through a Manager
+  // proposal -- only `ticket add --workspace NONE`, an explicit owner
+  // action.
   model?: string;
   /** Batch 12 item 3: required whenever `model` is set (see validateCommandShape) -- the Manager's own one-line justification for the choice, recorded on the ticket and shown on the board. */
   model_reason?: string;
@@ -134,7 +142,7 @@ export const MAX_CREATE_TICKET_COMMANDS = 15;
 export const MANAGER_COMMAND_SCHEMA_DESCRIPTION = `A proposal is a JSON object: { "commands": [...], "rationale": "<string>" }.
 At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of them "create_ticket". Every command must be one of exactly these seven shapes -- no others exist:
 
-- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "workspace_type"?: "NONE"|"DIRECTORY"|"GIT_WORKTREE", "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "max_budget_usd"?: <number> }
+- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "max_budget_usd"?: <number> }
 - { "type": "add_dependency", "ticket_id": "<existing ticket id>", "depends_on_ticket_id": "<existing ticket id>" }
 - { "type": "change_priority", "ticket_id": "<existing ticket id>", "priority": <number> }
 - { "type": "request_user_decision", "question": "<string>", "context": "<string>" }
@@ -142,7 +150,7 @@ At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of
 - { "type": "cancel_ticket", "ticket_id": "<existing, non-manager ticket id>" }
 - { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>" } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
 
-"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. Setting "model" on create_ticket or update_ticket without a non-empty "model_reason" is rejected: if you choose a model deliberately, say why in one line. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
+"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. Setting "model" on create_ticket or update_ticket without a non-empty "model_reason" is rejected: if you choose a model deliberately, say why in one line. Neither command accepts "workspace_type" -- every work ticket runs in the project's own one directory; there is no choice to make here. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
 
 const COMMAND_TYPES = new Set<ManagerCommand['type']>([
   'create_ticket',
@@ -236,8 +244,16 @@ function validateCommandShape(command: unknown, index: number): string[] {
       if (command.depends_on !== undefined && !isStringArray(command.depends_on)) {
         errors.push(`${prefix}.depends_on must be an array of strings when present`);
       }
-      if (command.workspace_type !== undefined && !['NONE', 'DIRECTORY', 'GIT_WORKTREE'].includes(command.workspace_type as string)) {
-        errors.push(`${prefix}.workspace_type must be one of NONE, DIRECTORY, GIT_WORKTREE when present`);
+      // Batch 13 ruling 1a: "agents do not decide where work lives" -- a
+      // proposal that sets workspace_type at all is rejected, not merely
+      // validated against the enum the way it used to be. Checked here
+      // (structural) rather than only omitting the field from the type,
+      // since a raw untyped payload could still smuggle the key in --
+      // same defensive pattern as "never status" on update_ticket below.
+      if (command.workspace_type !== undefined) {
+        errors.push(
+          `${prefix}.workspace_type must not be set -- work tickets always run in the project's one directory; use \`ticket add --workspace NONE\` for the rare owner-requested exception`
+        );
       }
       if (command.model !== undefined && typeof command.model !== 'string') {
         errors.push(`${prefix}.model must be a string when present`);
@@ -327,6 +343,14 @@ function validateCommandShape(command: unknown, index: number): string[] {
       if (command.status !== undefined) {
         errors.push(
           `${prefix}.status must not be set -- a ticket's status has exactly one write site and update_ticket may never set it directly`
+        );
+      }
+      // Batch 13 ruling 1a: same rejection as create_ticket above -- never
+      // had a typed field for this, but a raw proposal could still smuggle
+      // the key in.
+      if (command.workspace_type !== undefined) {
+        errors.push(
+          `${prefix}.workspace_type must not be set -- work tickets always run in the project's one directory; use \`ticket add --workspace NONE\` for the rare owner-requested exception`
         );
       }
       break;

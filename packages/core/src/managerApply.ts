@@ -143,12 +143,14 @@ export function applyManagerProposal(
     for (const c of commands) {
       if (c.type !== 'create_ticket') continue;
       guard();
+      // Batch 13 ruling 1a: no workspaceType passed here at all -- the
+      // command no longer carries the field (see proposal.ts), so
+      // createTicket's own default (DIRECTORY, store.ts) applies.
       const newTicket = createTicket(db, {
         projectId: project.id,
         title: c.title,
         description: c.description,
         acceptanceCriteria: c.acceptance_criteria,
-        workspaceType: c.workspace_type,
         model: c.model,
         modelReason: c.model_reason,
         maxBudgetUsdOverride: c.max_budget_usd,

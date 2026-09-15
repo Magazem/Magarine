@@ -37,7 +37,7 @@ test('buildConversation interleaves owner discuss messages and manager_reply/man
     runId: 'run_fake',
     projectId: project.id,
     kind: 'manager_assessment',
-    pathOrUri: 'The scope is thin -- I need more detail on the target platform.',
+    text: 'The scope is thin -- I need more detail on the target platform.',
   });
 
   const entries = buildConversation(db, project.id);
@@ -57,7 +57,7 @@ test('buildConversation renders a manager_reply artifact for its own kind, disti
     runId: 'run_fake',
     projectId: project.id,
     kind: 'manager_reply',
-    pathOrUri: 'Done -- removed the export feature, see the updated scope.',
+    text: 'Done -- removed the export feature, see the updated scope.',
   });
 
   const entries = buildConversation(db, project.id);
@@ -154,7 +154,7 @@ test('buildConversation sorts entries from different source tables (events and a
     payload: { summary: 'first' },
     idempotencyKey: 'evt_scope_1',
   });
-  createArtifact(db, { ticketId: ticket.id, runId: 'run_fake', projectId: project.id, kind: 'manager_reply', pathOrUri: 'reply text' });
+  createArtifact(db, { ticketId: ticket.id, runId: 'run_fake', projectId: project.id, kind: 'manager_reply', text: 'reply text' });
 
   const entries = buildConversation(db, project.id);
   assert.equal(entries.length, 2);

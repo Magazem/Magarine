@@ -134,7 +134,7 @@ function buildConversation(db: Db, projectId: string): ManagerConversationEntry[
     if (ticket.kind !== 'manager') continue;
     for (const artifact of listArtifactsForTicket(db, ticket.id)) {
       if (artifact.kind !== 'manager_reply' && artifact.kind !== 'manager_assessment') continue;
-      entries.push({ speaker: 'manager', text: artifact.pathOrUri, createdAt: artifact.createdAt });
+      entries.push({ speaker: 'manager', text: artifact.text ?? '', createdAt: artifact.createdAt });
     }
   }
 
@@ -289,9 +289,10 @@ export function renderManagerBrief(briefing: ManagerBriefing): string {
 
 const MANAGER_EXPECTED_OUTPUT_FORMAT =
   'Write .orchestrator/result.json matching the worker result contract (status/summary/artifacts/checks/blockers/questions), the same as any worker. ' +
-  'If you are replying to the owner\'s latest message, declare an artifact { "kind": "manager_reply", "path": "<your reply text, verbatim>" } -- ' +
-  'the "path" field carries the reply TEXT itself, not a filesystem path (this project\'s convention for non-"file" artifact kinds). ' +
-  'If you are assessing a fresh project (interview mode), declare { "kind": "manager_assessment", "path": "<your assessment text, verbatim>" } instead, or as well. ' +
+  'If you are replying to the owner\'s latest message, declare an artifact { "kind": "manager_reply", "text": "<your reply text, verbatim>" } -- ' +
+  '"manager_reply" (like "manager_assessment", "text" and "reference") carries its content in a "text" field, never "path"; "path" is reserved for ' +
+  'kind "file", a real location on disk. ' +
+  'If you are assessing a fresh project (interview mode), declare { "kind": "manager_assessment", "text": "<your assessment text, verbatim>" } instead, or as well. ' +
   'Separately, write .orchestrator/proposal.json containing your proposal (the command schema above -- an empty commands array with just a ' +
   'rationale is a valid proposal when you have nothing to propose yet), and declare it as an artifact in result.json: ' +
   '{ "kind": "file", "path": ".orchestrator/proposal.json" }. Report status "done" once proposal.json is written and reflects your actual plan -- ' +

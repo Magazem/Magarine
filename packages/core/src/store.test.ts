@@ -66,6 +66,21 @@ test('createTicket defaults maxBudgetUsdOverride to null and accepts an override
 // Batch 9: 'work' is the default -- every ticket before this batch was one,
 // so a bare createTicket() (no kind given) must not silently start
 // producing manager tickets.
+// Batch 13 ruling 1a: "agents do not decide where work lives" -- a ticket
+// with no explicit workspaceType now defaults to DIRECTORY, the project's
+// one shared folder, not NONE's throwaway temp directory (the choice that
+// let Run B's four file-writing tickets silently discard their work). NONE
+// is still reachable, just never by omission.
+test('createTicket defaults workspaceType to DIRECTORY, and NONE remains available when explicitly requested', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const defaulted = createTicket(db, { projectId: project.id, title: 't' });
+  assert.equal(defaulted.workspaceType, 'DIRECTORY');
+
+  const explicitNone = createTicket(db, { projectId: project.id, title: 't2', workspaceType: 'NONE' });
+  assert.equal(explicitNone.workspaceType, 'NONE');
+});
+
 test('createTicket defaults kind to \'work\' and accepts \'manager\'', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });

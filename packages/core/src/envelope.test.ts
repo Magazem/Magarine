@@ -71,8 +71,8 @@ test('prompt lists a dependency artifact path and its kind, and the budget ceili
         title: 'Dep ticket',
         summary: 'Dep summary text',
         artifacts: [
-          { kind: 'file', path: '/tmp/proj-root/alpha.txt' },
-          { kind: 'url', path: 'https://example.com/report' },
+          { kind: 'file', content: '/tmp/proj-root/alpha.txt' },
+          { kind: 'url', content: 'https://example.com/report' },
         ],
       },
     ],

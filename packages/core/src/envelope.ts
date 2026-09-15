@@ -34,7 +34,7 @@ export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: strin
     envelope.completedDependencies.length > 0
       ? `Dependencies already completed:\n${envelope.completedDependencies
           .map((d) => {
-            const artifactLines = (d.artifacts ?? []).map((a) => `    - (${a.kind}) ${a.path}`).join('\n');
+            const artifactLines = (d.artifacts ?? []).map((a) => `    - (${a.kind}) ${a.content}`).join('\n');
             return `- ${d.title}${d.summary ? `: ${d.summary}` : ''}${artifactLines ? `\n${artifactLines}` : ''}`;
           })
           .join('\n')}`
