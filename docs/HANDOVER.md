@@ -22,15 +22,31 @@ $3.38 equivalent.
 
 ## Where we are
 
-**Batch 14 — the interface — is in progress, at pass 3 of the design.**
+**Batch 14 — the interface — is DELIVERED. Pass 3 is committed at `c946986`.**
 
 The owner rejected pass 1 as *"very AI generic"* and supplied `propos/`: a generated target
 image, a 686-line written brief, and two scaffolded projects. **Read
 `docs/design/REFERENCE-READ.md`** — it is the designer's analysis and it leads with its own
 corrected error.
 
-Pass 3 is being drawn now: Living Brutalism, kanban board, and a **generated agent avatar
-system**. On disk: `docs/design/pass3/tokens.css` and `gallery.html`.
+Pass 3 shipped Living Brutalism, a kanban board, and a **generated agent avatar system**
+on three non-colliding channels: identity is shape, activity is motion, status is colour.
+On disk in `docs/design/pass3/`: three screens, `tokens.css`, `BRIEF.md`, and
+**`check-organism.js`**, which extracts the generator from the shipped page and proves its
+invariants. Run it before and after any change to the generator.
+
+**Three defects were found by verification and fixed before that commit**, so they appear
+nowhere in history: contrast measured against only one of four surfaces (failing at 4.23:1 on
+load); a generator version that was present as a string but inert, so bumping it would have
+restyled every existing avatar; and "symmetry by construction" that was false for roughly
+three quarters of fable seeds, invisible because every hand-checked seed happened to miss the
+buggy branch.
+
+**Ruling: `docs/strategy/batch-14-addendum-3-ruling-9-amended.md` is the authority on the
+identity layer** and supersedes ruling 9 where they disagree. Batch 14: tier = family +
+symmetry, status = colour. Batch 15: purpose = family, policy = symmetry, name-hash = the cell
+draw; **the tier has no channel in the organism after batch 15, by design.** Density is struck
+as an identity signal and survives only as a weight.
 
 **Sequence from here:** 15 = worker profiles, avatar seeds, expected artefacts, server-sent
 events. 16 = the Windows window host. 17 = per-ticket discussion, tags, shortcuts.
@@ -38,7 +54,8 @@ events. 16 = the Windows window host. 17 = per-ticket discussion, tags, shortcut
 ## How this team works — the rules that were earned, not assumed
 
 1. **Verify every claim independently before reporting or committing it.** This has caught a
-   real defect eight times, including twice in work I had already signed off.
+   real defect eleven times, including twice in work I had already signed off and once in my own
+   reported finding.
 2. **Mutation testing is the standard.** Break the thing a test names; confirm exactly that test
    fails. A test that cannot fail reads as coverage and is worse than none.
 3. **A test name is a claim.** The mutation must cover the whole name.
@@ -60,6 +77,19 @@ events. 16 = the Windows window host. 17 = per-ticket discussion, tags, shortcut
     boundary, so the window starts when everyone has acknowledged, not when it is sent.
 14. **The Orchestrator commits; engineers never run git.**
 15. **A role that needs a capability is spawned with it, verified before its first task.**
+16. **Measure a foreground against the lightest surface it can land on**, not the one it usually
+    sits on, and re-measure every surface when one moves. An unused token that silently fails
+    contrast is a trap, not a token.
+17. **A checker that cannot fail is not coverage — mutation-test it.** Break the thing each check
+    names and confirm that check fails. Two checks here passed while two tiers were made
+    identical and while the generator was allowed to emit a one-pixel avatar, because one
+    compared bitmaps rather than traits and the other read its goalposts from the code under
+    test. Assert against a constant the checker owns.
+18. **Hand-picked inputs are not a sample.** Seven seeds chosen by hand all missed a branch that
+    was broken for 76% of one tier. Hit every branch, or sample at scale by machine.
+19. **An anchor in a durable document is a claim and gets verified like one.** A ruling cited a
+    commit hash for code that commit did not contain. A hash reads as the most verifiable kind of
+    reference, so a wrong one misleads harder than the stale line number it replaced.
 
 ## Cost
 
@@ -74,8 +104,8 @@ retire finished agents.
 | role | state |
 |---|---|
 | **Strategist** (fable) | the real manager; every ruling is a file in `docs/strategy/` |
-| **Interface Designer** (ui-ux-pro-max) | drawing pass 3 |
-| **Invariants Engineer** (sonnet) | batch 13 complete, idle |
+| **Interface Designer** (ui-ux-pro-max) | pass 3 delivered; context reset after the commit |
+| **Invariants Engineer** (sonnet) | batch 13 complete; context reset |
 | **Liaison** (sonnet) | the only channel to the owner |
 | **Butler** | creates assistants on request |
 
