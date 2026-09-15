@@ -22,7 +22,17 @@ $3.38 equivalent.
 
 ## Where we are
 
-**Batch 14 — the interface — is DELIVERED. Pass 3 is committed at `c946986`.**
+**Batch 14 delivered the DESIGN of the interface, not the interface.** Pass 3 is committed at
+`c946986` — and **none of it is in the product.** `packages/core/src/ui/page.ts` is the same
+443-line inline page as before batch 14, with zero pass-3 markers in it; there is no
+`packages/core/ui/`, no font file anywhere under `packages/core`, no static asset route, and
+ruling 7's read path (`latest_activity`, `/progress`, `text/event-stream`, `expected_artifacts`)
+appears nowhere in `src` except one unrelated comment. All verified 2026-09-16.
+
+**How this was missed, because the shape recurs:** the batch 14 spec put "step 2, implementation"
+in a single sentence, and the batch was allowed to close on step 1. Its own closing condition —
+the owner walking the new page — cannot have happened, because there is no new page. A batch
+whose closing condition is untestable has not closed. Batch 15 is batch 14 step 2.
 
 The owner rejected pass 1 as *"very AI generic"* and supplied `propos/`: a generated target
 image, a 686-line written brief, and two scaffolded projects. **Read
@@ -90,6 +100,11 @@ events. 16 = the Windows window host. 17 = per-ticket discussion, tags, shortcut
 19. **An anchor in a durable document is a claim and gets verified like one.** A ruling cited a
     commit hash for code that commit did not contain. A hash reads as the most verifiable kind of
     reference, so a wrong one misleads harder than the stale line number it replaced.
+20. **A batch does not close until its own closing condition has actually been run.** Batch 14's
+    was "the owner walks the new page"; it closed with no new page in existence. Where a spec
+    names implementation in a single sentence, that sentence is a batch, not a clause.
+21. **Delivered means in the product, not in the repository.** A committed design is an artefact;
+    until the daemon serves it, the feature does not exist for the owner.
 
 ## Cost
 
