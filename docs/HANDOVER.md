@@ -150,6 +150,13 @@ retire finished agents.
 
 ## Carried UNKNOWNs — stated, not assumed away
 
+- **Assistant prose already reaches the page, unfiltered.** HARD, 2026-09-16: `describeProgress`
+  in `adapters/claudeCli.ts` returns `text: <first 120 characters>` of any assistant text block,
+  and that string is persisted and displayed. **A model can echo anything it read — including
+  file contents or a secret it encountered — into its prose and onto the page.** Existing
+  behaviour, and the source of the `reporting` state; not widened by ruling 14. To be judged
+  when a real run shows a case, not designed away blind.
+
 - **Playwright is broken on this machine and is not available.** Verified 2026-09-16:
   `ms-playwright/chromium-1194/chrome-win/` holds only `chrome.dll` and a manifest — no
   `chrome.exe` anywhere under `ms-playwright`, and no playwright npm package installed.
