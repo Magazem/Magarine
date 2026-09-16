@@ -22,36 +22,33 @@ $3.38 equivalent.
 
 ## Where we are
 
-**Batch 15 is IN PROGRESS: building the interface batch 14 designed.** Batch 14 delivered the
-DESIGN only; the product still served a 443-line inline page. `docs/strategy/batch-15-spec.md`
-is the authority, plus four addenda.
+**Batch 15 is BUILT, not yet closed out.** Batch 14 delivered the design only; batch 15 built it.
+`docs/strategy/batch-15-spec.md` plus addenda 1-4 are the authority.
 
-**Two roles, disjoint files, contract fixed in advance:**
+**ROLE A (daemon) IS COMPLETE — all four steps committed at `e9d37f8`, verified at 683/683 on a
+still tree, with three mutations re-run by the lead.** Ruling 7's read path, the `/events`
+stream, static assets under ruling 12, and expected artefacts end to end with migration 0013.
 
-- **Role A, Daemon Read-Path Engineer** (task `01a0a74d`, state note `01a0a865`). Owns the daemon
-  and store files, plus `cli.ts` for one flag and `adapters/claudeCli.ts` for `describeProgress`
-  only. **Steps 1 and 2 report complete; step 3 (static assets) and step 4 (expected artefacts)
-  remain.**
-- **Role B, Interface Engineer** (task `01a0a751`, plus `01a0a862` and `01a0a875`). Owns
-  `packages/core/ui/**`, `src/ui/page.ts`, and `check-organism.js`. **The organism and font layer
-  are committed. `index.html`, `app.js`, `skin-brutalist.css`, the element-field table and a
-  contrast test are on disk uncommitted. The ruling-15 nav rework is queued.**
+**ROLE B (the page) IS PARTLY DONE — committed at `448b97b`.** Deliverables 1, 2, 5 and 6: the
+page as real files under `packages/core/ui/`, the element-to-field table, the contrast matrix
+computed over the full cross product, the font ranges measured from the fonts' own cmaps, and 11
+evidence screenshots. `GET /` now serves it.
 
-**THE CONTRACT BETWEEN THEM — do not renegotiate unilaterally:** board rows carry
-`latest_activity: { state, tool, at, sequence } | null` where state is one of reading, writing,
-running, testing, finishing, reporting; stream events are the event row as JSON with `id` =
-`sequence` and event name = `event_type`; static routes are `GET /ui/<name>` EXACTLY, no path
-separators.
+**WHAT REMAINS IN BATCH 15 — all Role B:**
+1. **The ruling 15 nav rework** (task `01a0a875`). The three views return as a root `data-view`
+   attribute. NOT BUILT. The screenshots currently show one long page, which is NOT what the
+   owner approved. Requirement 4 is the one to guard: **with no `data-view` attribute nothing is
+   hidden** — put that check in `skin.test.ts`, not a manual grep.
+2. **Deliverable 4's live stream path** — written, only the refused branch exercised. Role A's
+   `/events` now exists, so it can finally be tested.
+3. **Keyboard tab-walk** — never performed, never claimed.
+4. **Re-shoot the three view states** once the nav returns. `.shots/` was never in the repo and is
+   gone; the stub daemon needs rebuilding, about fifteen minutes.
 
-**Rulings 10-15** live in `docs/strategy/batch-15-spec.md` and addenda 1-4. The ones that bite:
-**13** (six regions, stable ids, placement in the skin, script sets state never style, `data-skin`
-switch), **14** (the `testing` state is classified at the adapter and the command text never
-leaves it), **15** (three views survive as a root `data-view` attribute; **with no attribute
-nothing is hidden** — that degraded state is the easiest requirement to lose).
-
-**WHAT IS NOT YET VERIFIED BY THE ORCHESTRATOR:** Role A's steps 1 and 2 were reported complete
-but the verification window had not opened when this was written. Nothing of steps 1-2 beyond
-commit `de36bbe` has been independently mutation-tested by the lead. **Verify before committing.**
+**OPEN QUESTIONS FOR THE CLOSE-OUT:** whether `ticket add` gains an `--expected-artifact` flag
+(scoped out deliberately, undecided); and a pre-existing defect found in passing — the existing
+"done with nothing delivered" failure never sets `message`, so `reasonFor` cannot surface its
+reason on the board. Untouched, out of scope, worth a batch 16 item.
 
 **Sequence from here:** 16 = worker profiles and avatar seeds. 17 = the Windows window host.
 18 = per-ticket discussion, tags, shortcuts, and the owner's second skin.
