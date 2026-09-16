@@ -299,4 +299,15 @@ export const MIGRATIONS: Migration[] = [
       ).run();
     },
   },
+  {
+    // Batch 15 item 4: a ticket's own declared expectation of what DONE
+    // must have produced (types.ts's ExpectedArtifact), set via
+    // create_ticket/update_ticket. NULL for every existing row -- "no such
+    // list at all," which store.ts's rowToTicket reads as keeping today's
+    // rule (batch 13 ruling 1c's "done requires something delivered," and
+    // nothing more specific than that), not an invented empty list. See
+    // scheduler.ts for the DONE-time verification this column drives.
+    id: '0013_ticket_expected_artifacts',
+    sql: `ALTER TABLE tickets ADD COLUMN expected_artifacts_json TEXT;`,
+  },
 ];

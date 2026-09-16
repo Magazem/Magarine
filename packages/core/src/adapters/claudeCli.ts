@@ -357,12 +357,62 @@ function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown, unknownModel:
   }
 }
 
+// Batch 15 addendum 3 (ruling 14): sources the "testing" activity state at
+// THIS adapter, from the tool-use block's own `input.command`, rather than
+// persisting the command text downstream for something else to classify --
+// a Bash command line is the likeliest place in this system for a secret to
+// appear, and the daemon's event log is replayed over the stream and
+// rendered in a browser, permanently (see this file's own doc comment on
+// the strategist ruling this addendum records). `describeProgress` below
+// reads this predicate's answer only -- never the command itself -- into
+// the message it emits.
+//
+// Token match, not substring: split on the shell's own chaining operators
+// first (so `export SECRET=x && pnpm test` is still recognised), then each
+// resulting piece on whitespace, then match the FIRST token (its basename,
+// so a full path like `./node_modules/.bin/vitest` still matches) against
+// the runner names this ruling lists by name -- never a bare `.includes('test')`
+// against the whole string, which is exactly what would make `cat test.md`
+// a false positive.
+const BARE_TEST_RUNNER_NAMES = new Set(['vitest', 'jest', 'mocha', 'pytest']);
+
+function commandBasename(token: string): string {
+  const parts = token.split(/[\\/]/);
+  return parts[parts.length - 1];
+}
+
+function subcommandIsTestRunner(tokens: string[]): boolean {
+  if (tokens.length === 0) return false;
+  const head = commandBasename(tokens[0]);
+  if (BARE_TEST_RUNNER_NAMES.has(head)) return true;
+  if (head === 'pnpm' || head === 'npm' || head === 'yarn') {
+    return tokens[1] === 'test' || (tokens[1] === 'run' && tokens[2] === 'test');
+  }
+  if (head === 'node') return tokens.slice(1).includes('--test');
+  if (head === 'cargo' || head === 'go' || head === 'dotnet') return tokens[1] === 'test';
+  return false;
+}
+
+export function isTestRunnerCommand(command: string): boolean {
+  return command
+    .split(/&&|\|\||[;|\n]/)
+    .some((sub) => subcommandIsTestRunner(sub.trim().split(/\s+/).filter(Boolean)));
+}
+
 function describeProgress(line: Record<string, unknown>): string | null {
   if (line.type === 'assistant') {
     const content = (line.message as Record<string, unknown> | undefined)?.content;
     if (Array.isArray(content)) {
       for (const block of content as Array<Record<string, unknown>>) {
-        if (block?.type === 'tool_use') return `tool_use: ${String(block.name)}`;
+        if (block?.type === 'tool_use') {
+          const name = String(block.name);
+          if (name === 'Bash') {
+            const input = block.input as Record<string, unknown> | undefined;
+            const command = typeof input?.command === 'string' ? input.command : undefined;
+            return command !== undefined && isTestRunnerCommand(command) ? 'tool_use: Bash (test runner)' : 'tool_use: Bash';
+          }
+          return `tool_use: ${name}`;
+        }
         if (block?.type === 'text' && typeof block.text === 'string') {
           return `text: ${(block.text as string).slice(0, 120)}`;
         }

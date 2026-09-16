@@ -1,10 +1,15 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged, type ManagedProcess } from './process.ts';
-import { daemonFilePath, type DaemonFileInfo } from './daemon.ts';
+import { daemonFilePath, type DaemonFileInfo, type DaemonLoop } from './daemon.ts';
+import { consumeEventStream } from './daemonClient.ts';
+import { createRequestHandler, isSafeAssetName } from './daemonApi.ts';
+import { openDb } from './db/index.ts';
+import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
 
 // Cross-process coverage for the daemon's HTTP API itself: everything here
@@ -524,6 +529,224 @@ test('GET /tickets/{id}/progress returns one entry per run, and GET /board repor
       await handle.kill();
     }
   } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// Batch 15 ruling 7 item 2: GET /events?since=<sequence>, text/event-stream.
+// Same header auth as every other route (never a token in the URL); replays
+// rows after `since`, then pushes new ones as they are inserted; `id` is
+// the row's own `sequence`, event name is its `event_type`; and the stream
+// ends cleanly (the async generator returns, not throws or hangs) when the
+// daemon itself stops.
+// "Closes cleanly when the daemon stops" is proven separately, below, by
+// calling `closeAllStreams()` directly against a real (in-process)
+// http.Server -- not by killing this cross-process daemon. Windows cannot
+// deliver a catchable signal across processes (daemon.ts's own
+// ShutdownMode/detectShutdownMode: 'hard-kill-only' here), so
+// `handle.kill()` in this test file always hard-kills the daemon before
+// its own SIGINT/SIGTERM listener (serve.ts's `onSignal`, the thing that
+// actually calls `closeAllStreams()`) could ever run -- an external kill on
+// this machine can only ever produce ECONNRESET, which is not evidence
+// about `closeAllStreams()` either way.
+test('GET /events replays existing rows after since, then pushes a live fake-adapter worker_progress event with id === sequence and event === event_type, and is refused without the token even when the query string carries no secret of its own', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'events-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+    const ticketRes = await runCli([
+      'ticket', 'add', '--project', project.id, '--title', 'chatty', '--state-dir', stateDir, '--json',
+    ]);
+    const ticket = JSON.parse(ticketRes.stdout);
+
+    const handle = spawnServe([
+      '--state-dir', stateDir, '--tick-interval', '0.1', '--json',
+      '--fake-script', `${ticket.id}=progress`,
+    ]);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+
+      // No token at all: refused, same as every other route.
+      const noAuth = await api(info.port, '', 'GET', '/events?since=0');
+      assert.equal(noAuth.status, 401);
+
+      // The wrong token, checked on the raw request URL string itself: the
+      // token this test sends must never be reachable by inspecting the
+      // URL alone -- consumeEventStream sends it as a header, never a query
+      // parameter, so a GET with no Authorization header and a since-only
+      // query string must still be refused.
+      const rawUrl = `http://127.0.0.1:${info.port}/events?since=0`;
+      const rawNoAuth = await fetch(rawUrl);
+      assert.equal(rawNoAuth.status, 401);
+      assert.doesNotMatch(rawUrl, /token/i);
+
+      const controller = new AbortController();
+      const seen: Array<{ id: number; event: string; data: { sequence: number; eventType: string } }> = [];
+      const consumed = (async () => {
+        for await (const event of consumeEventStream(
+          { port: info.port, token: fileInfo.token },
+          { since: 0, signal: controller.signal }
+        )) {
+          seen.push(event as typeof seen[number]);
+          if (event.event === 'worker_progress') break;
+        }
+      })();
+
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timed out waiting for a live worker_progress event over the stream')), 10_000)
+      );
+      await Promise.race([consumed, timeout]);
+      controller.abort();
+
+      const progressEvent = seen.find((e) => e.event === 'worker_progress')!;
+      assert.ok(progressEvent, 'expected a worker_progress event to arrive over the live stream');
+      assert.equal(progressEvent.id, progressEvent.data.sequence, 'the SSE frame id must equal the event row\'s own sequence');
+      assert.equal(progressEvent.event, progressEvent.data.eventType, 'the SSE event name must equal the event row\'s own event_type');
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// The in-process half of "closes cleanly when the daemon stops": no CLI
+// spawn, no OS signal -- a real http.Server built directly from
+// createRequestHandler's own `handle`, so `closeAllStreams()` (the exact
+// function serve.ts's own shutdown sequence calls, per that file's comment)
+// can be called directly and its effect observed deterministically.
+test('createRequestHandler().closeAllStreams() ends every open /events response cleanly -- a connected consumer\'s for-await loop returns rather than hanging or throwing', async () => {
+  const db = openDb(':memory:');
+  const stubLoop: DaemonLoop = {
+    live: new Map(),
+    stop: async () => {},
+    forceTick: async () => ({ started: [] }),
+    cancelTicket: async () => 'not_running',
+  };
+  const requestHandler = createRequestHandler({
+    db,
+    adapter: new FakeAdapter(),
+    loop: stubLoop,
+    token: 'test-token',
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+  });
+  const server = createServer(requestHandler.handle);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+
+  try {
+    let sawAtLeastOneChunk = false;
+    let loopEnded = false;
+    const consumed = (async () => {
+      for await (const _event of consumeEventStream({ port, token: 'test-token' })) {
+        sawAtLeastOneChunk = true;
+      }
+      loopEnded = true;
+    })();
+
+    // Give the connection a moment to actually open before ending it --
+    // otherwise this could trivially "pass" by racing closeAllStreams()
+    // before the server ever registered the stream at all.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    requestHandler.closeAllStreams();
+
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('the consumer did not see the stream end within 2s of closeAllStreams()')), 2_000)
+    );
+    await Promise.race([consumed, timeout]);
+    assert.equal(loopEnded, true);
+    assert.equal(sawAtLeastOneChunk, false, 'sanity: no real event was ever inserted, so there is nothing to have consumed but the clean end itself');
+  } finally {
+    // `closeAllConnections()` (not just `close()`) so that if
+    // `closeAllStreams()` above were ever broken and left the SSE response
+    // genuinely open, this cleanup still terminates the server rather than
+    // hanging the whole suite on `close()`'s own callback, which only fires
+    // once every connection has ended on its own.
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+// Ruling 12, unit level: the slash check alone already blocks every
+// MULTI-segment traversal, and a bare ".." has no recognised extension
+// either way (STATIC_CONTENT_TYPES has no empty-string row), so no real
+// file on this disk exercises the dot-segment guard in isolation through
+// a live route. Tested directly against the function instead, so the guard
+// the ruling names explicitly ("a path separator OR dot-segment") is
+// provably present, not merely coincidentally redundant with the slash
+// check.
+test('isSafeAssetName: refuses a path separator, a dot-segment (even with no separator at all), and an encoded dot-segment; accepts an ordinary filename', () => {
+  assert.equal(isSafeAssetName('organism.js'), true);
+  assert.equal(isSafeAssetName('sub/organism.js'), false);
+  assert.equal(isSafeAssetName('sub\\organism.js'), false);
+  assert.equal(isSafeAssetName('..'), false);
+  assert.equal(isSafeAssetName('../secret.js'), false);
+  assert.equal(isSafeAssetName('%2e%2e'), false, 'an encoded dot-segment must be caught after decoding');
+  assert.equal(isSafeAssetName(''), false);
+});
+
+// Batch 15 rulings 11/12: `GET /ui/<name>`, served from packages/core/ui/,
+// resolved relative to THIS module, not the daemon's cwd. Unauthenticated,
+// same reasoning as `GET /` below -- a browser's native <script src="">/
+// <link>/@font-face loading never carries a custom Authorization header,
+// so gating these routes behind the token would just break the page that
+// requests them.
+test('GET /ui/organism.js is served byte-identical to the real file on disk, with no token required', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'assets-organism-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const res = await fetch(`http://127.0.0.1:${info.port}/ui/organism.js`);
+    assert.equal(res.status, 200);
+    const served = Buffer.from(await res.arrayBuffer());
+    const onDisk = readFileSync(fileURLToPath(new URL('../ui/organism.js', import.meta.url)));
+    assert.ok(served.equals(onDisk), 'the served bytes must be byte-identical to ui/organism.js on disk');
+  } finally {
+    await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('GET /ui/<a font file> answers 200 with content-type font/woff2', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'assets-font-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const res = await fetch(`http://127.0.0.1:${info.port}/ui/IBMPlexSans.woff2`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'font/woff2');
+  } finally {
+    await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('GET /ui/<name> refuses a path separator or a dot-segment (traversal), and 404s an unknown asset name -- no directory listing, no fallback to any page', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'assets-traversal-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const base = `http://127.0.0.1:${info.port}`;
+
+    const traversalEncoded = await fetch(`${base}/ui/..%2Fpackage.json`);
+    assert.notEqual(traversalEncoded.status, 200, 'an encoded dot-segment must not reach a file outside ui/');
+    const traversalNested = await fetch(`${base}/ui/sub/organism.js`);
+    assert.notEqual(traversalNested.status, 200, 'a path separator in the name must be refused');
+
+    const unknown = await fetch(`${base}/ui/does-not-exist.js`);
+    assert.equal(unknown.status, 404);
+    const unknownBody = await unknown.text();
+    assert.doesNotMatch(unknownBody, /<html/i, 'an unknown asset must not silently fall back to any page');
+
+    const listing = await fetch(`${base}/ui/`);
+    assert.notEqual(listing.status, 200, 'there is no directory listing');
+
+    const unmappedExtension = await fetch(`${base}/ui/ELEMENT-FIELD-TABLE.md`);
+    assert.notEqual(unmappedExtension.status, 200, 'an extension outside the content-type table (html/css/js/woff2/svg) is not served');
+  } finally {
+    await handle.kill();
     rmSync(stateDir, { recursive: true, force: true });
   }
 });

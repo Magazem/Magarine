@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { extname, join } from 'node:path';
 import { checkDaemonFile, type DaemonFileCheck } from '../daemon.ts';
 import { probeDaemonHealth } from '../daemonClient.ts';
+import { STATIC_CONTENT_TYPES, UI_DIR } from '../daemonApi.ts';
 import { resolveCommand, type ResolvedCommand } from '../process.ts';
 
 // `magarine doctor`: the owner's own first stop when something is wrong.
@@ -46,6 +47,30 @@ export interface DoctorOptions {
   runProbeFn?: (exe: string, args: string[]) => ProbeResult;
   /** Test-only seam: overrides the daemon-file staleness check (daemon.ts/daemonClient.ts). Defaults to the real `checkDaemonFile` + `probeDaemonHealth`. */
   checkDaemonFileFn?: (stateDir: string) => Promise<DaemonFileCheck>;
+  /** Batch 15 rulings 11/12: test-only seam, overrides which real filenames under packages/core/ui/ this check enumerates. Defaults to a real `readdirSync` of `UI_DIR`, filtered to `STATIC_CONTENT_TYPES`' own known extensions -- so this list and the daemon's own serving table can never drift apart from each other. */
+  listAssetNamesFn?: () => string[];
+  /** Test-only seam: overrides how one asset route is actually fetched. Defaults to a real `fetch()` against the live daemon's own port. */
+  fetchAssetFn?: (port: number, name: string) => Promise<{ ok: boolean; detail: string }>;
+}
+
+function listServableAssetNames(): string[] {
+  try {
+    return readdirSync(UI_DIR).filter((name) => extname(name) in STATIC_CONTENT_TYPES);
+  } catch {
+    return [];
+  }
+}
+
+async function realFetchAsset(port: number, name: string): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/ui/${name}`);
+    return {
+      ok: res.status === 200,
+      detail: res.status === 200 ? `200 (${res.headers.get('content-type') ?? 'no content-type'})` : `status ${res.status}`,
+    };
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 function realRunProbe(exe: string, args: string[]): ProbeResult {
@@ -236,6 +261,27 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
       name: 'daemon',
       status: 'pass',
       detail: 'not running -- start one with `magarine serve` when you want tickets to run on their own.',
+    });
+  }
+
+  // Batch 15 rulings 11/12, step 3's own acceptance line: "doctor fetches
+  // every asset route on a real install and prints PASS or FAIL per asset."
+  // Only meaningful against a LIVE daemon -- there is nothing to fetch from
+  // otherwise, so this is SKIP (not silently omitted, and not FAIL: an
+  // owner who has never run `serve` has done nothing wrong) rather than one
+  // line per asset that could never have been checked.
+  if (daemonCheck.status === 'live') {
+    const listAssetNames = options.listAssetNamesFn ?? listServableAssetNames;
+    const fetchAsset = options.fetchAssetFn ?? realFetchAsset;
+    for (const name of listAssetNames()) {
+      const probe = await fetchAsset(daemonCheck.info!.port, name);
+      lines.push({ name: `asset ${name}`, status: probe.ok ? 'pass' : 'fail', detail: probe.detail });
+    }
+  } else {
+    lines.push({
+      name: 'assets',
+      status: 'skip',
+      detail: 'no daemon running to fetch asset routes from -- start one with `magarine serve` and run doctor again to check them.',
     });
   }
 

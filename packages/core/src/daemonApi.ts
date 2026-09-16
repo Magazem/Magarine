@@ -1,5 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { extname, join as joinPath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Db } from './db/index.ts';
 import { buildActivity, buildTicketProgress } from './commands/activity.ts';
 import { approve, ApproveError } from './commands/approve.ts';
@@ -20,14 +23,14 @@ import {
   createTicket,
   getProject,
   getTicket,
+  listEventsSince,
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
 } from './store.ts';
-import type { AgentAdapter, DependencyType, WorkspaceType } from './types.ts';
-import { PAGE_HTML } from './ui/page.ts';
+import type { AgentAdapter, DependencyType, EventRow, WorkspaceType } from './types.ts';
 
 // The daemon's HTTP API -- docs/strategy/batch-8-spec.md section 2's route
 // list, verbatim: "GET /health, GET /board, GET /inbox, GET /activity, POST
@@ -385,6 +388,91 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
   throw new ApiError(404, 'not found');
 }
 
+// Batch 15 ruling 7 item 2: `GET /events?since=<sequence>`, `text/event-
+// stream`. Contract with Role B, fixed: an SSE frame's `id` is the event
+// row's own `sequence`, its event name is the row's own `event_type`, and
+// `data` is the event row as JSON. Included: `worker_progress` rows
+// (internal visibility, but explicitly named by the ruling) and every row
+// whose visibility is not `internal` -- i.e. exactly `activity`/`inbox`/
+// `urgent`, plus that one named exception.
+const EVENT_STREAM_POLL_MS = 200;
+const EVENT_STREAM_HEARTBEAT_MS = 15_000;
+
+function eventPassesStreamFilter(e: EventRow): boolean {
+  return e.eventType === 'worker_progress' || e.visibility !== 'internal';
+}
+
+function writeSseFrame(res: ServerResponse, event: EventRow): void {
+  res.write(`id: ${event.sequence}\nevent: ${event.eventType}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+// Batch 15 rulings 11/12: static files, served from THE PACKAGE, resolved
+// relative to this module -- not the daemon's cwd, which depends entirely
+// on where `magarine serve` happened to be invoked from. `packages/core/ui/`
+// is one level up from `src/`, where this file lives.
+export const UI_DIR = fileURLToPath(new URL('../ui/', import.meta.url));
+
+// The explicit table ruling 12 names: html, css, js, woff2 and svg -- an
+// extension with no row here is not served, full stop (no generic
+// fallback, no sniffing). Exported so commands/doctor.ts (this role's own
+// CLI-side consumer) can enumerate exactly the same set of real files this
+// route will actually answer for, from one source rather than two
+// hand-maintained lists that could drift apart.
+export const STATIC_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.svg': 'image/svg+xml',
+};
+
+// Ruling 12, verbatim: "a refusal for anything containing a path separator
+// or dot-segment." Decoded first, so an encoded traversal attempt (e.g.
+// `..%2Fpackage.json`) is caught by the same check as a literal one --
+// checking the raw, still-encoded string would let percent-encoding bypass
+// this refusal entirely. Checked BEFORE the name is ever joined onto
+// UI_DIR, so a rejected name never touches the filesystem at all.
+// Exported so the dot-segment guard can be unit-tested directly against the
+// exact boolean it returns, rather than only through a real filesystem
+// escape -- given the slash check alone already blocks every MULTI-segment
+// escape, and a bare ".." has no recognized extension either way (see the
+// content-type table above), a name that would exercise the dot-segment
+// check ALONE and still reach a real file past it does not exist on this
+// disk; testing the function's own logic directly is what makes this guard
+// provably present rather than merely redundant with the other two.
+export function isSafeAssetName(name: string): boolean {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    return false;
+  }
+  return decoded.length > 0 && !decoded.includes('/') && !decoded.includes('\\') && !decoded.includes('..');
+}
+
+function serveStaticAsset(res: ServerResponse, rawName: string): void {
+  if (!isSafeAssetName(rawName)) {
+    sendJson(res, 400, { error: `invalid asset name: ${rawName}` });
+    return;
+  }
+  const name = decodeURIComponent(rawName);
+  const contentType = STATIC_CONTENT_TYPES[extname(name)];
+  if (!contentType) {
+    sendJson(res, 404, { error: `not found: ${name}` });
+    return;
+  }
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(joinPath(UI_DIR, name));
+  } catch {
+    sendJson(res, 404, { error: `not found: ${name}` });
+    return;
+  }
+  res.statusCode = 200;
+  res.setHeader('Content-Type', contentType);
+  res.end(bytes);
+}
+
 // Returns a plain (req, res) => void handler suitable for node:http's
 // createServer -- the only thing serve.ts needs from this module. Auth is
 // checked before anything else, including body parsing, so a wrong or
@@ -402,18 +490,85 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
 // isAuthorized exactly as before; the page is static markup with no data of
 // its own, and ui/page.ts's own script attaches the token to every fetch()
 // it makes against the real (still-authenticated) routes.
-export function createRequestHandler(deps: DaemonApiDeps): (req: IncomingMessage, res: ServerResponse) => void {
-  return (req, res) => {
+//
+// Batch 15 ruling 7 item 2: this now returns an object, not a bare
+// function, so serve.ts can end every open `/events` stream response
+// BEFORE closing the http.Server -- Node's own `server.close()` only
+// invokes its callback once every connection has ended, and an SSE stream
+// this module never calls `res.end()` on would hang that callback
+// indefinitely on shutdown. `closeAllStreams()` is that hook; `handle` is
+// exactly what `createServer` needs, unchanged in shape from before.
+export interface RequestHandler {
+  handle: (req: IncomingMessage, res: ServerResponse) => void;
+  closeAllStreams: () => void;
+}
+
+export function createRequestHandler(deps: DaemonApiDeps): RequestHandler {
+  const activeStreams = new Map<ServerResponse, () => void>();
+
+  function handleEventsStream(req: IncomingMessage, res: ServerResponse, url: URL): void {
+    const sinceRaw = Number(url.searchParams.get('since'));
+    let cursor = Number.isFinite(sinceRaw) ? sinceRaw : 0;
+
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const flush = (): void => {
+      for (const event of listEventsSince(deps.db, cursor)) {
+        if (eventPassesStreamFilter(event)) writeSseFrame(res, event);
+        cursor = event.sequence;
+      }
+    };
+    flush();
+
+    const pollTimer = setInterval(flush, EVENT_STREAM_POLL_MS);
+    // Ruling 7 item 2, verbatim: "a comment line every fifteen seconds so a
+    // dead daemon is detectable within twenty" -- an SSE comment (a line
+    // starting with ':') carries no id/event/data, so a consumer parsing
+    // real frames (daemonClient.ts's consumeEventStream) never sees this as
+    // an event; it exists purely so a connection that has gone quiet is
+    // still provably alive, or provably not, on a bounded clock.
+    const heartbeatTimer = setInterval(() => res.write(': heartbeat\n\n'), EVENT_STREAM_HEARTBEAT_MS);
+
+    let closed = false;
+    const cleanup = (): void => {
+      if (closed) return;
+      closed = true;
+      clearInterval(pollTimer);
+      clearInterval(heartbeatTimer);
+      activeStreams.delete(res);
+    };
+    activeStreams.set(res, cleanup);
+    req.on('close', cleanup);
+  }
+
+  const handle = (req: IncomingMessage, res: ServerResponse): void => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      // Ruling 12: "GET / as ui/index.html", "GET /ui/<name>" -- both
+      // unauthenticated, same reasoning as the page's own long-standing
+      // exception below: the browser's native asset loading for a
+      // <script src>/<link>/@font-face never carries a custom Authorization
+      // header, so gating either behind the token would just break the page
+      // that requests them. `/ui/` itself (no name) is refused, not listed --
+      // isSafeAssetName's own empty-string check inside serveStaticAsset.
       if ((req.method ?? 'GET') === 'GET' && url.pathname === '/') {
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.end(PAGE_HTML);
+        serveStaticAsset(res, 'index.html');
+        return;
+      }
+      if ((req.method ?? 'GET') === 'GET' && url.pathname.startsWith('/ui/')) {
+        serveStaticAsset(res, url.pathname.slice('/ui/'.length));
         return;
       }
       if (!isAuthorized(req, deps.token)) {
         sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      if ((req.method ?? 'GET') === 'GET' && url.pathname === '/events') {
+        handleEventsStream(req, res, url);
         return;
       }
       try {
@@ -425,5 +580,15 @@ export function createRequestHandler(deps: DaemonApiDeps): (req: IncomingMessage
         sendJson(res, apiErr.status, { error: apiErr.message });
       }
     })();
+  };
+
+  return {
+    handle,
+    closeAllStreams(): void {
+      for (const [res, cleanup] of activeStreams) {
+        cleanup();
+        res.end();
+      }
+    },
   };
 }

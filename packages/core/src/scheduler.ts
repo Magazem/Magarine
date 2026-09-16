@@ -127,6 +127,11 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
     expectedOutputFormat: 'Write .orchestrator/result.json matching the WorkerResult schema.',
     maxBudgetUsd: resolveMaxBudgetUsd(project, ticket),
     model: resolveModel(project, ticket),
+    // Batch 15 item 4: absent (not an empty array) when the ticket carries
+    // no such list at all -- see envelope.ts's buildWorkerPrompt for why
+    // that distinction, not just "empty vs non-empty," is what decides
+    // whether a section is rendered.
+    ...(ticket.expectedArtifacts != null ? { expectedArtifacts: ticket.expectedArtifacts } : {}),
   };
 }
 
@@ -701,6 +706,41 @@ async function applyWorkerEventInner(
           payload: { errors: ['done with nothing delivered'], retryable: true, failureClass: 'malformed_result' },
         });
         return true;
+      }
+
+      // Batch 15 item 4: "DONE is verified against expected_artifacts when
+      // present." Null (no such list at all) keeps today's rule -- the
+      // check above is the only one that applies. When a list IS present,
+      // every entry of kind 'file' must appear among what the worker just
+      // declared (by path) -- not what is actually on disk; that filesystem
+      // check already happened one layer down, in claudeCli.ts's own
+      // verifyArtifacts, before this event could ever reach here as a
+      // 'success' outcome. This is a DIFFERENT failure mode: the ticket
+      // expected a file the worker never even declared trying to produce.
+      // Reuses the EXISTING retryable class (malformed_result), per the
+      // brief, rather than inventing a new one -- and sets `message` (not
+      // just `errors`), because commands/inbox.ts's `reasonFor` reads
+      // `message` before falling back to the bare failureClass, which is
+      // what makes the missing artefact's name actually reach the board.
+      if (result.status === 'done' && ticket.kind === 'work' && ticket.expectedArtifacts != null) {
+        const declaredFilePaths = new Set(
+          result.artifacts.filter((a): a is { kind: 'file'; path: string } => a.kind === 'file').map((a) => a.path)
+        );
+        const missing = ticket.expectedArtifacts
+          .filter((e) => e.kind === 'file' && e.path !== undefined)
+          .filter((e) => !declaredFilePaths.has(e.path!))
+          .map((e) => e.path!);
+        if (missing.length > 0) {
+          const message = `expected artefact(s) not produced: ${missing.join(', ')}`;
+          finishRun(db, run.id, { status: 'failed', failureClass: 'malformed_result' });
+          recordTicketTransition(db, {
+            ticketId: ticket.id,
+            event: 'worker_failure',
+            idempotencyKey: `worker_failure:${run.id}`,
+            payload: { errors: [message], message, retryable: true, failureClass: 'malformed_result' },
+          });
+          return true;
+        }
       }
 
       // Captured once here, ahead of the per-status branching below, since

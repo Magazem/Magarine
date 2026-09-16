@@ -421,6 +421,7 @@ export function computeStatusFromEvents(
       maxBudgetUsdOverride: null,
       model: null,
       kind: 'work',
+      expectedArtifacts: null,
       resultJson: null,
       createdAt: '',
       updatedAt: '',

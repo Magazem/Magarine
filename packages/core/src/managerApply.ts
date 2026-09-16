@@ -154,6 +154,7 @@ export function applyManagerProposal(
         model: c.model,
         modelReason: c.model_reason,
         maxBudgetUsdOverride: c.max_budget_usd,
+        expectedArtifacts: c.expected_artifacts,
       });
       createdByTitle.set(c.title, newTicket.id);
       created.push({ title: c.title, ticketId: newTicket.id });
@@ -228,6 +229,7 @@ export function applyManagerProposal(
             maxBudgetUsdOverride: c.max_budget_usd,
             model: c.model,
             modelReason: c.model_reason,
+            expectedArtifacts: c.expected_artifacts,
           });
           break;
         case 'request_user_decision':

@@ -1,5 +1,6 @@
+import { ARTIFACT_KINDS, type ArtifactKind } from './resultContract.ts';
 import { MIN_BUDGET_USD } from './store.ts';
-import type { TicketStatus } from './types.ts';
+import type { ExpectedArtifact, TicketStatus } from './types.ts';
 
 // The Manager's typed command schema, per docs/strategy/batch-9-spec.md
 // section 2 ("The command schema, exactly the document's list") -- FIVE
@@ -47,6 +48,8 @@ export interface CreateTicketCommand {
   /** Batch 12 item 3: required whenever `model` is set (see validateCommandShape) -- the Manager's own one-line justification for the choice, recorded on the ticket and shown on the board. */
   model_reason?: string;
   max_budget_usd?: number;
+  /** Batch 15 item 4: the ticket's own declared expectation of what DONE must have produced -- see types.ts's ExpectedArtifact. Absent means no such list at all, keeping today's rule (batch 13 ruling 1c). */
+  expected_artifacts?: ExpectedArtifact[];
 }
 
 export interface AddDependencyCommand {
@@ -110,6 +113,8 @@ export interface UpdateTicketCommand {
   model?: string;
   /** Batch 12 item 3: required whenever `model` is set, same rule as create_ticket's own field above. */
   model_reason?: string;
+  /** Batch 15 item 4: same shape and validation as create_ticket's own field above. Absent leaves the ticket's existing list untouched (store.ts's updateTicketFields); there is no way to CLEAR one through a proposal, matching every other optional field on this command. */
+  expected_artifacts?: ExpectedArtifact[];
 }
 
 export type ManagerCommand =
@@ -142,15 +147,15 @@ export const MAX_CREATE_TICKET_COMMANDS = 15;
 export const MANAGER_COMMAND_SCHEMA_DESCRIPTION = `A proposal is a JSON object: { "commands": [...], "rationale": "<string>" }.
 At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of them "create_ticket". Every command must be one of exactly these seven shapes -- no others exist:
 
-- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "max_budget_usd"?: <number> }
+- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "max_budget_usd"?: <number>, "expected_artifacts"?: [{ "kind": "file", "path": "<string>" } | { "kind": "text" | "url" | "reference" }, ...] }
 - { "type": "add_dependency", "ticket_id": "<existing ticket id>", "depends_on_ticket_id": "<existing ticket id>" }
 - { "type": "change_priority", "ticket_id": "<existing ticket id>", "priority": <number> }
 - { "type": "request_user_decision", "question": "<string>", "context": "<string>" }
 - { "type": "update_scope", "content": "<string, the WHOLE scope document, replacing what is there now>" }
 - { "type": "cancel_ticket", "ticket_id": "<existing, non-manager ticket id>" }
-- { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>" } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
+- { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "expected_artifacts"?: [{ "kind": "file", "path": "<string>" } | { "kind": "text" | "url" | "reference" }, ...] } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
 
-"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. Setting "model" on create_ticket or update_ticket without a non-empty "model_reason" is rejected: if you choose a model deliberately, say why in one line. Neither command accepts "workspace_type" -- every work ticket runs in the project's own one directory; there is no choice to make here. The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
+"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. Setting "model" on create_ticket or update_ticket without a non-empty "model_reason" is rejected: if you choose a model deliberately, say why in one line. Neither command accepts "workspace_type" -- every work ticket runs in the project's own one directory; there is no choice to make here. "expected_artifacts", when set on create_ticket or update_ticket, declares what DONE must have produced: each entry names a "kind" ("file", "text", "url", "reference", "manager_reply" or "manager_assessment"), and only kind "file" carries a "path" -- a declared file the worker does not produce fails the run, naming that file. Tickets with no "expected_artifacts" at all keep the ordinary rule ("done" requires at least one delivered artefact, no more specific check). The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
 
 const COMMAND_TYPES = new Set<ManagerCommand['type']>([
   'create_ticket',
@@ -210,6 +215,42 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === 'string');
 }
 
+// Batch 15 item 4: shared by create_ticket and update_ticket -- the proposal
+// validator rejects a malformed `expected_artifacts` list before any of it
+// reaches store.ts. Reuses resultContract.ts's own ARTIFACT_KINDS enum
+// rather than a second, independently-maintained kind list: this is the
+// same set a WORKER's own declared artifacts must belong to, so the two can
+// never drift out of sync with each other. Only kind 'file' carries a
+// `path` (non-empty, required); every other kind must NOT carry one --
+// there is nothing for a non-file kind's path to mean, and accepting one
+// silently would just be ignored later, which this project's own standing
+// rule treats as a defect to prevent rather than tolerate quietly.
+function validateExpectedArtifacts(value: unknown, prefix: string): string[] {
+  if (!Array.isArray(value)) {
+    return [`${prefix}.expected_artifacts must be an array when present`];
+  }
+  const errors: string[] = [];
+  value.forEach((entry, i) => {
+    const entryPrefix = `${prefix}.expected_artifacts[${i}]`;
+    if (!isPlainObject(entry) || typeof entry.kind !== 'string') {
+      errors.push(`${entryPrefix} must be an object with a string "kind"`);
+      return;
+    }
+    if (!(ARTIFACT_KINDS as readonly string[]).includes(entry.kind)) {
+      errors.push(`${entryPrefix}.kind "${entry.kind}" is not one of ${ARTIFACT_KINDS.join(', ')}`);
+      return;
+    }
+    if (entry.kind === ('file' satisfies ArtifactKind)) {
+      if (typeof entry.path !== 'string' || entry.path.length === 0) {
+        errors.push(`${entryPrefix} with kind "file" must have a non-empty string "path"`);
+      }
+    } else if (entry.path !== undefined) {
+      errors.push(`${entryPrefix} with kind "${entry.kind}" must not have a "path" -- only kind "file" carries one`);
+    }
+  });
+  return errors;
+}
+
 // Phase 1: structural. Validates each command's own shape against its own
 // variant of the schema -- independent of the board, independent of every
 // OTHER command in the proposal. Returns every error found (not just the
@@ -267,6 +308,9 @@ function validateCommandShape(command: unknown, index: number): string[] {
         } else if (command.max_budget_usd < MIN_BUDGET_USD) {
           errors.push(`${prefix}.max_budget_usd must be at least $${MIN_BUDGET_USD.toFixed(2)}, got $${command.max_budget_usd.toFixed(2)}`);
         }
+      }
+      if (command.expected_artifacts !== undefined) {
+        errors.push(...validateExpectedArtifacts(command.expected_artifacts, prefix));
       }
       break;
     }
@@ -352,6 +396,9 @@ function validateCommandShape(command: unknown, index: number): string[] {
         errors.push(
           `${prefix}.workspace_type must not be set -- work tickets always run in the project's one directory; use \`ticket add --workspace NONE\` for the rare owner-requested exception`
         );
+      }
+      if (command.expected_artifacts !== undefined) {
+        errors.push(...validateExpectedArtifacts(command.expected_artifacts, prefix));
       }
       break;
     }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { daemonRequest, DaemonUnreachableError, probeDaemonHealth } from './daemonClient.ts';
+import { consumeEventStream, daemonRequest, DaemonUnreachableError, probeDaemonHealth } from './daemonClient.ts';
 import type { DaemonFileInfo } from './daemon.ts';
 
 // daemonRequest/probeDaemonHealth are generic HTTP-shaping utilities with no
@@ -135,4 +135,60 @@ test('probeDaemonHealth is false when nothing answers at all', async () => {
   const freePort = probe.port;
   await probe.close();
   assert.equal(await probeDaemonHealth(sampleInfo({ port: freePort })), false);
+});
+
+// Batch 15 ruling 7 item 2: consumeEventStream is daemonApi.ts's SSE route's
+// one consumer -- generic frame parsing tested here against a bare
+// node:http server writing raw SSE bytes, the same "no daemon-specific
+// behaviour" split this file's own header comment already draws for
+// daemonRequest/probeDaemonHealth. What a REAL daemon's real route emits is
+// daemonApi.test.ts's job, against the real spawned `magarine serve`.
+
+test('consumeEventStream sends the bearer token, never the token in the URL, and parses id/event/data frames in order, skipping comment (heartbeat) lines', async () => {
+  let receivedAuth: string | undefined;
+  let receivedUrl: string | undefined;
+  const target = await listen((req, res) => {
+    receivedAuth = req.headers.authorization;
+    receivedUrl = req.url;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.write('id: 3\nevent: worker_progress\ndata: {"sequence":3,"eventType":"worker_progress"}\n\n');
+    res.write(': heartbeat\n\n');
+    res.write('id: 4\nevent: worker_done\ndata: {"sequence":4,"eventType":"worker_done"}\n\n');
+    res.end();
+  });
+  try {
+    const events: Array<{ id: number; event: string; data: unknown }> = [];
+    for await (const event of consumeEventStream({ port: target.port, token: 'secret-token' }, { since: 2 })) {
+      events.push(event);
+    }
+    assert.equal(receivedAuth, 'Bearer secret-token');
+    assert.doesNotMatch(receivedUrl ?? '', /secret-token/, 'the token must never appear in the URL');
+    assert.match(receivedUrl ?? '', /since=2/);
+    assert.deepEqual(events, [
+      { id: 3, event: 'worker_progress', data: { sequence: 3, eventType: 'worker_progress' } },
+      { id: 4, event: 'worker_done', data: { sequence: 4, eventType: 'worker_done' } },
+    ]);
+  } finally {
+    await target.close();
+  }
+});
+
+test('consumeEventStream handles a frame split across multiple TCP chunks', async () => {
+  const target = await listen((_req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.write('id: 1\nev');
+    setTimeout(() => {
+      res.write('ent: x\ndata: {"sequence":1}\n\n');
+      res.end();
+    }, 10);
+  });
+  try {
+    const events: Array<{ id: number; event: string; data: unknown }> = [];
+    for await (const event of consumeEventStream({ port: target.port, token: 't' })) {
+      events.push(event);
+    }
+    assert.deepEqual(events, [{ id: 1, event: 'x', data: { sequence: 1 } }]);
+  } finally {
+    await target.close();
+  }
 });

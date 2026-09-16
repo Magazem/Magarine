@@ -47,6 +47,20 @@ export interface Project {
   updatedAt: string;
 }
 
+// Batch 15 item 4: a ticket's own declared expectation of what DONE must
+// have produced -- structurally the same "kind, and for kind file a path"
+// shape resultContract.ts's ARTIFACT_KINDS/ARTIFACT_KIND_FIELD already
+// enumerate for what a WORKER reports, but this is the opposite direction:
+// what the TICKET expects, set at create_ticket/update_ticket time, before
+// any run exists to report anything at all. `path` is meaningful only for
+// kind 'file' (the only kind this batch can actually verify against a real
+// filesystem or a worker's own declared artifact list -- see scheduler.ts's
+// DONE-verification check); present but unused for every other kind.
+export interface ExpectedArtifact {
+  kind: string;
+  path?: string;
+}
+
 export interface Ticket {
   id: string;
   projectId: string;
@@ -68,6 +82,8 @@ export interface Ticket {
   modelReason: string | null;
   /** Batch 9: 'work' (default) or 'manager' -- see TicketKind. */
   kind: TicketKind;
+  /** Batch 15 item 4: set on create_ticket/update_ticket; null means the ticket carries no such list at all and keeps today's rule (no verification beyond "done requires something delivered," batch 13 ruling 1c). Non-null means DONE is verified against it -- see scheduler.ts. */
+  expectedArtifacts: ExpectedArtifact[] | null;
   resultJson: string | null;
   createdAt: string;
   updatedAt: string;
@@ -162,6 +178,8 @@ export interface TicketEnvelope {
   maxBudgetUsd: number;
   /** Batch 6: ticket override if set, else the project default (see store.ts's resolveModel). The adapter passes this via `--model` and records it in usage_json -- nothing about a worker's cost or capability may depend on the owner's desktop default. */
   model: string;
+  /** Batch 15 item 4: the ticket's own declared expectation, carried through so the worker sees what it is expected to produce. Absent (not an empty array) when the ticket has no such list -- see envelope.ts's buildWorkerPrompt for the rendering rule this distinction drives. */
+  expectedArtifacts?: ExpectedArtifact[];
 }
 
 export interface WorkerHandle {

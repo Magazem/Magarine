@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ClaudeCliAdapter } from './claudeCli.ts';
+import { ClaudeCliAdapter, isTestRunnerCommand } from './claudeCli.ts';
 import { testTempRoot } from '../testSupport.ts';
 import { rmSyncResilient } from '../db/testSupport.ts';
 import type { TicketEnvelope, WorkerEvent } from '../types.ts';
@@ -327,6 +327,169 @@ test('batch 5 item 4: the calibration fixture\'s stream carries no per-message c
   const resultLines = lines.filter((l) => l.type === 'result');
   assert.equal(resultLines.length, 1, 'total_cost_usd must appear on exactly the one terminal result line');
   assert.equal(typeof resultLines[0].total_cost_usd, 'number');
+});
+
+// Batch 15 addendum 3 (ruling 14, sourcing "testing" at the adapter rather
+// than downstream): `isTestRunnerCommand` is the pure predicate
+// `describeProgress` asks, below, before it will ever say "(test runner)".
+// Token match, not substring -- `cat test.md` must not count just because
+// the four letters "test" appear in the file name it names as an argument.
+// One positive and one negative case per runner the ruling names by name.
+const TEST_RUNNER_CASES: Array<{ runner: string; positive: string; negative: string }> = [
+  { runner: 'pnpm test', positive: 'pnpm test', negative: 'pnpm install' },
+  { runner: 'npm test', positive: 'npm test', negative: 'npm run build' },
+  { runner: 'yarn test', positive: 'yarn test', negative: 'yarn add jest' },
+  { runner: 'node --test', positive: 'node --test', negative: 'node server.js' },
+  { runner: 'vitest', positive: 'vitest', negative: 'cat vitest.config.js' },
+  { runner: 'jest', positive: 'jest', negative: 'cat jest.config.js' },
+  { runner: 'mocha', positive: 'mocha', negative: 'cat mocha.opts' },
+  { runner: 'pytest', positive: 'pytest', negative: 'pip install pytest' },
+  { runner: 'cargo test', positive: 'cargo test', negative: 'cargo build' },
+  { runner: 'go test', positive: 'go test ./...', negative: 'go build ./...' },
+  { runner: 'dotnet test', positive: 'dotnet test', negative: 'dotnet build' },
+];
+
+for (const { runner, positive, negative } of TEST_RUNNER_CASES) {
+  test(`isTestRunnerCommand: "${positive}" (${runner}) is a test runner`, () => {
+    assert.equal(isTestRunnerCommand(positive), true);
+  });
+  test(`isTestRunnerCommand: "${negative}" (looks near ${runner} but is not) is not a test runner`, () => {
+    assert.equal(isTestRunnerCommand(negative), false);
+  });
+}
+
+test('isTestRunnerCommand: "cat test.md" is not a test runner -- token match, not substring', () => {
+  assert.equal(isTestRunnerCommand('cat test.md'), false);
+});
+
+test('isTestRunnerCommand: a test runner chained after other commands is still recognised', () => {
+  assert.equal(isTestRunnerCommand('cd packages/core && pnpm test'), true);
+});
+
+// Ruling 14 item 3: no fragment of the command reaches the message --
+// checked through the real pipeline (fake exe, real ClaudeCliAdapter), not
+// just against describeProgress's return value in isolation, so a future
+// change anywhere between the tool_use block and the published WorkerEvent
+// would still be caught here.
+test('describeProgress: a Bash command carrying a secret is never echoed into the progress message, even when it is a test runner', async () => {
+  const synthDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-secret-leak-'));
+  const stdoutFile = join(synthDir, 'stdout.txt');
+  const lines = [
+    { type: 'system', subtype: 'init' },
+    {
+      type: 'assistant',
+      message: {
+        id: 'msg_secret_1',
+        model: 'claude-sonnet-5',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_secret_1',
+            name: 'Bash',
+            input: { command: 'export SECRET=abc123 && pnpm test' },
+          },
+        ],
+      },
+    },
+    { type: 'result', total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+  writeFileSync(stdoutFile, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+  try {
+    const { events, workspaceRoot } = await runOnce({
+      stdoutFile,
+      exitCode: 0,
+      createFiles: {
+        '.orchestrator/result.json': JSON.stringify({
+          status: 'ready_for_review',
+          summary: 'ok',
+          artifacts: [],
+          checks: [],
+          blockers: [],
+          questions: [],
+        }),
+      },
+    });
+    try {
+      const progressMessages = events
+        .filter((e): e is { type: 'progress'; message: string } => e.type === 'progress')
+        .map((e) => e.message);
+      assert.ok(progressMessages.includes('tool_use: Bash (test runner)'));
+      for (const message of progressMessages) {
+        assert.equal(message.includes('abc123'), false, `progress message leaked the secret: ${message}`);
+        assert.equal(message.includes('export'), false, `progress message leaked a command fragment: ${message}`);
+        assert.equal(message.includes('pnpm'), false, `progress message leaked a command fragment: ${message}`);
+      }
+    } finally {
+      await rmSyncResilient(workspaceRoot);
+    }
+  } finally {
+    rmSync(synthDir, { recursive: true, force: true });
+  }
+});
+
+// Ruling 14 item 4: a REAL recorded stream-json line drives describeProgress
+// and classifyProgressMessage (activity.ts) end to end. Two runs against the
+// SAME real assistant/Bash line: unmodified (its own real command is not a
+// test runner) proves the ordinary `running` path is unaffected by this
+// change; with ONLY its `input.command` replaced (no recorded fixture in
+// this repo names a real test-runner invocation -- grepped, none found)
+// proves the new `testing` path is reachable from a real recorded shape,
+// not just synthetic input.
+test('describeProgress + classifyProgressMessage, end to end, against the real recorded Bash tool_use line in 2026-09-12T14-15-13-624Z-stream (unmodified: running; with input.command replaced -- no fixture in this repo names a real test-runner command -- testing)', async () => {
+  const realStdout = fixturePath('2026-09-12T14-15-13-624Z-stream', 'stdout.txt');
+  const realLines = readFileSync(realStdout, 'utf8').split('\n');
+  const bashLineIndex = realLines.findIndex((l) => l.includes('"name":"Bash"') || l.includes('"name": "Bash"'));
+  assert.ok(bashLineIndex >= 0, 'sanity: the fixture must actually contain a Bash tool_use line');
+  const bashLine = JSON.parse(realLines[bashLineIndex]) as {
+    message: { content: Array<Record<string, unknown>> };
+  };
+  const bashBlock = bashLine.message.content.find((b) => b.type === 'tool_use' && b.name === 'Bash')!;
+  const realCommand = (bashBlock.input as { command: string }).command;
+  assert.equal(isTestRunnerCommand(realCommand), false, 'sanity: the real recorded command must not itself be a test runner');
+
+  // Run 1: the real line, byte-for-byte, unmodified.
+  {
+    const { events, workspaceRoot } = await runOnce({
+      stdoutFile: realStdout,
+      exitCode: 0,
+      createFiles: { 'hello.txt': 'hello from magarine worker' },
+    });
+    try {
+      const progress = events.filter((e): e is { type: 'progress'; message: string } => e.type === 'progress');
+      assert.ok(progress.some((e) => e.message === 'tool_use: Bash'));
+      assert.equal(progress.some((e) => e.message === 'tool_use: Bash (test runner)'), false);
+    } finally {
+      await rmSyncResilient(workspaceRoot);
+    }
+  }
+
+  // Run 2: the SAME real line, with ONLY input.command replaced.
+  const synthDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-real-line-testrunner-'));
+  const modifiedStdout = join(synthDir, 'stdout.txt');
+  const modifiedLines = realLines.slice();
+  const modifiedBashLine = JSON.parse(realLines[bashLineIndex]) as { message: { content: Array<Record<string, unknown>> } };
+  const modifiedBashBlock = modifiedBashLine.message.content.find((b) => b.type === 'tool_use' && b.name === 'Bash')!;
+  (modifiedBashBlock.input as { command: string }).command = 'pnpm test';
+  modifiedLines[bashLineIndex] = JSON.stringify(modifiedBashLine);
+  writeFileSync(modifiedStdout, modifiedLines.join('\n'));
+
+  try {
+    const { events, workspaceRoot } = await runOnce({
+      stdoutFile: modifiedStdout,
+      exitCode: 0,
+      createFiles: { 'hello.txt': 'hello from magarine worker' },
+    });
+    try {
+      const progress = events.filter((e): e is { type: 'progress'; message: string } => e.type === 'progress');
+      const testRunnerEvent = progress.find((e) => e.message === 'tool_use: Bash (test runner)');
+      assert.ok(testRunnerEvent, 'expected a progress event for the replaced Bash test-runner command');
+    } finally {
+      await rmSyncResilient(workspaceRoot);
+    }
+  } finally {
+    rmSync(synthDir, { recursive: true, force: true });
+  }
 });
 
 test('artefact verification: a schema-valid result claiming an artefact that was never written is classified retryable', async () => {

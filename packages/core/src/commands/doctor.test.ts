@@ -379,6 +379,62 @@ test('no daemon running is reported as informational, not a failure', async () =
   assert.match(daemonLine.detail, /not running/);
 });
 
+// Batch 15 rulings 11/12, step 3's own acceptance line: "doctor fetches
+// every asset route on a real install and prints PASS or FAIL per asset."
+// Only meaningful against a LIVE daemon (nothing to fetch from otherwise) --
+// see the SKIP test right after this one for that case.
+
+test('a live daemon: doctor fetches every listed asset name against it and prints one PASS/FAIL line per asset', async () => {
+  const fetched: Array<{ port: number; name: string }> = [];
+  const lines = await runDoctor({
+    stateDir: tempStateDir(),
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
+    runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
+    checkDaemonFileFn: async () => ({
+      status: 'live',
+      info: { pid: 4242, port: 55123, token: 'x', startedAt: '2026-01-01T00:00:00.000Z', dbPath: '/x/magarine.db' },
+    }),
+    listAssetNamesFn: () => ['organism.js', 'tokens.css', 'IBMPlexSans.woff2'],
+    fetchAssetFn: async (port, name) => {
+      fetched.push({ port, name });
+      return name === 'IBMPlexSans.woff2'
+        ? { ok: false, detail: 'status 404' }
+        : { ok: true, detail: '200 (text/javascript; charset=utf-8)' };
+    },
+  });
+
+  assert.deepEqual(
+    fetched.map((f) => f.name),
+    ['organism.js', 'tokens.css', 'IBMPlexSans.woff2']
+  );
+  assert.ok(fetched.every((f) => f.port === 55123), 'every asset must be fetched against the live daemon\'s own port');
+
+  const organismLine = lines.find((l) => l.name === 'asset organism.js')!;
+  assert.equal(organismLine.status, 'pass');
+  const fontLine = lines.find((l) => l.name === 'asset IBMPlexSans.woff2')!;
+  assert.equal(fontLine.status, 'fail');
+  assert.match(fontLine.detail, /404/);
+});
+
+test('no daemon running: asset routes are reported SKIP (nothing to fetch from), not silently omitted and not FAIL', async () => {
+  let fetchCalled = false;
+  const lines = await runDoctor({
+    stateDir: tempStateDir(),
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
+    runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
+    checkDaemonFileFn: notLive,
+    listAssetNamesFn: () => ['organism.js'],
+    fetchAssetFn: async () => {
+      fetchCalled = true;
+      return { ok: true, detail: '200' };
+    },
+  });
+  const assetLine = lines.find((l) => l.name === 'assets')!;
+  assert.equal(assetLine.status, 'skip');
+  assert.match(assetLine.detail, /magarine serve/);
+  assert.equal(fetchCalled, false, 'nothing should be fetched when there is no live daemon to fetch from');
+});
+
 test('doctorExitCode is 0 only when every line passes, and SKIP does not count as failing', async () => {
   const allPass = await runDoctor({
     stateDir: tempStateDir(),

@@ -7,6 +7,7 @@ import type {
   DependencyType,
   EventRow,
   EventVisibility,
+  ExpectedArtifact,
   Project,
   Run,
   RunStatus,
@@ -332,6 +333,7 @@ interface TicketRow {
   model: string | null;
   model_reason: string | null;
   kind: string;
+  expected_artifacts_json: string | null;
   result_json: string | null;
   created_at: string;
   updated_at: string;
@@ -355,6 +357,7 @@ function rowToTicket(row: TicketRow): Ticket {
     model: row.model,
     modelReason: row.model_reason,
     kind: row.kind as TicketKind,
+    expectedArtifacts: row.expected_artifacts_json != null ? JSON.parse(row.expected_artifacts_json) : null,
     resultJson: row.result_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -376,6 +379,8 @@ export function createTicket(
     model?: string | null;
     modelReason?: string | null;
     kind?: TicketKind;
+    /** Batch 15 item 4: null (the default) means no such list at all -- see types.ts's Ticket.expectedArtifacts. */
+    expectedArtifacts?: ExpectedArtifact[] | null;
   }
 ): Ticket {
   if (input.maxBudgetUsdOverride != null) {
@@ -388,8 +393,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, max_budget_usd_override, model, model_reason, kind, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, model, model_reason, kind, expected_artifacts_json, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -415,6 +420,7 @@ export function createTicket(
     input.model ?? null,
     input.modelReason ?? null,
     input.kind ?? 'work',
+    input.expectedArtifacts != null ? JSON.stringify(input.expectedArtifacts) : null,
     now,
     now
   );
@@ -460,6 +466,8 @@ export function updateTicketFields(
     maxBudgetUsdOverride?: number;
     model?: string;
     modelReason?: string;
+    /** Batch 15 item 4: `undefined` (the default) leaves the ticket's existing list untouched; `null` explicitly clears it back to "no such list"; a real array replaces it whole. */
+    expectedArtifacts?: ExpectedArtifact[] | null;
   }
 ): void {
   if (fields.maxBudgetUsdOverride != null) {
@@ -491,6 +499,10 @@ export function updateTicketFields(
   if (fields.modelReason !== undefined) {
     sets.push('model_reason = ?');
     values.push(fields.modelReason);
+  }
+  if (fields.expectedArtifacts !== undefined) {
+    sets.push('expected_artifacts_json = ?');
+    values.push(fields.expectedArtifacts != null ? JSON.stringify(fields.expectedArtifacts) : null);
   }
   if (sets.length === 0) return;
 
@@ -805,6 +817,18 @@ export function listEventsForProject(db: Db, projectId: string): EventRow[] {
   const rows = db
     .prepare('SELECT * FROM events WHERE project_id = ? ORDER BY sequence ASC')
     .all(projectId) as EventDbRow[];
+  return rows.map(rowToEvent);
+}
+
+// Batch 15 ruling 7 item 2: the streamed event route's own read -- every
+// event after a sequence cursor, across every project. `events.sequence` is
+// one global autoincrement, not scoped per project (see db/schema.ts's
+// 0001_init), so this deliberately does not take a projectId the way
+// listEventsForProject does; the route's own contract with Role B is that
+// the full event row (including project_id) rides along on the wire, so a
+// per-project filter, if ever needed, happens on the read side.
+export function listEventsSince(db: Db, sequence: number): EventRow[] {
+  const rows = db.prepare('SELECT * FROM events WHERE sequence > ? ORDER BY sequence ASC').all(sequence) as EventDbRow[];
   return rows.map(rowToEvent);
 }
 

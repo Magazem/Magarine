@@ -108,3 +108,19 @@ test('prompt names budget_insufficient as the status to report when the worker c
   const prompt = buildWorkerPrompt(ticket({}), '/tmp/ws');
   assert.match(prompt, /"budget_insufficient"/);
 });
+
+// Batch 15 item 4: the worker envelope carries expected_artifacts.
+
+test('prompt lists expected artifacts, naming each declared file path, when the ticket has a list', () => {
+  const prompt = buildWorkerPrompt(
+    ticket({ expectedArtifacts: [{ kind: 'file', path: 'out.txt' }, { kind: 'text' }] }),
+    '/tmp/ws'
+  );
+  assert.match(prompt, /out\.txt/);
+  assert.match(prompt, /Expected artifacts/i);
+});
+
+test('prompt has no expected-artifacts section at all when the ticket carries no such list', () => {
+  const prompt = buildWorkerPrompt(ticket({ expectedArtifacts: undefined }), '/tmp/ws');
+  assert.doesNotMatch(prompt, /Expected artifacts/i);
+});

@@ -354,6 +354,44 @@ test('update_ticket updates the named fields on an existing work ticket and neve
   assert.equal(updated.status, 'READY');
 });
 
+// --- Batch 15 item 4: expected_artifacts flows through create_ticket/update_ticket ---
+
+test('create_ticket with expected_artifacts persists the list on the new ticket; without it, the ticket has none', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [
+      { type: 'create_ticket', title: 'With list', description: 'd', acceptance_criteria: [], expected_artifacts: [{ kind: 'file', path: 'out.txt' }] },
+      { type: 'create_ticket', title: 'Without list', description: 'd', acceptance_criteria: [] },
+    ],
+  });
+
+  assert.equal(result.outcome, 'applied');
+  const withList = getTicket(db, (result as { created: Array<{ title: string; ticketId: string }> }).created.find((c) => c.title === 'With list')!.ticketId)!;
+  assert.deepEqual(withList.expectedArtifacts, [{ kind: 'file', path: 'out.txt' }]);
+  const withoutList = getTicket(db, (result as { created: Array<{ title: string; ticketId: string }> }).created.find((c) => c.title === 'Without list')!.ticketId)!;
+  assert.equal(withoutList.expectedArtifacts, null);
+});
+
+test('update_ticket with expected_artifacts sets the list on an existing ticket that had none', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const target = createTicket(db, { projectId: project.id, title: 'Target' });
+  assert.equal(target.expectedArtifacts, null);
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [{ type: 'update_ticket', ticket_id: target.id, expected_artifacts: [{ kind: 'file', path: 'result.json' }] }],
+  });
+
+  assert.equal(result.outcome, 'applied');
+  assert.deepEqual(getTicket(db, target.id)!.expectedArtifacts, [{ kind: 'file', path: 'result.json' }]);
+});
+
 test('rollback: cancel_ticket and update_ticket both roll back with the rest of the transaction on a later synthetic failure', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });

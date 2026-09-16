@@ -9,10 +9,10 @@ import { buildTicketProgress, classifyProgressMessage, classifyToolActivity, for
 // pure core (tool name + optional Bash command in, ActivityState out);
 // `classifyProgressMessage` is the thin adapter over the free-text
 // `message` string both AgentAdapter implementations already produce
-// (claudeCli.ts's `describeProgress`: `tool_use: <name>`), chosen because
-// this role's files do not include either adapter -- see the module
-// comment in activity.ts for the real-adapter limitation this implies for
-// the Bash/testing branch specifically.
+// (claudeCli.ts's `describeProgress`: `tool_use: <name>`, and, per batch 15
+// addendum 3 ruling 14, `tool_use: Bash (test runner)` sourced at the
+// adapter itself -- see claudeCli.ts's isTestRunnerCommand, that file's own
+// role to own).
 
 test('classifyToolActivity: Read is reading', () => {
   assert.equal(classifyToolActivity('Read'), 'reading');
@@ -76,12 +76,14 @@ test('classifyProgressMessage: parses "tool_use: <name>" the way claudeCli.ts\'s
   assert.equal(classifyProgressMessage('tool_use: StructuredOutput'), 'finishing');
 });
 
-test('classifyProgressMessage: a Bash tool_use message carries no command text today, so it is always running, never testing', () => {
-  // Known limitation: claudeCli.ts's describeProgress discards block.input,
-  // so the real adapter's message for a Bash test-runner invocation is
-  // indistinguishable from an ordinary one. See activity.ts's header
-  // comment.
+// Batch 15 addendum 3 (ruling 14): testing is live -- claudeCli.ts's
+// describeProgress now sources the "(test runner)" marker at the adapter,
+// from isTestRunnerCommand, and never forwards the raw command text (see
+// claudeCli.test.ts's own secret-leak test). This function reads exactly
+// that marker back off the message.
+test('classifyProgressMessage: "tool_use: Bash" (no marker) is running; "tool_use: Bash (test runner)" is testing', () => {
   assert.equal(classifyProgressMessage('tool_use: Bash'), 'running');
+  assert.equal(classifyProgressMessage('tool_use: Bash (test runner)'), 'testing');
 });
 
 test('classifyProgressMessage: any non-tool_use message (text, assistant message, session init, ...) is reporting', () => {

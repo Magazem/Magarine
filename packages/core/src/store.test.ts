@@ -16,7 +16,9 @@ import {
   isProjectAdapterPaused,
   listArtifactsForTicket,
   MIN_BUDGET_USD,
+  insertEvent,
   listEventsForProject,
+  listEventsSince,
   listRunsForTicket,
   pauseProjectAdapter,
   projectSpendUsd,
@@ -90,6 +92,35 @@ test('createTicket defaults kind to \'work\' and accepts \'manager\'', () => {
 
   const managerTicket = createTicket(db, { projectId: project.id, title: 'plan: do the thing', kind: 'manager' });
   assert.equal(managerTicket.kind, 'manager');
+});
+
+// --- Batch 15 item 4: expected_artifacts, set at create_ticket/update_ticket time ---
+
+test('createTicket defaults expectedArtifacts to null and accepts a real list, round-tripped through getTicket', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+
+  const noList = createTicket(db, { projectId: project.id, title: 'no list' });
+  assert.equal(noList.expectedArtifacts, null);
+
+  const list = [{ kind: 'file', path: 'out.txt' }, { kind: 'text' }];
+  const withList = createTicket(db, { projectId: project.id, title: 'with list', expectedArtifacts: list });
+  assert.deepEqual(withList.expectedArtifacts, list);
+  assert.deepEqual(getTicket(db, withList.id)!.expectedArtifacts, list);
+});
+
+test('updateTicketFields sets expectedArtifacts on an existing ticket that had none, and clears it back to null', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+  assert.equal(ticket.expectedArtifacts, null);
+
+  const list = [{ kind: 'file', path: 'result.json' }];
+  updateTicketFields(db, ticket.id, { expectedArtifacts: list });
+  assert.deepEqual(getTicket(db, ticket.id)!.expectedArtifacts, list);
+
+  updateTicketFields(db, ticket.id, { expectedArtifacts: null });
+  assert.equal(getTicket(db, ticket.id)!.expectedArtifacts, null);
 });
 
 test('createProject defaults managerModel to null and accepts an override', () => {
@@ -486,4 +517,22 @@ test('listRunsForTicket returns every run for a ticket, oldest attempt first, an
   const runs = listRunsForTicket(db, a.id);
   assert.deepEqual(runs.map((r) => r.id), [run1.id, run2.id]);
   assert.equal(listRunsForTicket(db, 'tkt_nonexistent').length, 0);
+});
+
+// --- Batch 15 ruling 7 item 2: the streamed event route reads forward from
+// a sequence cursor, across every project (the events table's own sequence
+// is a single global autoincrement, not scoped per project).
+
+test('listEventsSince returns every event with sequence strictly greater than the given cursor, ascending, across every project', () => {
+  const db = openDb(':memory:');
+  const p1 = createProject(db, { name: 'p1' });
+  const p2 = createProject(db, { name: 'p2' });
+
+  const e1 = insertEvent(db, { projectId: p1.id, eventType: 'a', entityType: 'ticket', entityId: 't1', idempotencyKey: 'k1' });
+  const e2 = insertEvent(db, { projectId: p2.id, eventType: 'b', entityType: 'ticket', entityId: 't2', idempotencyKey: 'k2' });
+  const e3 = insertEvent(db, { projectId: p1.id, eventType: 'c', entityType: 'ticket', entityId: 't1', idempotencyKey: 'k3' });
+
+  assert.deepEqual(listEventsSince(db, 0).map((e) => e.sequence), [e1.sequence, e2.sequence, e3.sequence]);
+  assert.deepEqual(listEventsSince(db, e1.sequence!).map((e) => e.sequence), [e2.sequence, e3.sequence]);
+  assert.deepEqual(listEventsSince(db, e3.sequence!), []);
 });

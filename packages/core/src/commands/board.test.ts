@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../db/index.ts';
-import { createArtifact, createProject, createRun, createTicket, insertEvent, pauseProjectAdapter, updateTicketFields } from '../store.ts';
+import { createArtifact, createProject, createRun, createTicket, getTicket, insertEvent, pauseProjectAdapter, updateTicketFields } from '../store.ts';
 import { recordTicketTransition } from '../stateMachine.ts';
 import { buildBoard, formatBoard, truncateTitleForDisplay } from './board.ts';
 
@@ -218,6 +218,63 @@ test('buildBoard reports latestActivity null for a ticket that is not IN_PROGRES
 // without it, a stray running-status run row on a settled/never-started
 // ticket would leak an activity marker for work that, from the ticket's own
 // point of view, either never started or is already over.
+// Batch 15 item 4: "the run's failure reason says so on the board" -- a
+// FAILED ticket's row carries the same human-readable reason the inbox
+// already computes (commands/inbox.ts's reasonFor), read from its most
+// recent worker_failed_final event. Any FAILED ticket, not just the
+// expected-artefacts case specifically -- the missing piece was a board
+// field to carry it at all, not a special case for one failure kind.
+test('buildBoard reports lastFailureReason for a FAILED ticket, naming a missing expected artefact when that is why it failed', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't' });
+  moveToInProgress(db, ticket.id);
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_failure',
+    idempotencyKey: 'wf1',
+    payload: {
+      errors: ['expected artefact(s) not produced: out.txt'],
+      message: 'expected artefact(s) not produced: out.txt',
+      retryable: false,
+      failureClass: 'malformed_result',
+    },
+  });
+
+  const row = buildBoard(db, project.id).tickets.find((t) => t.id === ticket.id)!;
+  assert.equal(row.status, 'FAILED');
+  assert.match(row.lastFailureReason ?? '', /out\.txt/);
+});
+
+test('buildBoard reports lastFailureReason null for a ticket that has never failed', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'never run' });
+
+  const row = buildBoard(db, project.id).tickets.find((t) => t.id === ticket.id)!;
+  assert.equal(row.lastFailureReason, null);
+});
+
+test('buildBoard reports lastFailureReason null for a ticket that failed once but was retried back to READY', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 1 });
+  moveToInProgress(db, ticket.id);
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_failure',
+    idempotencyKey: 'wf1',
+    payload: { retryable: false, failureClass: 'worker_reported_failure' },
+  });
+  assert.equal(getTicket(db, ticket.id)!.status, 'FAILED');
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'manual_retry', idempotencyKey: 'retry1' });
+  assert.equal(getTicket(db, ticket.id)!.status, 'READY');
+
+  const row = buildBoard(db, project.id).tickets.find((t) => t.id === ticket.id)!;
+  assert.equal(row.status, 'READY');
+  assert.equal(row.lastFailureReason, null);
+});
+
 test('buildBoard reports latestActivity null for a ticket that has a running run but whose own status is not IN_PROGRESS', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });

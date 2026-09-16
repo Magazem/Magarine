@@ -3,7 +3,23 @@ import { isKnownModel } from '../pricing.ts';
 import { getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
 import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
 import type { ActivityState } from './activity.ts';
-import { describeProjectPause } from './inbox.ts';
+import { describeProjectPause, reasonFor } from './inbox.ts';
+
+// Batch 15 item 4: "the run's failure reason says so on the board." Only
+// meaningful while the ticket is actually sitting in FAILED -- a ticket
+// that failed once and was since retried back to READY (or beyond) is not
+// currently failing, so its stale last reason would mislead a reader into
+// thinking a live problem still exists. Reuses reasonFor (commands/
+// inbox.ts) rather than a second, board-specific rendering of the same
+// event, so the board and the inbox can never say two different things
+// about the same failure.
+function computeLastFailureReason(db: Db, ticket: Ticket): string | null {
+  if (ticket.status !== 'FAILED') return null;
+  const events = listEventsForEntity(db, 'ticket', ticket.id).filter((e) => e.eventType === 'worker_failed_final');
+  const last = events.at(-1);
+  if (!last) return null;
+  return reasonFor(last.eventType, last.payload, ticket.id);
+}
 
 // Ruling 7 (batch-15-spec.md section 3, Role A item 1): the shape of a
 // board row's own activity marker, contract-fixed with Role B: `state` is
@@ -80,6 +96,8 @@ export interface BoardTicket {
   artifacts: BoardArtifact[];
   /** Batch 15 ruling 7: the current run's most recent worker_progress event, mapped to an activity state -- null for any ticket not currently IN_PROGRESS, or one that is but has not reported progress yet. See LatestActivity/computeLatestActivity above. */
   latestActivity: LatestActivity | null;
+  /** Batch 15 item 4: the reason for a ticket's own current FAILED status, the same rendering the inbox uses for the same event -- null for any ticket not currently FAILED. See computeLastFailureReason above. */
+  lastFailureReason: string | null;
   blockedBy: string[];
 }
 
@@ -211,6 +229,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
           content: a.kind === 'file' ? a.pathOrUri : (a.text ?? ''),
         })),
         latestActivity: computeLatestActivity(db, t),
+        lastFailureReason: computeLastFailureReason(db, t),
         blockedBy: blockingDependencies(db, t),
       };
     }),
@@ -301,7 +320,8 @@ export function formatBoard(result: BoardResult): string {
           ? `artifacts (${t.artifacts.length}): ${t.artifacts.map((a) => a.content).join(', ')}`
           : '';
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
-      const parts = [t.id, t.status, title, attempts, cost, model, artifacts, blocked].filter((p) => p.length > 0);
+      const failureReason = t.lastFailureReason ? `reason: ${t.lastFailureReason}` : '';
+      const parts = [t.id, t.status, title, attempts, cost, model, artifacts, blocked, failureReason].filter((p) => p.length > 0);
       return parts.join('\t');
     })
     .join('\n');

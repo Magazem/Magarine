@@ -773,6 +773,70 @@ test('progress events are persisted as worker_progress internal events on the ru
   assert.equal(progressEvents[0].visibility, 'internal');
 });
 
+// --- Batch 15 item 4: DONE verified against expected_artifacts, when the ticket declares one ---
+
+test('a ticket that declares expected_artifacts but whose worker never produces the declared file reaches the retryable class, naming the missing artefact', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, {
+    projectId: project.id,
+    title: 'declares a file it does not produce',
+    maxAttempts: 3,
+    workspaceType: 'NONE',
+    expectedArtifacts: [{ kind: 'file', path: 'out.txt' }],
+  });
+  // The worker reports done, and delivers SOMETHING (satisfying batch 13's
+  // "done requires something delivered") -- just never the file this
+  // ticket specifically declared it expects.
+  adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'wrong.txt' }] });
+
+  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const result = await tick(deps);
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'READY', 'a missing declared artefact is retryable, not accepted');
+  assert.equal(getTicket(db, ticket.id)!.attemptCount, 1);
+  const failureEvent = listEventsForEntity(db, 'ticket', ticket.id).find((e) => e.eventType === 'worker_failed_retryable');
+  assert.ok(failureEvent, 'expected a retryable worker_failure transition');
+  const payload = failureEvent!.payload as { errors?: string[]; message?: string; failureClass?: string };
+  assert.equal(payload.failureClass, 'malformed_result', 'reuses the EXISTING retryable class, not a new one');
+  assert.match(payload.message ?? '', /out\.txt/, 'the reason must name the missing artefact');
+});
+
+test('a ticket that declares expected_artifacts and whose worker produces exactly that file reaches DONE normally', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, {
+    projectId: project.id,
+    title: 'declares a file and produces it',
+    maxAttempts: 3,
+    workspaceType: 'NONE',
+    expectedArtifacts: [{ kind: 'file', path: 'out.txt' }],
+  });
+  adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'out.txt' }] });
+
+  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const result = await tick(deps);
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+});
+
+test('a ticket with no expected_artifacts list at all keeps today\'s rule -- any delivered artefact satisfies DONE, whatever its path', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, {
+    projectId: project.id,
+    title: 'no expectations declared',
+    maxAttempts: 3,
+    workspaceType: 'NONE',
+  });
+  adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'whatever.txt' }] });
+
+  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const result = await tick(deps);
+  await Promise.all(result.started.map((s) => s.done));
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+});
+
 // --- Batch 15 ruling 7: worker_progress carries the derived tool/state, not just the raw message ---
 
 test('a worker_progress event\'s payload carries the tool name and activity state derived from the message, ruling 7\'s pure function applied once at write time', async () => {

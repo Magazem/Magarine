@@ -54,6 +54,19 @@ export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: strin
     sections.push(`Budget ceiling for this ticket: $${envelope.maxBudgetUsd.toFixed(2)}`);
   }
 
+  // Batch 15 item 4: absent (not present as an empty list) is a real
+  // distinction, not an equivalent rendering of "no artefacts" -- a ticket
+  // with no `expectedArtifacts` list at all keeps today's rule (any
+  // artefact satisfies "done"), so this section only exists when the
+  // ticket actually declared one.
+  if (envelope.expectedArtifacts !== undefined) {
+    sections.push(
+      `Expected artifacts: this ticket must produce every one of these, exactly, or DONE is rejected:\n${envelope.expectedArtifacts
+        .map((a) => (a.kind === 'file' ? `- (file) ${a.path}` : `- (${a.kind})`))
+        .join('\n')}`
+    );
+  }
+
   sections.push(
     `Expected output: ${envelope.expectedOutputFormat}\n` +
       'Write .orchestrator/result.json matching the worker result contract, and also return the same object as your final answer. ' +

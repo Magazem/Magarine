@@ -51,14 +51,16 @@ export function classifyToolActivity(tool: string | undefined, command?: string)
 // documented convention (`tool_use: <name>`) works with both adapters
 // completely unmodified, today.
 //
-// KNOWN LIMITATION, not this role's file to close: claudeCli.ts's
-// `describeProgress` reports only `tool_use: ${block.name}` and discards
-// `block.input`, so a real run's Bash command text never reaches this
-// message at all -- a real Bash test-runner invocation is therefore always
-// classified `running`, never `testing`, until someone threads the command
-// through that function (a one-line change: `tool_use: Bash ${input.command}`
-// or similar). See activity.test.ts's own test naming this explicitly.
+// Batch 15 addendum 3 (ruling 14): testing IS live. The raw command never
+// reaches this layer, by design -- a Bash command line is the likeliest
+// place in this system for a secret to appear, and this message is
+// persisted, replayed over the stream, and rendered in a browser,
+// permanently. Instead, claudeCli.ts's `describeProgress` sources the
+// test-runner question itself, from its own `isTestRunnerCommand`, and
+// emits the fixed marker `tool_use: Bash (test runner)` -- this function
+// reads that marker back, never a command.
 const TOOL_USE_MESSAGE_PATTERN = /^tool_use: (\S+)/;
+const BASH_TEST_RUNNER_MESSAGE = 'tool_use: Bash (test runner)';
 
 // Exported separately from classifyProgressMessage below (rather than kept
 // as that function's own private step) so scheduler.ts can persist the raw
@@ -66,12 +68,15 @@ const TOOL_USE_MESSAGE_PATTERN = /^tool_use: (\S+)/;
 // two different readers (a person watching the board, and something that
 // wants to know exactly which tool ran) get two different fields instead of
 // one having to re-derive the other from a state enum that has already
-// thrown the tool name away.
+// thrown the tool name away. Deliberately returns 'Bash' for the marker
+// variant too -- the marker only ever refines Bash's own state, not the
+// tool identity.
 export function parseProgressTool(message: string): string | undefined {
   return TOOL_USE_MESSAGE_PATTERN.exec(message)?.[1];
 }
 
 export function classifyProgressMessage(message: string): ActivityState {
+  if (message === BASH_TEST_RUNNER_MESSAGE) return 'testing';
   return classifyToolActivity(parseProgressTool(message));
 }
 

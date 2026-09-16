@@ -151,6 +151,23 @@ test('renderManagerBrief includes the mission, board, decision log, failures and
   }
 });
 
+// Batch 15 item 4: "the Manager envelope's rules text asks for it" --
+// proposal.ts's MANAGER_COMMAND_SCHEMA_DESCRIPTION is the one string both
+// this rendered brief and proposal.test.ts's own direct check of that
+// constant read, so a change to one can never silently stop reaching the
+// other.
+test('renderManagerBrief\'s command schema mentions expected_artifacts on both create_ticket and update_ticket', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id, 'mission');
+  const rendered = renderManagerBrief(buildManagerBriefing(db, project, managerTicket));
+
+  const createLine = rendered.split('\n').find((l) => l.includes('"type": "create_ticket"'))!;
+  const updateLine = rendered.split('\n').find((l) => l.includes('"type": "update_ticket"'))!;
+  assert.match(createLine, /expected_artifacts/);
+  assert.match(updateLine, /expected_artifacts/);
+});
+
 // Batch 12 item 3 (batch-12-spec.md section 1 ruling 3 / section 2 Role S
 // item 3): "an envelope test that the paragraph is present and lists
 // exactly the models in pricing.ts" -- so the two can't drift apart. Reads

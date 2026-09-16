@@ -59,9 +59,8 @@ export async function serve(opts: ServeOptions): Promise<void> {
   const startedAt = new Date().toISOString();
   const token = generateDaemonToken();
 
-  const server: Server = createServer(
-    createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt })
-  );
+  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt });
+  const server: Server = createServer(requestHandler.handle);
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -116,7 +115,14 @@ export async function serve(opts: ServeOptions): Promise<void> {
     // settled state BEFORE closing the listener or removing daemon.json, so
     // a client racing the shutdown never observes a daemon.json that still
     // names a port nothing is listening on, or a live-looking ticket that
-    // is actually about to be cancelled out from under it.
+    // is actually about to be cancelled out from under it. `closeAllStreams`
+    // ends every open `GET /events` response first -- `server.close()`'s
+    // own callback below waits for every connection to end on its own, and
+    // an SSE stream nothing ever called `res.end()` on would hang it
+    // forever (batch 15 ruling 7 item 2: "close cleanly when the daemon
+    // stops" -- a client sees a normal end of stream, not a hang or a raw
+    // socket abort).
+    requestHandler.closeAllStreams();
     await loop.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     removeDaemonFile(opts.stateDir);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_COMMANDS, MAX_CREATE_TICKET_COMMANDS, validateProposal, type ProposalBoard } from './proposal.ts';
+import { MANAGER_COMMAND_SCHEMA_DESCRIPTION, MAX_COMMANDS, MAX_CREATE_TICKET_COMMANDS, validateProposal, type ProposalBoard } from './proposal.ts';
 import { MIN_BUDGET_USD } from './store.ts';
 
 // This file tests the Manager proposal validator against malice, not just
@@ -243,6 +243,73 @@ test('create_ticket with no workspace_type field at all is accepted (the ordinar
     emptyBoard()
   );
   assert.equal(result.valid, true);
+});
+
+// --- Batch 15 item 4: expected_artifacts on create_ticket/update_ticket ---
+
+test('create_ticket/update_ticket with a valid expected_artifacts list are accepted', () => {
+  const created = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        {
+          type: 'create_ticket',
+          title: 'T',
+          description: 'd',
+          acceptance_criteria: [],
+          expected_artifacts: [{ kind: 'file', path: 'out.txt' }, { kind: 'text' }],
+        },
+      ],
+    },
+    emptyBoard()
+  );
+  assert.equal(created.valid, true);
+
+  const updated = validateProposal(
+    {
+      rationale: 'r',
+      commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', expected_artifacts: [{ kind: 'file', path: 'a.txt' }] }],
+    },
+    boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }])
+  );
+  assert.equal(updated.valid, true);
+});
+
+test('create_ticket.expected_artifacts rejects a non-array, a non-object entry, an unknown kind, kind "file" with no path, and any other kind carrying a path', () => {
+  const cases: unknown[] = [
+    'not-an-array',
+    ['not-an-object'],
+    [{ kind: 'not-a-real-kind' }],
+    [{ kind: 'file' }],
+    [{ kind: 'file', path: '' }],
+    [{ kind: 'text', path: 'should-not-be-here.txt' }],
+  ];
+  for (const expected_artifacts of cases) {
+    const result = validateProposal(
+      { rationale: 'r', commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], expected_artifacts }] },
+      emptyBoard()
+    );
+    assert.equal(result.valid, false, `expected rejection for expected_artifacts: ${JSON.stringify(expected_artifacts)}`);
+  }
+});
+
+test('update_ticket.expected_artifacts is validated the same way as create_ticket\'s', () => {
+  const result = validateProposal(
+    {
+      rationale: 'r',
+      commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', expected_artifacts: [{ kind: 'file' }] }],
+    },
+    boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }])
+  );
+  assert.equal(result.valid, false);
+});
+
+test('MANAGER_COMMAND_SCHEMA_DESCRIPTION names expected_artifacts on both create_ticket and update_ticket -- the Manager\'s own wording is data this test reads back', () => {
+  const description = MANAGER_COMMAND_SCHEMA_DESCRIPTION;
+  const createLine = description.split('\n').find((l) => l.includes('"type": "create_ticket"'))!;
+  const updateLine = description.split('\n').find((l) => l.includes('"type": "update_ticket"'))!;
+  assert.match(createLine, /expected_artifacts/);
+  assert.match(updateLine, /expected_artifacts/);
 });
 
 test('add_dependency missing fields, change_priority with a non-number priority, and request_user_decision missing question are each rejected', () => {
