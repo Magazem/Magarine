@@ -718,10 +718,14 @@ async function applyWorkerEventInner(
       // 'success' outcome. This is a DIFFERENT failure mode: the ticket
       // expected a file the worker never even declared trying to produce.
       // Reuses the EXISTING retryable class (malformed_result), per the
-      // brief, rather than inventing a new one -- and sets `message` (not
-      // just `errors`), because commands/inbox.ts's `reasonFor` reads
-      // `message` before falling back to the bare failureClass, which is
-      // what makes the missing artefact's name actually reach the board.
+      // brief, rather than inventing a new one. Ruling 17: `reasonFor`
+      // (commands/inbox.ts) now reads `errors` directly, so setting bare
+      // `errors: [message]` here would already reach the board on its own --
+      // `message` is set too only because it is harmless and now redundant,
+      // not because it is required. See
+      // commands/inboxCompleteness.test.ts's "reasonFor renders
+      // scheduler.ts:706's/:684's errors-only payload" tests, which cover
+      // the errors-only case directly.
       if (result.status === 'done' && ticket.kind === 'work' && ticket.expectedArtifacts != null) {
         const declaredFilePaths = new Set(
           result.artifacts.filter((a): a is { kind: 'file'; path: string } => a.kind === 'file').map((a) => a.path)

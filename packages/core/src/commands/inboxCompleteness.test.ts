@@ -269,6 +269,55 @@ test('two DIFFERENT inbox event types both pending READY on the same ticket both
   assert.deepEqual(types, ['manager_daily_cap_reached', 'workspace_preparation_failed']);
 });
 
+// Ruling 17: `reasonFor`'s fallback chain learns `errors` (an array, joined
+// with '; ', mirroring `blockers`). Two real sites (scheduler.ts 706 and 684)
+// emit `errors` with no `message` at all, and before this ruling both
+// collapsed silently to the generic `failed: malformed_result` line -- the
+// worker's own reported reason never reached the owner. Each test below uses
+// the EXACT payload shape one of those two sites emits, not a simplified
+// stand-in, so a chain that only handles a hand-made payload would not pass
+// here.
+
+test("reasonFor renders scheduler.ts:706's errors-only payload (a work ticket's done result declaring zero artifacts), not the bare failureClass", () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 1 });
+  claim(db, ticket.id, ticket.id);
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_failure',
+    idempotencyKey: `wf_${ticket.id}`,
+    payload: { errors: ['done with nothing delivered'], retryable: true, failureClass: 'malformed_result' },
+  });
+
+  const item = buildInbox(db, project.id).find((i) => i.ticketId === ticket.id);
+  assert.ok(item, 'must reach the inbox once the one attempt is exhausted');
+  assert.match(item!.message, /^done with nothing delivered/);
+  assert.doesNotMatch(item!.message, /failed: malformed_result/);
+});
+
+test("reasonFor renders scheduler.ts:684's errors-only payload (the result-contract validator's own errors), joined with '; ', not the bare failureClass", () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 1 });
+  claim(db, ticket.id, ticket.id);
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_failure',
+    idempotencyKey: `wf_${ticket.id}`,
+    payload: {
+      errors: ['status must be one of done/review/needs_user_decision', 'summary is required'],
+      retryable: true,
+      failureClass: 'malformed_result',
+    },
+  });
+
+  const item = buildInbox(db, project.id).find((i) => i.ticketId === ticket.id);
+  assert.ok(item, 'must reach the inbox once the one attempt is exhausted');
+  assert.match(item!.message, /^status must be one of done\/review\/needs_user_decision; summary is required/);
+  assert.doesNotMatch(item!.message, /failed: malformed_result/);
+});
+
 test('every inbox-visibility event type, recorded through the real path, reaches buildInbox with a line naming the next command', () => {
   for (const eventType of inboxEventTypes()) {
     const scenario = SCENARIOS[eventType];

@@ -141,6 +141,13 @@ export function reasonFor(eventType: string, payload: unknown, ticketId?: string
     // under).
     if (typeof p.reason === 'string' && p.reason.length > 0) return `rejected: ${p.reason}`;
 
+    // Ruling 17: mirrors the `blockers` branch above. Two sites
+    // (scheduler.ts's malformed-result branches) report `errors` with no
+    // `message` at all -- see `commands/inboxCompleteness.test.ts`'s
+    // "reasonFor renders scheduler.ts:706's/:684's errors-only payload"
+    // tests, which fail if this branch is removed.
+    if (Array.isArray(p.errors) && p.errors.length > 0) return (p.errors as unknown[]).join('; ');
+
     if (typeof p.failureClass === 'string') {
       // `tally`/`overshoot` only ever appear on the scheduler's own
       // estimate-driven stop (scheduler.ts's progress-event ceiling branch,
