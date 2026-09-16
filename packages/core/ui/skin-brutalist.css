@@ -366,6 +366,10 @@
     padding: var(--s2) var(--s3); background: var(--surface-2); color: var(--fg-2); text-decoration: none;
   }
   .nav a:hover { background: var(--fg); color: var(--bg); }
+  /* The view you are in, drawn — from the approved pass 3 design, verbatim.
+     app.js sets aria-current and nothing else; this is what makes it visible.
+     Restored after the item 4 screenshots showed all three entries identical. */
+  .nav a[aria-current="page"] { background: var(--fg); color: var(--bg); }
   .nav a .n { color: var(--st-blocked); }
 
   .btn {

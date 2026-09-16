@@ -447,3 +447,19 @@ test('every region the skin makes a scroll container can take keyboard focus', (
     'these regions scroll but cannot take focus, so a keyboard user cannot read past what fits: ' +
     unreachable.join(', '));
 });
+
+test('the current view is visible, not only announced: the skin styles aria-current on the nav', () => {
+  // RULING 15 requirement 1 has app.js set aria-current="page" on the matching
+  // nav entry. That serves a screen reader. A sighted user needs the same fact
+  // ON SCREEN, and the approved pass 3 design draws it
+  // (docs/design/pass3/tokens.css: `.nav a[aria-current="page"]`). The shipped
+  // skin lost that rule when the nav was removed and item 1 did not bring it
+  // back -- found in the item 4 screenshots, where all three entries looked the
+  // same in every view. Nothing else in this file could see it: the attribute
+  // was written, and consumed by nobody.
+  const styled = cssRules(SKIN).filter((r) =>
+    r.selector.split(',').some((s) => /\[aria-current="page"\]/.test(s) && /\ba\b/.test(s)));
+  assert.ok(styled.length > 0, 'no skin rule resolves the nav\'s aria-current="page", so the current view is invisible');
+  assert.ok(styled.some((r) => /background|color|border|outline|text-decoration/.test(r.body)),
+    'a rule selects aria-current="page" but changes nothing a sighted user can see');
+});
