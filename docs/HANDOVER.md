@@ -111,6 +111,13 @@ find. The three observations raised during testing are ruled and recorded in RES
 21. **Delivered means in the product, not in the repository.** A committed design is an artefact;
     until the daemon serves it, the feature does not exist for the owner.
 
+22. **Owner-facing steps are run before they are written.** Walk instructions, recipes and any
+    command handed to the owner are an artefact and get verified like one. Earned twice in one
+    day: the lead told the owner to paste "the token serve printed" (serve never prints it,
+    addendum 9), and wrote a demo recipe from the design's intent that ran every worker one at a
+    time and used the owner's home folder as the workspace (addendum 10). Both instructions read
+    correctly; neither had been run.
+
 ## How to run the tests
 
 **`pnpm test`, from `packages/core`.** Its `test` script is `node --test`, so

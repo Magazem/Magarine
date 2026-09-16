@@ -24,7 +24,7 @@ The handover names the expected-artefacts list as the mechanical answer to the c
 
 1. `ticket add --expected-artifact <path>`, repeatable, parsed with `flagList`. Each value becomes `{ kind: 'file', path }`. No other kind is accepted at the CLI, because no other kind is verified; when another kind becomes verifiable, the flag grows a kind prefix then, not now.
 2. Flag absent: `expectedArtifacts` is `null`, exactly as today. Flag present once or more: the array. The flag never produces `[]`.
-3. An empty path is a usage error with a non-zero exit and a message naming the flag, the same treatment as any malformed flag on this CLI. Paths are stored as given; the scheduler compares declared paths as strings, so the CLI does not normalise.
+3. An empty path is a usage error with a non-zero exit and a message naming the flag, the same treatment as any malformed flag on this CLI. Paths are stored as given. (Corrected by addendum 10, ruling 21: the scheduler resolves both sides against the workspace at comparison time; the original sentence here said it compared strings, which was true of the code and wrong as a rule.)
 4. `packages/core/README.md` lines 82-89, which document `--acceptance` and `--depends-on`, gain the new flag in the same sentence and the same example.
 5. Tests, all mutation-checked:
    - `cliRouting.test.ts`: the flag is in the allowed list.
