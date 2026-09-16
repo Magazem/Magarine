@@ -409,3 +409,41 @@ test('per-column scrolling, and only where a view is named', () => {
     REGIONS.some((id) => r.selector.includes(`#${id}`))),
     'no region scrolls on its own, so the columns are still coupled');
 });
+
+test('every region the skin makes a scroll container can take keyboard focus', () => {
+  // DEFECT 3A, found by a real tab-walk. Ruling 15 requirement 5 turned the
+  // columns into their own scroll containers, which removed the page-level
+  // scroll that used to reach everything. A container that scrolls but can hold
+  // no focus cannot be scrolled from the keyboard -- unless the browser rescues
+  // it. #activity measured 437px of content in a 355px column with zero
+  // focusables; real keypresses in Chrome 153 showed Chromium's own heuristic
+  // makes such a container focusable, so it was reachable THERE. It is not a
+  // property of the page, WebKit lacks it, and it skips scrollers that contain
+  // controls (#scope, measured). See index.html's header, point 4.
+  //
+  // THE RULE IS KEYED ON "THE SKIN MAKES IT SCROLL", NOT ON "IT OVERFLOWS
+  // TODAY". Overflow depends on how much the daemon sends; #fleet was only safe
+  // because it happened to be short. And a region with controls inside is not
+  // automatically safe either -- content after its last control is still out
+  // of reach. So the set of regions is derived from the stylesheet, and a
+  // future skin that scrolls a region inherits the requirement for free.
+  const scrollers = new Set<string>();
+  for (const rule of cssRules(SKIN)) {
+    if (!/overflow(?:-y)?:\s*(?:auto|scroll)/.test(rule.body)) continue;
+    for (const one of rule.selector.split(',')) {
+      const id = subjectIsRegion(one.trim());
+      if (id) scrollers.add(id);
+    }
+  }
+  assert.ok(scrollers.size >= 1,
+    'the skin makes no region a scroll container -- this test stopped seeing them, or requirement 5 was undone');
+
+  const unreachable: string[] = [];
+  for (const id of scrollers) {
+    const tag = new RegExp(`<section id="${id}"[^>]*>`).exec(PAGE_HTML);
+    if (!tag || !/\btabindex="0"/.test(tag[0])) unreachable.push(`#${id}`);
+  }
+  assert.deepEqual(unreachable, [],
+    'these regions scroll but cannot take focus, so a keyboard user cannot read past what fits: ' +
+    unreachable.join(', '));
+});

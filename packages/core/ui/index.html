@@ -68,6 +68,22 @@
      reachable by keyboard and findable by browser search. JAVASCRIPT HIDES
      NOTHING; it names a state a skin is free to ignore. src/ui/skin.test.ts
      fails if any rule hides a region without being keyed on a view.
+  4. EVERY REGION CARRIES tabindex="0", and that is keyboard reach, not
+     decoration. Under a view each column is its own scroll container, so the
+     page-level scroll that used to reach everything is gone. Reach must be a
+     property of THIS PAGE, not of one browser's heuristic.
+     Measured with real keypresses in Chrome 153 (2026-09-16), and stated
+     exactly because an earlier version of this comment overstated it: recent
+     Chromium already makes a scroll container with NO focusable descendants
+     keyboard-focusable by itself, so #activity was reachable there even
+     without this attribute. The attribute still does real work: browsers
+     without that behaviour (WebKit/Safari, older Chromium); and scrollers
+     that DO contain controls, which the heuristic skips -- in Chrome 153
+     #scope's outer content was unreachable without it (0 of 10px) and
+     reachable with it. It is on all six rather than on whichever overflow
+     today, because overflow is a fact about how much the daemon sent, not
+     about the page. Each stop announces as its named region through
+     aria-labelledby.
   ===========================================================================
 -->
 
@@ -143,7 +159,7 @@
 </section>
 
 <!-- ===================================================== REGION: fleet === -->
-<section id="fleet" aria-labelledby="fleetHead">
+<section id="fleet" aria-labelledby="fleetHead" tabindex="0">
   <div class="panel-head"><h2 id="fleetHead">Fleet</h2><span class="count" id="fleetCount"></span></div>
   <div id="fleetList"></div>
 
@@ -161,7 +177,7 @@
 </section>
 
 <!-- ===================================================== REGION: board === -->
-<section id="board" data-board-view="board" aria-labelledby="boardHead">
+<section id="board" data-board-view="board" aria-labelledby="boardHead" tabindex="0">
   <!-- BoardResult.pauseMessage / pauseReason. Structured, so the page offers
        the fix that matches the cause rather than parsing the message text. -->
   <div class="banner" id="pauseBanner" hidden>
@@ -214,7 +230,7 @@
      control back, so it answers five questions: WHO asked, WHAT they were
      doing, WHY they stopped (in full, never truncated), WHAT is needed, and
      WHAT happens next. -->
-<section id="needs-you" aria-labelledby="needsHead">
+<section id="needs-you" aria-labelledby="needsHead" tabindex="0">
   <div class="panel-head"><h2 id="needsHead">Needs you</h2><span class="count" id="needsSub"></span></div>
   <div id="needsList"></div>
 
@@ -230,7 +246,7 @@
 </section>
 
 <!-- ===================================================== REGION: scope === -->
-<section id="scope" aria-labelledby="scopeHead">
+<section id="scope" aria-labelledby="scopeHead" tabindex="0">
   <div class="panel-head">
     <h2 id="scopeHead">Scope</h2><span class="count">SCOPE.md</span>
     <span class="spacer"></span>
@@ -242,7 +258,7 @@
 </section>
 
 <!-- ============================================== REGION: conversation === -->
-<section id="conversation" aria-labelledby="convHead">
+<section id="conversation" aria-labelledby="convHead" tabindex="0">
   <div class="panel-head"><h2 id="convHead">Conversation</h2><span class="count" id="convCount"></span></div>
 
   <!-- A per-ticket FILTER of one project thread, which is what the data
@@ -268,7 +284,7 @@
 </section>
 
 <!-- ================================================== REGION: activity === -->
-<section id="activity" aria-labelledby="actHead">
+<section id="activity" aria-labelledby="actHead" tabindex="0">
   <div class="panel-head"><h2 id="actHead">Activity</h2><span class="count" id="activityCount"></span></div>
   <div class="feed" id="feed"></div>
   <p class="legend">
