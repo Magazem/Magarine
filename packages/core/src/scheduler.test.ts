@@ -840,6 +840,106 @@ test('a ticket with no expected_artifacts list at all keeps today\'s rule -- any
   assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
 });
 
+// --- Batch 15 addendum 10, ruling 21: expected artefacts compared by
+// resolved path, both sides. The owner's real run declared `index.md`
+// (the ticket's expectation) as an absolute path -- a legitimate, adapter-
+// accepted declaration (claudeCli.ts's verifyArtifacts already resolves and
+// accepts absolute paths) -- and the old raw-string check rejected genuinely
+// delivered work. Both sides are now resolved against the run's own
+// workspace (workspace.ts's resolveArtifactPath, the same rule
+// verifyArtifacts uses) before comparison; the failure message still names
+// the expectation as declared on the ticket (`index.md`), never a resolved
+// path.
+
+test("ruling 21: an expected artefact declared as an ABSOLUTE path inside the run's own workspace matches, reaching DONE -- the owner's index.md case", async () => {
+  const db = openDb(':memory:');
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-ruling21-abs-match-'));
+  try {
+    const project = createProject(db, { name: 'p', maxParallelWorkers: 1, workspaceRoot });
+    const adapter = new FakeAdapter();
+    const ticket = createTicket(db, {
+      projectId: project.id,
+      title: 'Write index.md',
+      workspaceType: 'DIRECTORY',
+      expectedArtifacts: [{ kind: 'file', path: 'index.md' }],
+    });
+    adapter.setScript(ticket.id, {
+      kind: 'succeed',
+      artifacts: [{ kind: 'file', path: join(workspaceRoot, 'index.md') }],
+    });
+
+    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const result = await tick(deps);
+    await Promise.all(result.started.map((s) => s.done));
+
+    assert.equal(getTicket(db, ticket.id)!.status, 'DONE', 'an absolute declaration of the same file must satisfy the expectation');
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+test('ruling 21: an expected artefact declared as an absolute path under a DIFFERENT directory still fails malformed_result, naming the expectation as typed', async () => {
+  const db = openDb(':memory:');
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-ruling21-abs-mismatch-'));
+  const elsewhere = mkdtempSync(join(tmpdir(), 'magarine-ruling21-elsewhere-'));
+  try {
+    const project = createProject(db, { name: 'p', maxParallelWorkers: 1, workspaceRoot });
+    const adapter = new FakeAdapter();
+    const ticket = createTicket(db, {
+      projectId: project.id,
+      title: 'Write index.md',
+      maxAttempts: 3,
+      workspaceType: 'DIRECTORY',
+      expectedArtifacts: [{ kind: 'file', path: 'index.md' }],
+    });
+    // A real file elsewhere, not inside this run's own workspace -- resolving
+    // it must not accidentally match just because both are absolute.
+    adapter.setScript(ticket.id, {
+      kind: 'succeed',
+      artifacts: [{ kind: 'file', path: join(elsewhere, 'index.md') }],
+    });
+
+    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const result = await tick(deps);
+    await Promise.all(result.started.map((s) => s.done));
+
+    assert.equal(getTicket(db, ticket.id)!.status, 'READY', 'a declaration outside this workspace must not satisfy the expectation');
+    const failureEvent = listEventsForEntity(db, 'ticket', ticket.id).find((e) => e.eventType === 'worker_failed_retryable');
+    assert.ok(failureEvent);
+    const payload = failureEvent!.payload as { failureClass?: string; message?: string };
+    assert.equal(payload.failureClass, 'malformed_result');
+    assert.match(payload.message ?? '', /index\.md/, 'the reason must name the expectation as typed, not a resolved path');
+    assert.doesNotMatch(payload.message ?? '', new RegExp(elsewhere.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test('ruling 21: an expected artefact declared RELATIVE still matches, exactly as before this ruling', async () => {
+  const db = openDb(':memory:');
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-ruling21-relative-'));
+  try {
+    const project = createProject(db, { name: 'p', maxParallelWorkers: 1, workspaceRoot });
+    const adapter = new FakeAdapter();
+    const ticket = createTicket(db, {
+      projectId: project.id,
+      title: 'Write index.md',
+      workspaceType: 'DIRECTORY',
+      expectedArtifacts: [{ kind: 'file', path: 'index.md' }],
+    });
+    adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'index.md' }] });
+
+    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const result = await tick(deps);
+    await Promise.all(result.started.map((s) => s.done));
+
+    assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 // Ruling 16: the enforcement above was only ever proven for a Manager-made
 // ticket (`createTicket` called directly). A ticket created THROUGH THE CLI
 // PATH (`ticket add --expected-artifact`) must reach the exact same branch --

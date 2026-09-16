@@ -10,7 +10,13 @@ import { buildManagerEnvelope } from './managerEnvelope.ts';
 import { classify } from './policy.ts';
 import { artifactContent, validateWorkerResult } from './resultContract.ts';
 import { recordTicketTransition } from './stateMachine.ts';
-import { prepareWorkspace } from './workspace.ts';
+// Aliased: this file already has its own private `resolveArtifactPath`
+// (below, `join`-only, used by capture -- a different, pre-existing
+// concern this ruling does not touch). This import is the shared rule
+// ruling 21 requires for the expected-artefact comparison, matching
+// claudeCli.ts's `verifyArtifacts` exactly (`resolve`, not `join` --
+// normalises `.`/`..` segments too).
+import { prepareWorkspace, resolveDeclaredArtifactPath } from './workspace.ts';
 import {
   createArtifact,
   createRun,
@@ -712,27 +718,40 @@ async function applyWorkerEventInner(
       // present." Null (no such list at all) keeps today's rule -- the
       // check above is the only one that applies. When a list IS present,
       // every entry of kind 'file' must appear among what the worker just
-      // declared (by path) -- not what is actually on disk; that filesystem
-      // check already happened one layer down, in claudeCli.ts's own
+      // declared -- not what is actually on disk; that filesystem check
+      // already happened one layer down, in claudeCli.ts's own
       // verifyArtifacts, before this event could ever reach here as a
       // 'success' outcome. This is a DIFFERENT failure mode: the ticket
       // expected a file the worker never even declared trying to produce.
       // Reuses the EXISTING retryable class (malformed_result), per the
-      // brief, rather than inventing a new one. Ruling 17: `reasonFor`
-      // (commands/inbox.ts) now reads `errors` directly, so setting bare
-      // `errors: [message]` here would already reach the board on its own --
-      // `message` is set too only because it is harmless and now redundant,
-      // not because it is required. See
-      // commands/inboxCompleteness.test.ts's "reasonFor renders
-      // scheduler.ts:706's/:684's errors-only payload" tests, which cover
-      // the errors-only case directly.
+      // brief, rather than inventing a new one.
+      //
+      // Ruling 21 (batch 15 addendum 10): BOTH sides are resolved against
+      // this run's own workspace (`ctx.workspacePath`) with
+      // `workspace.ts`'s `resolveDeclaredArtifactPath` -- named distinctly
+      // because this file has its own private `resolveArtifactPath`, with the
+      // arguments the other way round and used only by capture -- the same
+      // rule verifyArtifacts already uses (absolute
+      // kept, relative joined to the workspace) -- before comparison, not
+      // compared as raw strings. A real worker legitimately declares an
+      // absolute path (the adapter already accepts one), and the owner's
+      // own delivered `index.md` was rejected four times by the old
+      // raw-string check for exactly that reason
+      // (docs/strategy/batch-15-addendum-10-owner-walk-findings.md). The
+      // failure message below still names the expectation AS THE OWNER
+      // TYPED IT (`e.path`, never a resolved path) -- see scheduler.test.ts's
+      // "ruling 21" tests, which fail without the resolution (the
+      // absolute-match case) and would fail differently if the message
+      // named a resolved path instead (the different-directory case).
       if (result.status === 'done' && ticket.kind === 'work' && ticket.expectedArtifacts != null) {
-        const declaredFilePaths = new Set(
-          result.artifacts.filter((a): a is { kind: 'file'; path: string } => a.kind === 'file').map((a) => a.path)
+        const declaredResolvedPaths = new Set(
+          result.artifacts
+            .filter((a): a is { kind: 'file'; path: string } => a.kind === 'file')
+            .map((a) => resolveDeclaredArtifactPath(ctx.workspacePath, a.path))
         );
         const missing = ticket.expectedArtifacts
           .filter((e) => e.kind === 'file' && e.path !== undefined)
-          .filter((e) => !declaredFilePaths.has(e.path!))
+          .filter((e) => !declaredResolvedPaths.has(resolveDeclaredArtifactPath(ctx.workspacePath, e.path!)))
           .map((e) => e.path!);
         if (missing.length > 0) {
           const message = `expected artefact(s) not produced: ${missing.join(', ')}`;

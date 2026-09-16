@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve as resolvePath, sep } from 'node:path';
+import { join, resolve as resolvePath, sep } from 'node:path';
 import { spawnManaged, type ManagedProcess } from '../process.ts';
 import { WORKER_RESULT_JSON_SCHEMA, validateWorkerResult } from '../resultContract.ts';
 import { buildWorkerPrompt } from '../envelope.ts';
-import { prepareWorkspace } from '../workspace.ts';
+import { prepareWorkspace, resolveDeclaredArtifactPath } from '../workspace.ts';
 import { isKnownModel, priceUsage, type Usage } from '../pricing.ts';
 import type {
   AgentAdapter,
@@ -266,7 +266,7 @@ export function verifyArtifacts(result: WorkerResult, workspacePath: string): Cl
   const resolvedWorkspace = resolvePath(workspacePath);
   for (const artifact of result.artifacts) {
     if (artifact.kind !== 'file') continue;
-    const resolved = isAbsolute(artifact.path) ? resolvePath(artifact.path) : resolvePath(resolvedWorkspace, artifact.path);
+    const resolved = resolveDeclaredArtifactPath(resolvedWorkspace, artifact.path);
     const withinWorkspace = resolved === resolvedWorkspace || resolved.startsWith(resolvedWorkspace + sep);
     if (!withinWorkspace || !existsSync(resolved)) {
       return { kind: 'retryable', reason: `artefact not found: ${artifact.path}` };

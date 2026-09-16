@@ -1,7 +1,26 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 import type { WorkspaceType } from './types.ts';
+
+// Batch 15 addendum 10, ruling 21: the one resolution rule for turning a
+// worker- or ticket-declared artefact path into an absolute, comparable
+// location -- an absolute path is kept (via `resolve`, which also
+// normalises `.`/`..` segments), a relative one is joined to the workspace
+// root. Extracted so it is never re-implemented a second time: shared by
+// `adapters/claudeCli.ts`'s `verifyArtifacts` (existence/containment,
+// unchanged by this ruling) and `scheduler.ts`'s expected-artefact check
+// (batch 15 item 4, corrected by this ruling to compare resolved paths
+// instead of raw strings -- see scheduler.test.ts's "ruling 21" tests).
+// Named distinctly on purpose: scheduler.ts has a private `resolveArtifactPath(pathOrUri,
+// workspacePath)` with the arguments the other way round, used by capture;
+// two same-named helpers with swapped arguments return a silently wrong path
+// to whoever imports the wrong one.
+// `workspacePath` is expected already resolved (both call sites pass one),
+// so this never silently resolves a relative workspace against `cwd`.
+export function resolveDeclaredArtifactPath(workspacePath: string, artifactPath: string): string {
+  return isAbsolute(artifactPath) ? resolvePath(artifactPath) : resolvePath(workspacePath, artifactPath);
+}
 
 export interface PreparedWorkspace {
   path: string;
