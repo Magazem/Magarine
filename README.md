@@ -77,7 +77,7 @@ Run these from wherever `magarine` is on your PATH:
    `claude` tool. Every one of these is a real run with an equivalent API
    cost -- typically cents for a single reply or a small task, shown on the
    board as it happens. Leave this terminal open -- it prints the port it's
-   listening on and a token, and keeps running until you stop it.
+   listening on and the page's address, and keeps running until you stop it.
    ```sh
    magarine serve --adapter claude
    ```
@@ -116,10 +116,11 @@ Run these from wherever `magarine` is on your PATH:
    it have built together) -- edit `SCOPE.md` directly, or keep using
    `discuss` to add to the conversation.
 
-6. **Watch it work.** Either open the page `magarine serve` printed (paste
-   in the token it printed, pick your project) to see the board, inbox, and
-   the whole conversation in one place, refreshing live -- or, from a second
-   terminal:
+6. **Watch it work.** Either open the page `magarine serve` printed and run
+   `magarine token` in another terminal (it copies the token to your
+   clipboard -- paste it into the page, pick your project) to see the board,
+   inbox, and the whole conversation in one place, refreshing live -- or,
+   from a second terminal:
    ```sh
    magarine board --project <projectId>
    magarine inbox --project <projectId>

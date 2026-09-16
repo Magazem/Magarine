@@ -414,10 +414,39 @@ loopback port, and never touches anyone's AionUi (or other) account.
 node src/cli.ts serve --state-dir <dir> --json
 ```
 
-Prints one JSON line (or a human line without `--json`) once listening:
-`{"pid": <n>, "port": <n>, "stateDir": "<dir>"}` — **never the token**. The
-token lives only in `<state dir>/daemon.json`; find it there, not in any
-command's output or any log line.
+Prints one JSON line once listening with `--json`:
+`{"pid": <n>, "port": <n>, "stateDir": "<dir>"}` — **never the token**.
+Without `--json`, the human line is `magarine daemon listening on
+127.0.0.1:<port> (pid <n>) -- page: http://127.0.0.1:<port>/ -- token: run
+\`magarine token\``: the page address is not a secret, so ruling 20 (batch 15
+addendum 9) put it on the line; the token itself still never appears here.
+The token lives only in `<state dir>/daemon.json`; get it onto your
+clipboard with `magarine token` (below), or read the field yourself — never
+from any command's output or any log line.
+
+### `magarine token`
+
+Ruling 20: copies the live daemon's token to the clipboard and prints one
+line naming the page — the ONE sanctioned path the token reaches the
+owner's own session; it still never reaches stdout, stderr, a log, a URL, a
+response body, or `--json` output.
+
+```sh
+node src/cli.ts token --state-dir <dir>
+```
+
+Reads `<state dir>/daemon.json` and runs the same `checkDaemonFile` staleness
+check `doctor` uses, so a dead or unhealthy daemon's leftover token is never
+handed out: no live daemon → `no live daemon for this state directory; start
+\`magarine serve\`` on stderr, exit 1, and the clipboard is never touched.
+Live → copies the token via the platform's own tool (Windows `clip`; macOS
+`pbcopy`; Linux the first found of `wl-copy`, `xclip -selection clipboard`,
+`xsel --clipboard --input`) — the value always goes on that tool's stdin,
+never as a command-line argument, since arguments are visible in a process
+listing — then prints `token copied to the clipboard; paste it into the page
+at http://127.0.0.1:<port>/`. No tool found → prints the path of
+`daemon.json` and the field name `token` (never the value), exit 1.
+`--json` prints exactly `{"copied": true, "port": <n>, "stateDir": "<dir>"}`.
 
 `serve` accepts everything `tick`/`run --until-idle` do (`--adapter
 fake|claude`, `--claude-exe`, `--fake-script`, `--fake-outcome`,
@@ -484,7 +513,9 @@ the two a given `serve` process can actually be asked to do.
 - **A fresh token every start**, generated from 32 random bytes
   (`node:crypto`'s `randomBytes`), never persisted anywhere else, never
   logged, never echoed back in an error body or a health response. A token
-  that outlives its daemon is a token something else can use.
+  that outlives its daemon is a token something else can use. `magarine
+  token` copies it to your clipboard and is the one sanctioned path; it
+  still never reaches stdout.
 - Written with mode `0600`. **On Windows this mode is not honoured** —
   HARD-verified: a file written with `0600` reports `666` back from `stat`
   on this platform, since Windows has no POSIX permission bits. The token is

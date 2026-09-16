@@ -167,6 +167,34 @@ test('serve writes a real daemon.json (matching pid/port/dbPath), binds a workin
   }
 });
 
+// Ruling 20: serve's HUMAN listening line (no --json) gains the page
+// address and how to get the token -- still never the token itself. The
+// --json line is covered by the test above (unchanged shape) and is not
+// re-asserted here.
+test("serve's human-readable listening line names the page address and `magarine token`, never the token itself", async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'human-line-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1']);
+  try {
+    const deadline = Date.now() + 10_000;
+    let line: string | undefined;
+    while (Date.now() < deadline) {
+      line = handle.stdout().split('\n').find((l) => l.includes('magarine daemon listening'));
+      if (line) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(line, `serve never printed the human listening line within 10s. stdout=${handle.stdout()}`);
+
+    const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+    assert.match(line!, new RegExp(`page: http://127\\.0\\.0\\.1:${fileInfo.port}/`));
+    assert.match(line!, /magarine token/);
+    assert.ok(!line!.includes(fileInfo.token), 'the human listening line must never include the token');
+    assert.ok(!handle.stdout().includes(fileInfo.token));
+  } finally {
+    await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('a second `serve` refuses to start while the first is live, without printing the token, and leaves the first daemon.json untouched', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'refuse-second-'));
   const first = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);

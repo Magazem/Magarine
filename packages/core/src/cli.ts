@@ -37,6 +37,7 @@ import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { serve, ServeError } from './commands/serve.ts';
+import { runToken, TokenError } from './commands/token.ts';
 import { artifactsDir as resolveArtifactsDir, dbPath as resolveDbPath, resolveStateDir } from './paths.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
@@ -311,6 +312,11 @@ const FLAG_SPECS: Record<string, string[]> = {
   // (see commands/doctor.ts) -- absent by default, so `doctor` costs nothing
   // unless explicitly asked to spend.
   doctor: ['paid'],
+  // Ruling 20: no flags of its own beyond the common `--state-dir`/`--json`
+  // (COMMON_FLAGS) -- listed explicitly, empty, so an unrelated flag (e.g. a
+  // stray `--project`) is still caught as unknown rather than silently
+  // accepted.
+  token: [],
   status: ['project'],
   board: ['project'],
   inbox: ['project'],
@@ -611,6 +617,28 @@ async function main(): Promise<void> {
       process.stdout.write(formatDoctor(lines) + '\n');
     }
     process.exitCode = doctorExitCode(lines);
+    return;
+  }
+
+  if (command === 'token') {
+    // Ruling 20: the one sanctioned path the token reaches the owner's
+    // session -- copied to the clipboard by runToken (commands/token.ts),
+    // never printed. `result` (and `--json`) never carries `.token`.
+    try {
+      const result = await runToken({ stateDir: stateDir(flags) });
+      output(
+        flags,
+        result,
+        `token copied to the clipboard; paste it into the page at http://127.0.0.1:${result.port}/`
+      );
+    } catch (err) {
+      if (err instanceof TokenError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
     return;
   }
 
@@ -919,9 +947,15 @@ async function main(): Promise<void> {
         port: typeof flags.port === 'string' ? Number(flags.port) : undefined,
         // Never includes the token: only the CLI-facing shape a human or a
         // script watching stdout needs to find the daemon, not what it needs
-        // to authenticate against it.
+        // to authenticate against it. Ruling 20: the human line now names
+        // the page address (not a secret) and the one command that puts the
+        // token on the clipboard -- `--json` is unchanged, still no token.
         onListening: (info) => {
-          output(flags, info, `magarine daemon listening on 127.0.0.1:${info.port} (pid ${info.pid})`);
+          output(
+            flags,
+            info,
+            `magarine daemon listening on 127.0.0.1:${info.port} (pid ${info.pid}) -- page: http://127.0.0.1:${info.port}/ -- token: run \`magarine token\``
+          );
         },
       });
     } catch (err) {

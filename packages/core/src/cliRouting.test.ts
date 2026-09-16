@@ -406,6 +406,30 @@ test('ticket add --expected-artifact is on the allowed flag list', async () => {
   }
 });
 
+// Ruling 20: `token` is a known command whose allowed flags beyond the
+// common `--state-dir`/`--json` are exactly empty (cli.ts's FLAG_SPECS). No
+// daemon is spawned here -- an unknown-flag refusal happens in
+// checkKnownFlags, before the command handler (and so before any daemon
+// lookup or clipboard step) ever runs.
+test('token: an unrelated flag is refused as unknown, and --state-dir/--json alone are not', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'token-flags-'));
+  try {
+    const withUnknownFlag = await runCli(['token', '--project', 'p1', '--state-dir', stateDir]);
+    assert.notEqual(withUnknownFlag.code, 0);
+    assert.match(withUnknownFlag.stderr, /Unknown flag/);
+    assert.match(withUnknownFlag.stderr, /--project/);
+
+    const withOnlyCommonFlags = await runCli(['token', '--state-dir', stateDir, '--json']);
+    assert.doesNotMatch(withOnlyCommonFlags.stderr, /Unknown flag/);
+    // No daemon running for this state dir -- refused for that reason
+    // instead, proving the flag check passed and the real handler ran.
+    assert.notEqual(withOnlyCommonFlags.code, 0);
+    assert.match(withOnlyCommonFlags.stderr, /no live daemon/);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('ticket add and decide route through a live matching daemon end to end (request body mapping and response formatting)', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'happy-path-'));
   try {
