@@ -385,6 +385,27 @@ test('discuss --project --message routes through a live matching daemon to POST 
   }
 });
 
+// Ruling 16: `--expected-artifact` is a new entry in `ticket add`'s allowed
+// flag list (cli.ts FLAG_SPECS). This is the direct-write path (no live
+// daemon), which is enough to prove the flag is not rejected by
+// checkKnownFlags -- that check runs before the daemon-routing decision, so
+// it applies identically either way.
+test('ticket add --expected-artifact is on the allowed flag list', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'expected-artifact-flag-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+    const res = await runCli([
+      'ticket', 'add', '--project', project.id, '--title', 't',
+      '--expected-artifact', 'out.md', '--state-dir', stateDir, '--json',
+    ]);
+    assert.equal(res.code, 0, res.stderr);
+    assert.doesNotMatch(res.stderr, /Unknown flag/);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('ticket add and decide route through a live matching daemon end to end (request body mapping and response formatting)', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'happy-path-'));
   try {

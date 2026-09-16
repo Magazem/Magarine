@@ -274,6 +274,7 @@ const FLAG_SPECS: Record<string, string[]> = {
     'model',
     'acceptance',
     'depends-on',
+    'expected-artifact',
   ],
   'dep add': ['project', 'ticket', 'depends-on', 'type'],
   // `--fake-script` is only honoured when `--adapter fake` (the default); it
@@ -696,6 +697,22 @@ async function main(): Promise<void> {
 
   if (command === 'ticket' && subcommand === 'add') {
     const dependsOn = flagList(flags, 'depends-on');
+    // Ruling 16: absent -> null (today's rule: no verification beyond "done
+    // requires something delivered"), never `[]` -- store.ts persists `[]`
+    // as a real, non-null list, which would wrongly turn on DONE
+    // verification for every ticket created without this flag. File kind
+    // only: no other kind is ever verified (types.ts, scheduler.ts), so the
+    // CLI does not accept one.
+    const expectedArtifactPaths = flagList(flags, 'expected-artifact');
+    if (expectedArtifactPaths.some((path) => path === '')) {
+      process.stderr.write('--expected-artifact requires a non-empty path\n');
+      process.exitCode = 1;
+      return;
+    }
+    const expectedArtifacts =
+      expectedArtifactPaths.length > 0
+        ? expectedArtifactPaths.map((path) => ({ kind: 'file' as const, path }))
+        : null;
     const db = openDb(dbPath(flags));
     let projectId: string;
     try {
@@ -738,6 +755,7 @@ async function main(): Promise<void> {
       workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
       acceptanceCriteria: flagList(flags, 'acceptance'),
       model: typeof flags.model === 'string' ? flags.model : null,
+      expectedArtifacts,
     });
 
     // `setTicketBudgetOverride` enforces `MIN_BUDGET_USD` (store.ts) with a

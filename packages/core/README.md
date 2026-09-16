@@ -80,13 +80,17 @@ node src/cli.ts serve --state-dir <dir> --json
 
 `ticket add` also takes `--workspace NONE|DIRECTORY` (default `NONE`), a
 per-ticket `--budget <usd>` override, a repeatable `--acceptance
-"<criterion>"`, and a repeatable `--depends-on <id>` so a ticket can be
-created with its dependencies wired in the same command:
+"<criterion>"`, a repeatable `--depends-on <id>` so a ticket can be created
+with its dependencies wired in the same command, and a repeatable
+`--expected-artifact <path>` (DONE is rejected unless every declared path is
+among what the worker delivers; omit the flag and today's rule applies —
+any delivered artefact satisfies DONE):
 
 ```sh
 node src/cli.ts ticket add --project <projectId> --title "T3" \
   --acceptance "criterion one" --acceptance "criterion two" \
-  --depends-on <t1Id> --depends-on <t2Id> --budget 0.50 --json
+  --depends-on <t1Id> --depends-on <t2Id> --budget 0.50 \
+  --expected-artifact out.md --json
 ```
 
 Readiness is resolved only after every `--depends-on` from that same command

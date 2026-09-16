@@ -410,6 +410,75 @@ test('ticket add --budget below the floor is refused with a message naming the f
   });
 });
 
+// Ruling 16: `ticket add --expected-artifact <path>`, repeatable, file kind
+// only (the only kind the scheduler ever verifies -- types.ts, scheduler.ts).
+
+test('ticket add --expected-artifact, repeated, stores each path as a file-kind entry', async () => {
+  await withTempDb('magarine-expected-artifact-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    );
+    const res = await run([
+      'ticket',
+      'add',
+      '--project',
+      project.id,
+      '--title',
+      'C',
+      '--expected-artifact',
+      'out.md',
+      '--expected-artifact',
+      'report.json',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(res.code, 0, res.stderr);
+    const ticket = JSON.parse(res.stdout);
+    assert.deepEqual(ticket.expectedArtifacts, [
+      { kind: 'file', path: 'out.md' },
+      { kind: 'file', path: 'report.json' },
+    ]);
+  });
+});
+
+test('ticket add with no --expected-artifact stores expectedArtifacts as null, never []: null and [] mean different things (types.ts)', async () => {
+  await withTempDb('magarine-expected-artifact-absent-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    );
+    const res = await run(['ticket', 'add', '--project', project.id, '--title', 'C', '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    const ticket = JSON.parse(res.stdout);
+    assert.equal(ticket.expectedArtifacts, null, 'absent flag must store null, not []');
+    assert.notDeepEqual(ticket.expectedArtifacts, [], 'null is not the same as an empty list');
+  });
+});
+
+test('ticket add --expected-artifact with an empty path is refused, naming the flag, not silently stored', async () => {
+  await withTempDb('magarine-expected-artifact-empty-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    );
+    const res = await run([
+      'ticket',
+      'add',
+      '--project',
+      project.id,
+      '--title',
+      'C',
+      '--expected-artifact',
+      '',
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.notEqual(res.code, 0, 'an empty --expected-artifact path must be refused, not silently stored');
+    assert.match(res.stderr, /--expected-artifact/, 'the refusal must name the flag');
+    assert.doesNotMatch(res.stderr, /\.ts:\d+/, 'must not leak a raw stack trace to the user');
+  });
+});
+
 test('project set --dir moves the project to a new directory, deriving both workspaceRoot and scopePath from it', async () => {
   await withTempDb('magarine-projectset-dir-', async (dbFile, dir) => {
     const project = JSON.parse(

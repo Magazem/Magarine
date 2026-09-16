@@ -4,7 +4,9 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { openDb } from './db/index.ts';
+import { rmSyncResilient } from './db/testSupport.ts';
 import {
   addDependency,
   createProject,
@@ -23,6 +25,7 @@ import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { tick, runUntilIdle } from './scheduler.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import { buildInbox } from './commands/inbox.ts';
+import { spawnManaged } from './process.ts';
 import { testTempRoot } from './testSupport.ts';
 import type { AgentAdapter, AgentAdapterCapabilities, TicketEnvelope, WorkerEvent, WorkerHandle, Workspace } from './types.ts';
 
@@ -835,6 +838,69 @@ test('a ticket with no expected_artifacts list at all keeps today\'s rule -- any
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+});
+
+// Ruling 16: the enforcement above was only ever proven for a Manager-made
+// ticket (`createTicket` called directly). A ticket created THROUGH THE CLI
+// PATH (`ticket add --expected-artifact`) must reach the exact same branch --
+// the CLI-made ticket is the one every hand-written test scenario and every
+// owner-typed ticket actually is. Driven entirely through the real `magarine`
+// CLI (project create, ticket add, tick, board) rather than reopening the
+// sqlite file in-process afterward -- node:sqlite's Windows file-handle
+// release after a subprocess has written to it is not reliably fast enough
+// for a same-process reopen to be a safe test dependency.
+test('a ticket created through the CLI with --expected-artifact reaches the same malformed_result enforcement as a Manager-made one, naming the missing file on the board', async () => {
+  const dir = mkdtempSync(join(workspaceBaseDir, 'cli-expected-artifact-'));
+  try {
+    const dbFile = join(dir, 'magarine.db');
+    const cliPath = fileURLToPath(new URL('./cli.ts', import.meta.url));
+    const runCli = (args: string[]) =>
+      new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveRun) => {
+        const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args] });
+        let stdout = '';
+        let stderr = '';
+        proc.onStdout((c) => (stdout += c));
+        proc.onStderr((c) => (stderr += c));
+        proc.wait().then((r) => resolveRun({ code: r.code, stdout, stderr }));
+      });
+
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--json', '--db', dbFile]);
+    const project = JSON.parse(projectRes.stdout);
+    // `--max-attempts 1`: the board only ever shows a `lastFailureReason` for
+    // a ticket currently sitting in FAILED (board.ts's computeLastFailureReason)
+    // -- a ticket merely returned to READY for a future retry is not
+    // "currently failing" by that function's own rule, so this must exhaust
+    // to FAILED in one attempt to reach the board line at all.
+    const ticketRes = await runCli([
+      'ticket', 'add', '--project', project.id, '--title', 'cli-made', '--max-attempts', '1',
+      '--workspace', 'NONE', '--expected-artifact', 'out.md', '--json', '--db', dbFile,
+    ]);
+    assert.equal(ticketRes.code, 0, ticketRes.stderr);
+    const ticket = JSON.parse(ticketRes.stdout);
+    assert.deepEqual(ticket.expectedArtifacts, [{ kind: 'file', path: 'out.md' }]);
+
+    // No --fake-script: the default fake adapter's own "succeed" behaviour
+    // (adapters/fakeAdapter.ts's defaultSuccessArtifacts) already declares a
+    // file it actually writes into the NONE workspace -- just never the one
+    // named 'out.md' this ticket declared, which is exactly the missing-
+    // declared-artefact branch this test targets.
+    const tickRes = await runCli(['tick', '--project', project.id, '--json', '--db', dbFile]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+
+    const statusRes = await runCli(['status', '--project', project.id, '--json', '--db', dbFile]);
+    const tickets = JSON.parse(statusRes.stdout) as Array<{ id: string; status: string; attemptCount: number }>;
+    const afterTick = tickets.find((t) => t.id === ticket.id)!;
+    assert.equal(afterTick.status, 'FAILED', 'exhausted after its one attempt on a missing declared artefact');
+    assert.equal(afterTick.attemptCount, 1);
+
+    const boardRes = await runCli(['board', '--project', project.id, '--json', '--db', dbFile]);
+    const board = JSON.parse(boardRes.stdout) as { tickets: Array<{ id: string; lastFailureReason: string | null }> };
+    const row = board.tickets.find((t) => t.id === ticket.id);
+    assert.ok(row, 'must reach the board');
+    assert.match(row!.lastFailureReason ?? '', /out\.md/, 'the board reason must name the missing artefact');
+  } finally {
+    await rmSyncResilient(dir);
+  }
 });
 
 // --- Batch 15 ruling 7: worker_progress carries the derived tool/state, not just the raw message ---
