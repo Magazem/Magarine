@@ -22,50 +22,39 @@ $3.38 equivalent.
 
 ## Where we are
 
-**Batch 14 delivered the DESIGN of the interface, not the interface.** Pass 3 is committed at
-`c946986` — and **none of it is in the product.** `packages/core/src/ui/page.ts` is the same
-443-line inline page as before batch 14, with zero pass-3 markers in it; there is no
-`packages/core/ui/`, no font file anywhere under `packages/core`, no static asset route, and
-ruling 7's read path (`latest_activity`, `/progress`, `text/event-stream`, `expected_artifacts`)
-appears nowhere in `src` except one unrelated comment. All verified 2026-09-16.
+**Batch 15 is IN PROGRESS: building the interface batch 14 designed.** Batch 14 delivered the
+DESIGN only; the product still served a 443-line inline page. `docs/strategy/batch-15-spec.md`
+is the authority, plus four addenda.
 
-**How this was missed, because the shape recurs:** the batch 14 spec put "step 2, implementation"
-in a single sentence, and the batch was allowed to close on step 1. Its own closing condition —
-the owner walking the new page — cannot have happened, because there is no new page. A batch
-whose closing condition is untestable has not closed. Batch 15 is batch 14 step 2.
+**Two roles, disjoint files, contract fixed in advance:**
 
-The owner rejected pass 1 as *"very AI generic"* and supplied `propos/`: a generated target
-image, a 686-line written brief, and two scaffolded projects. **Read
-`docs/design/REFERENCE-READ.md`** — it is the designer's analysis and it leads with its own
-corrected error.
+- **Role A, Daemon Read-Path Engineer** (task `01a0a74d`, state note `01a0a865`). Owns the daemon
+  and store files, plus `cli.ts` for one flag and `adapters/claudeCli.ts` for `describeProgress`
+  only. **Steps 1 and 2 report complete; step 3 (static assets) and step 4 (expected artefacts)
+  remain.**
+- **Role B, Interface Engineer** (task `01a0a751`, plus `01a0a862` and `01a0a875`). Owns
+  `packages/core/ui/**`, `src/ui/page.ts`, and `check-organism.js`. **The organism and font layer
+  are committed. `index.html`, `app.js`, `skin-brutalist.css`, the element-field table and a
+  contrast test are on disk uncommitted. The ruling-15 nav rework is queued.**
 
-Pass 3 shipped Living Brutalism, a kanban board, and a **generated agent avatar system**
-on three non-colliding channels: identity is shape, activity is motion, status is colour.
-On disk in `docs/design/pass3/`: three screens, `tokens.css`, `BRIEF.md`, and
-**`check-organism.js`**, which extracts the generator from the shipped page and proves its
-invariants. Run it before and after any change to the generator.
+**THE CONTRACT BETWEEN THEM — do not renegotiate unilaterally:** board rows carry
+`latest_activity: { state, tool, at, sequence } | null` where state is one of reading, writing,
+running, testing, finishing, reporting; stream events are the event row as JSON with `id` =
+`sequence` and event name = `event_type`; static routes are `GET /ui/<name>` EXACTLY, no path
+separators.
 
-**Three defects were found by verification and fixed before that commit**, so they appear
-nowhere in history: contrast measured against only one of four surfaces (failing at 4.23:1 on
-load); a generator version that was present as a string but inert, so bumping it would have
-restyled every existing avatar; and "symmetry by construction" that was false for roughly
-three quarters of fable seeds, invisible because every hand-checked seed happened to miss the
-buggy branch.
+**Rulings 10-15** live in `docs/strategy/batch-15-spec.md` and addenda 1-4. The ones that bite:
+**13** (six regions, stable ids, placement in the skin, script sets state never style, `data-skin`
+switch), **14** (the `testing` state is classified at the adapter and the command text never
+leaves it), **15** (three views survive as a root `data-view` attribute; **with no attribute
+nothing is hidden** — that degraded state is the easiest requirement to lose).
 
-**Ruling: `docs/strategy/batch-14-addendum-3-ruling-9-amended.md` is the authority on the
-identity layer** and supersedes ruling 9 where they disagree. Batch 14: tier = family +
-symmetry, status = colour. Batch 15: purpose = family, policy = symmetry, name-hash = the cell
-draw; **the tier has no channel in the organism after batch 15, by design.** Density is struck
-as an identity signal and survives only as a weight.
+**WHAT IS NOT YET VERIFIED BY THE ORCHESTRATOR:** Role A's steps 1 and 2 were reported complete
+but the verification window had not opened when this was written. Nothing of steps 1-2 beyond
+commit `de36bbe` has been independently mutation-tested by the lead. **Verify before committing.**
 
-**Sequence from here (RESEQUENCED by `batch-15-spec.md` section 2):** 15 = batch 14 step 2 —
-the daemon read path, the event stream, static assets, expected artefacts, and pass 3 built as
-the served page. 16 = worker profiles and avatar seeds. 17 = the Windows window host. 18 =
-per-ticket discussion, tags, shortcuts, and the owner's second skin.
-
-**Note:** `docs/design/pass3/BRIEF.md` section 7 still says `mgr` "arrives with profiles in
-batch 15" and marks `bell · 16`. Stale for the same reason. **The spec is authoritative over
-the brief and this file.**
+**Sequence from here:** 16 = worker profiles and avatar seeds. 17 = the Windows window host.
+18 = per-ticket discussion, tags, shortcuts, and the owner's second skin.
 
 ## How this team works — the rules that were earned, not assumed
 
@@ -119,6 +108,19 @@ comparing runs, **not money leaving an account.** The binding constraint is **se
 and **the team talking is the expensive part, not the product running** — six real worker
 invocations cost ~$1.00 while a day of six agents coordinating cost far more. Never broadcast;
 retire finished agents.
+
+**THE `advisor` TOOL IS OFF — the owner disabled it 2026-09-16.** Every call re-fed the ENTIRE
+conversation and chat history to a second model, and that is where most of a session went in
+about an hour. In the owner's words: **"the real advisor is the strategist, or you for smaller
+cases."** Escalate design and scope questions to the Strategist; decide integration and
+housekeeping yourself. If it ever reappears, announce before calling it.
+
+**Three measured wastes, all the Orchestrator's, corrected 2026-09-16:** writing every brief
+twice (a long board task AND a long chat message repeating it — the board is the durable copy,
+the message is a pointer); twelve documentation commits in sixteen minutes where three would
+have done; and essay-length messages where three lines carry the instruction. One hour produced
+13 commits of which exactly one held product work. **Answer usage questions with measured
+numbers, not a general account of coordination cost.**
 
 ## Team
 
