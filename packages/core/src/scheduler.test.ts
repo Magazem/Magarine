@@ -773,6 +773,39 @@ test('progress events are persisted as worker_progress internal events on the ru
   assert.equal(progressEvents[0].visibility, 'internal');
 });
 
+// --- Batch 15 ruling 7: worker_progress carries the derived tool/state, not just the raw message ---
+
+test('a worker_progress event\'s payload carries the tool name and activity state derived from the message, ruling 7\'s pure function applied once at write time', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'reads then writes', workspaceType: 'NONE' });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  const s = started[0];
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'tool_use: Read' });
+  adapter.emit(s.handle.id, { type: 'progress', message: 'tool_use: Edit' });
+  adapter.emit(s.handle.id, { type: 'progress', message: 'text: still working on it' });
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
+  });
+  await s.done;
+
+  const progressEvents = listEventsForEntity(db, 'run', s.runId).filter((e) => e.eventType === 'worker_progress');
+  const payloads = progressEvents.map((e) => e.payload as { message: string; tool: string | null; state: string });
+  assert.deepEqual(
+    payloads.map((p) => [p.tool, p.state]),
+    [
+      ['Read', 'reading'],
+      ['Edit', 'writing'],
+      [null, 'reporting'],
+    ]
+  );
+});
+
 // --- Batch 4: the daemon's own cost tally stops a run independent of the tool's own ceiling check ---
 
 test('a progress event whose cumulative costUsd crosses the ceiling stops the worker and records a non-retryable budget_exceeded failure with the tally and overshoot', async () => {

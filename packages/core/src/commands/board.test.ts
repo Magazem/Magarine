@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from '../db/index.ts';
-import { createArtifact, createProject, createRun, createTicket, pauseProjectAdapter, updateTicketFields } from '../store.ts';
+import { createArtifact, createProject, createRun, createTicket, insertEvent, pauseProjectAdapter, updateTicketFields } from '../store.ts';
+import { recordTicketTransition } from '../stateMachine.ts';
 import { buildBoard, formatBoard, truncateTitleForDisplay } from './board.ts';
+
+// Moves a freshly-created ticket to IN_PROGRESS the same way tick() would
+// (dependencies_resolved -> READY, run_started -> IN_PROGRESS), without
+// going through the scheduler itself -- this file tests buildBoard in
+// isolation from any adapter.
+function moveToInProgress(db: ReturnType<typeof openDb>, ticketId: string): void {
+  recordTicketTransition(db, { ticketId, event: 'dependencies_resolved', idempotencyKey: `dr:${ticketId}` });
+  recordTicketTransition(db, { ticketId, event: 'run_started', idempotencyKey: `rs:${ticketId}` });
+}
 
 // Batch 9: a manager ticket must be distinguishable from a work ticket on
 // the board at a glance -- the moment planning is used in anger, a board
@@ -143,6 +153,89 @@ test('buildBoard exposes a structured pauseReason alongside pauseMessage, null e
 
   const notPaused = createProject(db, { name: 'not-paused-p2' });
   assert.equal(buildBoard(db, notPaused.id).pauseReason, null);
+});
+
+// Batch 15 ruling 7: `latest_activity` on every board row for a RUNNING
+// ticket, null otherwise -- read from the current run's most recent
+// worker_progress event, itself carrying the tool/state scheduler.ts already
+// derived once at write time (see scheduler.test.ts).
+test('buildBoard reports latestActivity for an IN_PROGRESS ticket from its run\'s most recent worker_progress event', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'reading then writing' });
+  moveToInProgress(db, ticket.id);
+  const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
+
+  insertEvent(db, {
+    projectId: project.id,
+    eventType: 'worker_progress',
+    entityType: 'run',
+    entityId: run.id,
+    payload: { message: 'tool_use: Read', costUsd: 0, tool: 'Read', state: 'reading' },
+    idempotencyKey: 'p1',
+  });
+  insertEvent(db, {
+    projectId: project.id,
+    eventType: 'worker_progress',
+    entityType: 'run',
+    entityId: run.id,
+    payload: { message: 'tool_use: Write', costUsd: 0, tool: 'Write', state: 'writing' },
+    idempotencyKey: 'p2',
+  });
+
+  const row = buildBoard(db, project.id).tickets.find((t) => t.id === ticket.id)!;
+  assert.equal(row.latestActivity?.state, 'writing');
+  assert.equal(row.latestActivity?.tool, 'Write');
+  assert.equal(typeof row.latestActivity?.sequence, 'number');
+  assert.equal(typeof row.latestActivity?.at, 'string');
+});
+
+test('buildBoard reports latestActivity null for an IN_PROGRESS ticket whose run has not reported any progress yet', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'just started' });
+  moveToInProgress(db, ticket.id);
+  createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
+
+  const row = buildBoard(db, project.id).tickets.find((t) => t.id === ticket.id)!;
+  assert.equal(row.latestActivity, null);
+});
+
+test('buildBoard reports latestActivity null for a ticket that is not IN_PROGRESS, even one with a past run\'s progress history', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'open, never run' });
+
+  const row = buildBoard(db, project.id).tickets.find((t) => t.id === ticket.id)!;
+  assert.equal(row.latestActivity, null);
+});
+
+// A ticket can have a run still recorded as 'running' while its OWN status
+// is not IN_PROGRESS -- e.g. right after `POST /tickets/{id}/cancel`, which
+// settles the run to 'cancelled' but only synchronously; the same gap this
+// test exploits deliberately (a run left 'running' by hand, on a ticket
+// this suite never promotes past OPEN) proves the gate is doing real work:
+// without it, a stray running-status run row on a settled/never-started
+// ticket would leak an activity marker for work that, from the ticket's own
+// point of view, either never started or is already over.
+test('buildBoard reports latestActivity null for a ticket that has a running run but whose own status is not IN_PROGRESS', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'status says otherwise' });
+  const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
+  insertEvent(db, {
+    projectId: project.id,
+    eventType: 'worker_progress',
+    entityType: 'run',
+    entityId: run.id,
+    payload: { message: 'tool_use: Read', costUsd: 0, tool: 'Read', state: 'reading' },
+    idempotencyKey: 'p1',
+  });
+
+  const row = buildBoard(db, project.id).tickets.find((t) => t.id === ticket.id)!;
+  assert.equal(ticket.status, 'OPEN', 'this test is only meaningful if the ticket is genuinely not IN_PROGRESS');
+  assert.equal(run.status, 'running', 'and only meaningful if a running run genuinely exists for it');
+  assert.equal(row.latestActivity, null);
 });
 
 // Batch 10 owner walk finding 4: a real scope document handed in as a

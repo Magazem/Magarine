@@ -17,6 +17,7 @@ import {
   listArtifactsForTicket,
   MIN_BUDGET_USD,
   listEventsForProject,
+  listRunsForTicket,
   pauseProjectAdapter,
   projectSpendUsd,
   resolveManagerModel,
@@ -465,4 +466,24 @@ test('finishRun refuses to touch a run that was never "running" in the first pla
   assert.equal(finishRun(db, run.id, { status: 'failed', failureClass: 'adapter_failure' }), false);
   assert.equal(getRun(db, run.id)!.status, 'cancelled');
   assert.equal(getRun(db, run.id)!.failureClass, 'run_timeout');
+});
+
+// --- Batch 15, ruling 7: the read path needs every run of a ticket, not
+// just the ones a status-scoped query already covers, to find "the latest
+// progress event per run".
+
+test('listRunsForTicket returns every run for a ticket, oldest attempt first, and none for an unrelated ticket', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const a = createTicket(db, { projectId: project.id, title: 'a' });
+  const b = createTicket(db, { projectId: project.id, title: 'b' });
+
+  const run1 = createRun(db, { ticketId: a.id, attempt: 1, adapter: 'fake' });
+  finishRun(db, run1.id, { status: 'failed' });
+  const run2 = createRun(db, { ticketId: a.id, attempt: 2, adapter: 'fake' });
+  createRun(db, { ticketId: b.id, attempt: 1, adapter: 'fake' });
+
+  const runs = listRunsForTicket(db, a.id);
+  assert.deepEqual(runs.map((r) => r.id), [run1.id, run2.id]);
+  assert.equal(listRunsForTicket(db, 'tkt_nonexistent').length, 0);
 });

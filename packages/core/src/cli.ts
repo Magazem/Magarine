@@ -26,7 +26,7 @@ import {
 import { resolveReadiness } from './dependencies.ts';
 import { discussProject, ManagerError } from './manager.ts';
 import { approve, ApproveError } from './commands/approve.ts';
-import { buildActivity, formatActivity } from './commands/activity.ts';
+import { buildActivity, buildTicketProgress, formatActivity, formatTicketProgress } from './commands/activity.ts';
 import { buildBoard, formatBoard, truncateTitleForDisplay } from './commands/board.ts';
 import { buildProjectList, formatProjectList } from './commands/projectList.ts';
 import { buildInbox, formatInbox } from './commands/inbox.ts';
@@ -313,7 +313,14 @@ const FLAG_SPECS: Record<string, string[]> = {
   status: ['project'],
   board: ['project'],
   inbox: ['project'],
-  activity: ['project', 'ticket', 'all'],
+  // `--progress` (batch 15 ruling 7): switches this command from the
+  // ordinary event log to `activity --progress --ticket <id>`'s own
+  // narrower question -- the latest worker_progress event per run for ONE
+  // ticket -- which `buildActivity`'s existing visibility filter can never
+  // answer (worker_progress stays internal by design; see policy.ts). Only
+  // meaningful with `--ticket`; see the handler below for the refusal when
+  // it is omitted.
+  activity: ['project', 'ticket', 'all', 'progress'],
   // Batch 9: `magarine plan --project <id> --mission "<text>"` creates the
   // manager ticket. Batch 11 part 2 (Strategist ruling, settled):
   // `--mission` now seeds the project's scope document with the text (or
@@ -358,6 +365,14 @@ const FAKE_SCRIPT_KINDS = new Set<FakeScript['kind']>([
   'needs_user_decision',
   'malformed_result',
   'hang',
+  // Batch 15 ruling 7: never terminates on its own (fakeAdapter.ts's own
+  // doc comment on this kind), so a ticket scripted this way stays
+  // IN_PROGRESS with exactly one recorded worker_progress event -- the
+  // shape `latest_activity`/`GET /tickets/{id}/progress`/`activity
+  // --progress` all need something to read, drivable end to end through
+  // the real CLI rather than only from a test file calling FakeAdapter
+  // directly.
+  'progress',
 ]);
 
 // Batch 5 item 5: the daemon's own outcome vocabulary, mapped onto
@@ -953,6 +968,19 @@ async function main(): Promise<void> {
 
   if (command === 'activity') {
     const db = openDb(dbPath(flags));
+
+    if (flags.progress) {
+      const ticketId = typeof flags.ticket === 'string' ? flags.ticket : '';
+      if (!ticketId) {
+        process.stderr.write('activity --progress requires --ticket <id>\n');
+        process.exitCode = 1;
+        return;
+      }
+      const progress = buildTicketProgress(db, ticketId);
+      output(flags, progress, formatTicketProgress(progress));
+      return;
+    }
+
     let projectId: string | undefined;
     if (typeof flags.project === 'string') {
       try {

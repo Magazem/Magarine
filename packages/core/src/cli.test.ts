@@ -649,3 +649,38 @@ test('--project with a name matching two projects refuses ambiguously, listing b
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Batch 15 ruling 7 item 1: `activity --progress --ticket <id>`.
+
+test('activity --progress without --ticket refuses rather than guessing which ticket', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-progress-no-ticket-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['activity', '--progress', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /--progress requires --ticket/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('activity --progress --ticket <id> reports (no runs yet) for a ticket that has never run, as JSON and as text', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-progress-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile])).stdout);
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 't', '--json', '--db', dbFile])).stdout
+    );
+
+    const jsonRes = await run(['activity', '--progress', '--ticket', ticket.id, '--json', '--db', dbFile]);
+    assert.equal(jsonRes.code, 0, jsonRes.stderr);
+    assert.deepEqual(JSON.parse(jsonRes.stdout), []);
+
+    const textRes = await run(['activity', '--progress', '--ticket', ticket.id, '--db', dbFile]);
+    assert.equal(textRes.code, 0, textRes.stderr);
+    assert.match(textRes.stdout, /no runs yet/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

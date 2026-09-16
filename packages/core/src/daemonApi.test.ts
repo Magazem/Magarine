@@ -466,6 +466,68 @@ test('POST /projects/{id}/plan creates a manager ticket with no body required, P
   }
 });
 
+// Batch 15 ruling 7 item 1: GET /tickets/{id}/progress and, via the board,
+// latest_activity -- both read from the SAME worker_progress rows a real
+// run leaves behind. `--fake-script <ticketId>=progress` never terminates
+// (fakeAdapter.ts), so the ticket stays IN_PROGRESS with exactly one
+// worker_progress event recorded, which is enough to prove the route and
+// the board field are both wired to real data through a real spawned
+// daemon, not just this role's own unit tests of buildTicketProgress.
+test('GET /tickets/{id}/progress returns one entry per run, and GET /board reports the same run\'s latestActivity, for a ticket a fake-scripted worker leaves IN_PROGRESS', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'progress-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+    const ticketRes = await runCli([
+      'ticket', 'add', '--project', project.id, '--title', 'chatty', '--state-dir', stateDir, '--json',
+    ]);
+    const ticket = JSON.parse(ticketRes.stdout);
+
+    const handle = spawnServe([
+      '--state-dir', stateDir, '--tick-interval', '0.1', '--json',
+      '--fake-script', `${ticket.id}=progress`,
+    ]);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const call = (method: 'GET' | 'POST', path: string) => api(info.port, fileInfo.token, method, path);
+
+      // No CLI flag exists to script the progress message's own text
+      // (cli.ts's --fake-script only ever constructs `{ kind }`), so this
+      // run's message is the fake's own default ('fake progress'), which
+      // classifyProgressMessage reads as 'reporting' -- still enough to
+      // prove the plumbing, distinct from activity.test.ts's own direct
+      // unit coverage of every tool-name branch.
+      const deadline = Date.now() + 10_000;
+      let progress: Array<{ runId: string; runStatus: string; latest: { state: string } | null }> = [];
+      while (Date.now() < deadline) {
+        const res = await call('GET', `/tickets/${ticket.id}/progress`);
+        if (res.status === 200 && (res.json as unknown[]).length > 0 && (res.json as Array<{ latest: unknown }>)[0].latest) {
+          progress = res.json as typeof progress;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      assert.equal(progress.length, 1);
+      assert.equal(progress[0].runStatus, 'running');
+      assert.equal(progress[0].latest?.state, 'reporting');
+
+      const missing = await call('GET', '/tickets/tkt_ghost/progress');
+      assert.equal(missing.status, 404);
+
+      const boardRes = await call('GET', `/board?project=${project.id}`);
+      const board = boardRes.json as { tickets: Array<{ id: string; status: string; latestActivity: { state: string } | null }> };
+      const row = board.tickets.find((t) => t.id === ticket.id)!;
+      assert.equal(row.status, 'IN_PROGRESS');
+      assert.equal(row.latestActivity?.state, 'reporting');
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 // Batch 11 item 3 (the page): GET / is the one deliberate exception to
 // "auth before anything else" -- the page itself is where the owner types
 // the token IN, so it cannot be gated behind that same token. GET /projects

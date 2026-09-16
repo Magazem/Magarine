@@ -1,8 +1,48 @@
 import type { Db } from '../db/index.ts';
 import { isKnownModel } from '../pricing.ts';
-import { getDependencies, getProject, getTicket, listArtifactsForTicket, listTickets } from '../store.ts';
+import { getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
 import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
+import type { ActivityState } from './activity.ts';
 import { describeProjectPause } from './inbox.ts';
+
+// Ruling 7 (batch-15-spec.md section 3, Role A item 1): the shape of a
+// board row's own activity marker, contract-fixed with Role B: `state` is
+// one of ActivityState's six values, `tool` is the raw tool name (null for
+// a text line), `at` is the underlying event's createdAt, `sequence` is its
+// events.sequence -- the same identifier the streamed route (daemonApi.ts)
+// uses as an SSE frame's `id`, so the two surfaces can be cross-referenced.
+export interface LatestActivity {
+  state: ActivityState;
+  tool: string | null;
+  at: string;
+  sequence: number;
+}
+
+// "RUNNING" in the brief has no literal TicketStatus of that name -- the
+// one status that means a worker is actually attached to this ticket right
+// now is IN_PROGRESS (see types.ts's TicketStatus and stateMachine.ts's
+// TRANSITIONS table: every other status is either not-yet-started or
+// settled). Read as a plain English gloss for IN_PROGRESS, not a status
+// this codebase is missing.
+//
+// Gated on status BEFORE touching the DB again: buildBoard already does one
+// query per ticket for cost and artefacts (see ticketCostUsd/
+// listArtifactsForTicket below), and most boards are mostly DONE/CANCELLED
+// rows for which this would otherwise be a wasted run+event lookup.
+function computeLatestActivity(db: Db, ticket: Ticket): LatestActivity | null {
+  if (ticket.status !== 'IN_PROGRESS') return null;
+  const runs = listRunsForTicket(db, ticket.id);
+  const currentRun = runs.filter((r) => r.status === 'running').at(-1);
+  if (!currentRun) return null;
+
+  const progressEvents = listEventsForEntity(db, 'run', currentRun.id).filter((e) => e.eventType === 'worker_progress');
+  const last = progressEvents.at(-1);
+  if (!last) return null;
+
+  const payload = last.payload as { tool?: string | null; state?: ActivityState };
+  if (!payload.state) return null;
+  return { state: payload.state, tool: payload.tool ?? null, at: last.createdAt, sequence: last.sequence };
+}
 
 // `board`: every ticket in a project, its attempts, its cost, and what is
 // still blocking it. Read-only; touches no other role's files.
@@ -38,6 +78,8 @@ export interface BoardTicket {
   modelReason: string | null;
   /** Batch 13 ruling 1c: every artefact this ticket has declared, across every run -- so a DONE row is legible as what it actually produced, not just that it succeeded. */
   artifacts: BoardArtifact[];
+  /** Batch 15 ruling 7: the current run's most recent worker_progress event, mapped to an activity state -- null for any ticket not currently IN_PROGRESS, or one that is but has not reported progress yet. See LatestActivity/computeLatestActivity above. */
+  latestActivity: LatestActivity | null;
   blockedBy: string[];
 }
 
@@ -168,6 +210,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
           kind: a.kind,
           content: a.kind === 'file' ? a.pathOrUri : (a.text ?? ''),
         })),
+        latestActivity: computeLatestActivity(db, t),
         blockedBy: blockingDependencies(db, t),
       };
     }),

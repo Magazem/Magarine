@@ -634,6 +634,16 @@ export function listRunsByStatus(db: Db, status: RunStatus): Run[] {
   return rows.map(rowToRun);
 }
 
+// Batch 15 ruling 7: every run a ticket has ever had, oldest attempt first --
+// needed to answer "the latest progress event per run" (GET
+// /tickets/{id}/progress, commands/activity.ts's buildTicketProgress),
+// which a status-scoped query like listRunsByStatus above cannot answer on
+// its own since a ticket's earlier, already-settled runs matter too.
+export function listRunsForTicket(db: Db, ticketId: string): Run[] {
+  const rows = db.prepare('SELECT * FROM runs WHERE ticket_id = ? ORDER BY started_at ASC').all(ticketId) as RunRow[];
+  return rows.map(rowToRun);
+}
+
 // Batch 11 item 3: counts every run started on a manager-kind ticket in this
 // project since `sinceIso`, regardless of that run's outcome -- each such
 // run IS a Manager invocation (a spawn, a cost), whether it landed DONE,

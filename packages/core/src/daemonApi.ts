@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Db } from './db/index.ts';
-import { buildActivity } from './commands/activity.ts';
+import { buildActivity, buildTicketProgress } from './commands/activity.ts';
 import { approve, ApproveError } from './commands/approve.ts';
 import { buildBoard } from './commands/board.ts';
 import { decide, DecideError } from './commands/decide.ts';
@@ -35,7 +35,11 @@ import { PAGE_HTML } from './ui/page.ts';
 // cancel, POST /projects/{id}/resume|set, POST /tick to force a pass.
 // Nothing else." All JSON, all behind the token. Batch 9 adds exactly one
 // route to that list, per its own spec (section 2): `POST
-// /projects/{id}/plan`, the Manager's daemon-route trigger.
+// /projects/{id}/plan`, the Manager's daemon-route trigger. Batch 15 (Role
+// A, ruling 7 and its own item 2) adds `GET /tickets/{id}/progress`, `GET
+// /events?since=<sequence>` (answering `text/event-stream`, see
+// handleEventsStream below -- the one non-JSON route this file serves) and
+// the `GET /ui/<name>` static asset route (ruling 12).
 //
 // Every mutation here goes through the exact same functions the CLI already
 // calls (store.ts, commands/*.ts, dependencies.ts) -- this file adds no
@@ -284,6 +288,17 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     const ticketId = url.searchParams.get('ticket') ?? undefined;
     const all = url.searchParams.get('all') === 'true';
     return { status: 200, body: buildActivity(deps.db, { projectId, ticketId, all }) };
+  }
+
+  const progressMatch = /^\/tickets\/([^/]+)\/progress$/.exec(path);
+  if (method === 'GET' && progressMatch) {
+    const [, ticketId] = progressMatch;
+    if (!getTicket(deps.db, ticketId)) throw new ApiError(404, `no such ticket: ${ticketId}`);
+    // Ruling 7 item 1: the latest progress event PER RUN, not just one
+    // figure for the ticket -- see buildTicketProgress's own doc comment
+    // for why (an exhausted, retried ticket's earlier runs each keep their
+    // own history).
+    return { status: 200, body: buildTicketProgress(deps.db, ticketId) };
   }
 
   // Batch 11 item 3 (the page): the project selector needs a way to

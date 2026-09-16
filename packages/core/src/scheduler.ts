@@ -4,6 +4,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
 import { isManagerDailyCapReached, MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
+import { classifyProgressMessage, parseProgressTool } from './commands/activity.ts';
 import { applyManagerProposal } from './managerApply.ts';
 import { buildManagerEnvelope } from './managerEnvelope.ts';
 import { classify } from './policy.ts';
@@ -597,12 +598,21 @@ async function applyWorkerEventInner(
 
       if (ctx.progressSeq.n >= 200) return false;
       ctx.progressSeq.n += 1;
+      // Ruling 7: derived once, here, at write time -- every reader
+      // (latest_activity on a board row, GET /tickets/{id}/progress,
+      // `activity --progress`) reads `tool`/`state` straight off the stored
+      // payload rather than re-parsing `message` at each read site. `tool`
+      // is `null`, not `undefined`, so a JSON round trip through the
+      // events table's payload_json preserves "no tool, a text line" as a
+      // real value rather than an absent key a reader might mistake for
+      // "not yet computed".
+      const tool = parseProgressTool(event.message) ?? null;
       insertEvent(db, {
         projectId: ticket.projectId,
         eventType: 'worker_progress',
         entityType: 'run',
         entityId: run.id,
-        payload: { message: event.message, costUsd: event.costUsd },
+        payload: { message: event.message, costUsd: event.costUsd, tool, state: classifyProgressMessage(event.message) },
         visibility: 'internal',
         idempotencyKey: `worker_progress:${run.id}:${ctx.progressSeq.n}`,
       });
