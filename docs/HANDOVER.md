@@ -22,38 +22,39 @@ $3.38 equivalent.
 
 ## Where we are
 
-**Batch 15 is BUILT, not yet closed out.** Batch 14 delivered the design only; batch 15 built it.
-`docs/strategy/batch-15-spec.md` plus addenda 1-4 are the authority.
+**Batch 15 is BUILT, WALKED BY THE LEAD, AND WAITS ONLY ON THE OWNER'S WALK.** Batch 14 delivered
+the design; batch 15 built it and the daemon serves it. `docs/strategy/batch-15-spec.md` plus
+addenda 1-7 are the authority. **The acceptance record is `docs/evidence/batch-15-walk/RESULT.md`**
+-- read it before claiming anything about batch 15.
 
-**ROLE A (daemon) IS COMPLETE — all four steps committed at `e9d37f8`, verified at 683/683 on a
-still tree, with three mutations re-run by the lead.** Ruling 7's read path, the `/events`
-stream, static assets under ruling 12, and expected artefacts end to end with migration 0013.
+**Done, each verified by the lead on a still tree, suite 704 pass / 0 fail:**
+- Role A, the daemon: read path, `/events` stream, static assets, expected artefacts (`e9d37f8`).
+- Role B, the page: pass 3 as served files (`448b97b`); the three views as a root `data-view`
+  (ruling 15, `68ca8a7`); the scope-view page-scroll fix (`80231ec`); the organism animating from
+  the board's marker (ruling 18, `d7070f8`); keyboard focus on every scrolling region (3A,
+  `88501b0`); the current view drawn, and 23 captures re-taken (`a69f0e2`).
+- Close-out rulings: `ticket add --expected-artifact` and the same on `POST /tickets` (ruling 16,
+  `d3e8281`, `07ebfd2`); `reasonFor` reads `errors` (ruling 17, `edef94c`); the README route table
+  names batch 15's routes (`cad05e5`).
+- **The acceptance walk against a real daemon**, all five Role A items, ruling 18's live-stream
+  animation, and **spec line 82's one small real run**: a Haiku ticket, `DONE` in ~20 s, **$0.0758
+  equivalent, measured**, `hello.md` delivered, watched animating on the page and settling.
 
-**ROLE B (the page) IS PARTLY DONE — committed at `448b97b`.** Deliverables 1, 2, 5 and 6: the
-page as real files under `packages/core/ui/`, the element-to-field table, the contrast matrix
-computed over the full cross product, the font ranges measured from the fonts' own cmaps, and 11
-evidence screenshots. `GET /` now serves it.
+**WHAT REMAINS IN BATCH 15: only the owner's walk** through the Liaison, which closes it. Per
+addendum 7 section 2 the walk asks the owner nothing -- they use the page and report what they
+find. The three observations raised during testing are ruled and recorded in RESULT.md.
 
-**WHAT REMAINS IN BATCH 15 — all Role B:**
-1. **The ruling 15 nav rework** (task `01a0a875`). The three views return as a root `data-view`
-   attribute. NOT BUILT. The screenshots currently show one long page, which is NOT what the
-   owner approved. Requirement 4 is the one to guard: **with no `data-view` attribute nothing is
-   hidden** — put that check in `skin.test.ts`, not a manual grep.
-2. **Deliverable 4's live stream path** — written, only the refused branch exercised. Role A's
-   `/events` now exists, so it can finally be tested.
-3. **Keyboard tab-walk** — never performed, never claimed.
-4. **Re-shoot the three view states** once the nav returns. `.shots/` is gitignored and so is NOT
-   in the repo — but **CORRECTED 2026-09-16 by the lead: the files are still on disk** and were
-   verified present: `stub-daemon.cjs`, `mutate.cjs`, `shoot.sh`, and the profile directories.
-   Nothing needs rebuilding. Reuse them, which also keeps the harness identical to the one that
-   produced the committed evidence. An earlier version of this line, and tasks `01a0a875` and
-   `01a0a88c`, say they are gone; that was inferred from "gitignored, and the Designer's context
-   was reset" and is wrong — gitignored is not deleted.
-
-**OPEN QUESTIONS FOR THE CLOSE-OUT:** whether `ticket add` gains an `--expected-artifact` flag
-(scoped out deliberately, undecided); and a pre-existing defect found in passing — the existing
-"done with nothing delivered" failure never sets `message`, so `reasonFor` cannot surface its
-reason on the board. Untouched, out of scope, worth a batch 16 item.
+**CARRIED TO BATCH 16** (confirmed by the Strategist, addendum 7 section 3):
+1. **The fake adapter cannot script a progress burst -- FIRST**, because ruling 18 requirement 4
+   (the animation survives a re-render) was proven by hand and a scripted burst turns it into a test.
+2. The CLI's `--fake-script` has no `review` kind, so approve/reject cannot be driven end to end.
+3. `POST /tickets` names the Manager's snake_case `expected_artifacts` in its unknown-kind error.
+4. Ruling 18's option B: `worker_progress` events self-describing to any consumer (carry ticketId).
+5. **Found by the real run, put to the Strategist, unruled at the time of writing:** the page's
+   activity state is almost always `reporting`. The daemon classifies `writing`/`finishing`
+   correctly, but each tool call is followed within milliseconds by a `tool result received`
+   event classified `reporting`, and `latestActivity` publishes only the newest event, so the
+   informative state is superseded before any board read sees it. See RESULT.md.
 
 **Sequence from here:** 16 = worker profiles and avatar seeds. 17 = the Windows window host.
 18 = per-ticket discussion, tags, shortcuts, and the owner's second skin.
@@ -163,12 +164,15 @@ numbers, not a general account of coordination cost.**
 
 ## Open with the owner
 
-1. **BLOCKING — has the owner seen and approved pass 3 as the page they will get?** Nothing on
-   disk records it, and the batch 14 spec made their yes the gate to building. **Role B does not
-   start until this is answered; Role A is unaffected.** The screens open directly in a browser
-   from `docs/design/pass3/`.
-2. **Permission for one small real run** (~coffee money in equivalent API cost) to watch the page
-   animate on a genuine event rather than a simulated one.
+Nothing open but the batch 15 walk itself.
+
+**Corrected 2026-09-16 at close-out.** This section listed two items as open -- whether the owner
+had approved pass 3 ("BLOCKING"), and permission for one small real run. **Both were answered by
+the owner in a single message** and recorded at `docs/strategy/batch-15-addendum-2-second-skin.md`
+section 0, line 8: *"Pass 3 is approved: 'the design is good, we will use it.' The small real run
+is permitted."* Neither record here was updated at the time, and the stale copy nearly caused the
+lead to re-ask the owner for a permission already given (addendum 7 section 1). When a relayed
+answer settles something, update every record that asked the question.
 
 ## Carried UNKNOWNs — stated, not assumed away
 

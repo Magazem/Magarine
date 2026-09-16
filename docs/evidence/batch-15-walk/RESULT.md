@@ -1,19 +1,14 @@
 # Batch 15 - the acceptance walk
 
-> **The acceptance walk is RUN: all five Role A items and ruling 18's live-stream
-> animation are satisfied, each with the limits stated where it is.** Two things remain
-> before batch 15 closes, both from spec line 82 and neither run yet:
-> 1. **One small real run** -- a single ticket on the real `claude` adapter, watched on
->    the page. Everything above used the fake adapter, which is not the same claim.
->    Held on the owner's confirmation: spec line 96 says their batch 1 permission for
->    tiny runs covers it, while `batch-15-addendum-owner-answers.md:33` and the handover
->    record it as still open. Asked through the Liaison rather than assumed.
-> 2. **The owner's walk** through the Liaison, which closes the batch -- with the three
->    design questions recorded below.
+> **The acceptance walk is RUN, including spec line 82's one small real run.** All five
+> Role A items, ruling 18's live-stream animation and the real run are satisfied, each
+> with its limits stated where it is. **What remains is only the owner's walk** through
+> the Liaison, which closes the batch; per addendum 7 section 2 it asks them nothing.
 >
-> This file was opened part-written, with its holes named, and filled in against a
-> real daemon. It is kept that way on purpose: batch 14 closed because a spec sentence
-> read as done and nobody checked it against reality (rule 20).
+> This file was opened part-written, with its holes named, and filled in against a real
+> daemon. It is kept that way on purpose: batch 14 closed because a spec sentence read as
+> done and nobody checked it against reality (rule 20). One of those holes -- the real run
+> -- was nearly reported done while still using the fake adapter; see afca124.
 
 Orchestrator. Started 2026-09-16. Authority: `docs/strategy/batch-15-spec.md`
 line 68 (Role A acceptance) and line 82 (Role B acceptance and the closing
@@ -233,7 +228,41 @@ Nothing on the page was changed to get this result.
 
 ---
 
-## Observations for the owner's walk -- design questions, not defects
+## Spec line 82 - one small real run, a single ticket, watched on the page -- SATISFIED
+
+Permitted by the owner in the message that approved pass 3 (`batch-15-addendum-2` line 8,
+"The small real run is permitted"; addendum 7 section 1). Run 2026-09-16 on the real
+`claude` adapter (CLI 2.1.273, `doctor` all PASS), in its own state directory, project
+capped at $1.00 and the ticket at $0.50.
+
+**The ticket**, created through `POST /tickets` while the page was already live on the
+stream: "Create a file named hello.md in the working directory containing exactly one
+short sentence saying hello. Do nothing else." Model `claude-haiku-4-5-20251001`,
+`expectedArtifacts: [{kind: file, path: hello.md}]`.
+
+**The result:** `DONE` about 20 s after the tick. **Equivalent cost $0.0758, measured, not
+an estimate.** One artefact, `hello.md`, reading `Hello, world!` (13 bytes), verified
+against the declared expectation. 19 `worker_progress` events.
+
+**On the page:** the stream stayed live throughout. The organism animated as the board's
+`latestActivity.sequence` advanced -- 14 distinct advances, from 3 to 21, each producing
+one pass; 9 further `data-tick` writes were all at an unchanged sequence inside the
+1600 ms window, which is `resumeMotion` re-arming across re-renders, not a replay. After
+the last event it **settled**: no `data-tick`, no running animation, status `DONE`.
+
+**A finding only a real run could produce -- the state channel is almost always
+`reporting`.** The daemon classified correctly: `writing` at sequences 12 and 14 (tool
+`Write`), `finishing` at 20 (`StructuredOutput`). The page never showed any of them. Each
+tool call is followed within milliseconds by a `tool result received` event classified
+`reporting`, and `latestActivity` publishes only the newest event, so by the time a frame
+causes a board read the informative state is already superseded: the board reads saw
+10, 11, 13, 15, 16, 18, 19, 21 and never 12, 14 or 20. Every one of the 23 ticks animated
+`reporting`. Nothing is invented, so rule 8 holds; but on a real run one of the
+organism's three channels is close to silent. It is the price of ruling 18's "read the
+board's marker" design, which the fake adapter -- one event per script -- could never
+show. Put to the Strategist; not changed here.
+
+## Observations raised during the walk -- all ruled, none put to the owner
 
 Recorded here so they reach the owner's walk rather than a chat log. None blocks the
 acceptance items above; each is a choice the approved design or a ruling made, now
@@ -247,14 +276,22 @@ visible on the real page.
    is "never truncated, clamped or scrolled away", and in two of three views the last
    part of that promise no longer holds. Seen by the lead in
    `batch-15-page/10-view-scope-light-100.png`. A ruling-15 layout choice meeting the
-   page's rule about reasons: the Strategist's or the owner's call.
+   page's rule about reasons.
+   **Ruled (addendum 7, 2(a)): not a defect.** The brief's rule is about the reason
+   *element* -- no clamp, no scroll box of its own; the rail scrolling as a column is the
+   approved layout, and the Needs-you view is the approved answer to a long reason. The
+   over-claiming comment in app.js is corrected (f2db5e6).
 2. **The scope document is capped at `max-height: 19rem` with a fade** in scope view,
    leaving empty space above Conversation in the one view whose purpose is the scope.
    Exactly as drawn in the approved pass 3 design (`docs/design/pass3/tokens.css:502`).
    Raised by the Interface Designer.
+   **Ruled (2(b)): keep the cap.** It is how the brief's "never pushes the conversation
+   below the fold" holds.
 3. **On the token gate, the three view links stay visible and clickable** while every
    region is hidden. Harmless -- nothing changes -- but a user may expect something to.
    Raised by the Interface Designer; same auth-not-views scoping as ruling 15's gate.
+   **Ruled (2(c)): no change.** The gate stays above every region in every view, so a
+   click changes nothing hidden and nothing silent.
 
 ## The finding that makes this walk load-bearing
 
