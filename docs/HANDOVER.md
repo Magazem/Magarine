@@ -42,8 +42,13 @@ evidence screenshots. `GET /` now serves it.
 2. **Deliverable 4's live stream path** — written, only the refused branch exercised. Role A's
    `/events` now exists, so it can finally be tested.
 3. **Keyboard tab-walk** — never performed, never claimed.
-4. **Re-shoot the three view states** once the nav returns. `.shots/` was never in the repo and is
-   gone; the stub daemon needs rebuilding, about fifteen minutes.
+4. **Re-shoot the three view states** once the nav returns. `.shots/` is gitignored and so is NOT
+   in the repo — but **CORRECTED 2026-09-16 by the lead: the files are still on disk** and were
+   verified present: `stub-daemon.cjs`, `mutate.cjs`, `shoot.sh`, and the profile directories.
+   Nothing needs rebuilding. Reuse them, which also keeps the harness identical to the one that
+   produced the committed evidence. An earlier version of this line, and tasks `01a0a875` and
+   `01a0a88c`, say they are gone; that was inferred from "gitignored, and the Designer's context
+   was reset" and is wrong — gitignored is not deleted.
 
 **OPEN QUESTIONS FOR THE CLOSE-OUT:** whether `ticket add` gains an `--expected-artifact` flag
 (scoped out deliberately, undecided); and a pre-existing defect found in passing — the existing
