@@ -156,3 +156,28 @@ test('the element-to-field table ships beside the page and covers the omissions'
     assert.ok(table.includes(omitted), `the omissions list does not mention ${omitted}`);
   }
 });
+
+// ------------------------------------------------------------------ the gate
+
+test('the gate tells a new user how to get the token, and does not promise serve prints it', () => {
+  // RULING 20 item 5 (docs/strategy/batch-15-addendum-9-token-command.md).
+  // The owner's own walk stalled on its first step -- "i can't find the token"
+  // -- because the gate said to paste the token `magarine serve` printed, and
+  // `serve` deliberately never prints it. The gate is the first thing a new
+  // user reads; a false instruction there costs the whole product.
+  //
+  // No earlier test asserted the gate's wording, so nothing is re-pointed
+  // (rule 5): this is a new claim with two halves, and the negative half is
+  // the one that matters, because the old sentence could come back.
+  const start = PAGE_HTML.indexOf('<section id="gate"');
+  const gate = PAGE_HTML.slice(start, PAGE_HTML.indexOf('</section>', start));
+  assert.ok(start >= 0 && gate.length > 0, 'the gate section was not found');
+
+  assert.match(gate, /<span class="mono">magarine token<\/span>/,
+    'the gate does not name `magarine token`, the command that actually gets the token');
+  assert.equal(/\bprint(?:s|ed)?\b/i.test(gate), false,
+    'the gate says the token is printed -- `magarine serve` never prints it');
+  // The fallback may name where the token lives; it must never show one.
+  assert.equal(/[A-Za-z0-9_-]{32,}/.test(gate.replace(/<[^>]+>/g, ' ')), false,
+    'the gate contains something shaped like a token value');
+});

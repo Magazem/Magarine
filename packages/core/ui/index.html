@@ -147,9 +147,12 @@
 <section id="gate" class="panel" hidden>
   <div class="panel-head"><h2>Daemon token</h2></div>
   <div class="b">
-    Paste the token <span class="mono">magarine serve</span> printed. It is kept for
-    this tab only and sent as an <span class="mono">Authorization</span> header to the
-    daemon this page was loaded from — never a cookie, never in a URL.
+    Run <span class="mono">magarine token</span> in a terminal: it copies the token to your
+    clipboard. Paste it here. (It is also the <span class="mono">token</span> field of
+    <span class="mono">daemon.json</span> in the state directory —
+    <span class="mono">.magarine</span> in your home folder, unless you chose another.)
+    It is kept for this tab only and sent as an <span class="mono">Authorization</span>
+    header to the daemon this page was loaded from — never a cookie, never in a URL.
   </div>
   <div class="acts">
     <label class="sr-only" for="token">Daemon token</label>
