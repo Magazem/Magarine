@@ -50,11 +50,18 @@ find. The three observations raised during testing are ruled and recorded in RES
 2. The CLI's `--fake-script` has no `review` kind, so approve/reject cannot be driven end to end.
 3. `POST /tickets` names the Manager's snake_case `expected_artifacts` in its unknown-kind error.
 4. Ruling 18's option B: `worker_progress` events self-describing to any consumer (carry ticketId).
-5. **Found by the real run, put to the Strategist, unruled at the time of writing:** the page's
-   activity state is almost always `reporting`. The daemon classifies `writing`/`finishing`
-   correctly, but each tool call is followed within milliseconds by a `tool result received`
-   event classified `reporting`, and `latestActivity` publishes only the newest event, so the
-   informative state is superseded before any board read sees it. See RESULT.md.
+5. **Ruled -- see `docs/strategy/batch-15-addendum-8-reporting-is-a-text-line.md` (ruling 19).**
+   Found by the real run: the page's activity state was almost always `reporting`. The defect is
+   the classifier's default, not the page and not ruling 18 -- `classifyToolActivity` returns
+   `reporting` for ANY message with no tool, while spec line 63 defines it as "a text line", and
+   the adapter emits five other non-tool families (`tool result received`, `thinking`, ...). A
+   frame-driven page would have shown the same thing. Fix, all in Role A's files: `reporting`
+   only from a `text:` message; a tool result carries its tool's state; other non-tool messages
+   keep the run's current phase (`running` before the first tool), carried beside
+   `ctx.progressSeq`; the persisted `tool` stays `null` for non-tool messages -- the state is the
+   phase, the tool is the evidence. **Order: burst scripting (item 1) first, because ruling 19's
+   scheduler test needs a scripted burst.** The next small real run must record the states
+   actually seen, and they must not all be one state.
 
 **Sequence from here:** 16 = worker profiles and avatar seeds. 17 = the Windows window host.
 18 = per-ticket discussion, tags, shortcuts, and the owner's second skin.
