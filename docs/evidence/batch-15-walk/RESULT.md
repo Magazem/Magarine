@@ -1,17 +1,13 @@
 # Batch 15 - the acceptance walk
 
-> # THIS WALK IS NOT COMPLETE. THE BATCH CANNOT CLOSE ON THIS FILE AS IT STANDS.
+> **The acceptance walk is RUN: all five Role A items and ruling 18's live-stream
+> animation are satisfied, each with the limits stated where it is.** What remains
+> before batch 15 closes is spec line 82's own closing condition -- the owner's walk
+> through the Liaison -- and three design questions recorded below for it.
 >
-> **2 of 5 Role A items are satisfied. 3 are NOT YET RUN.** Plus the live-stream
-> animation that ruling 18 added to the closing condition. Every unsatisfied item
-> below says `NOT YET RUN` in those words. If you are reading this to decide
-> whether batch 15 closes: it does not, until every one of them says otherwise.
->
-> This file was created part-written, deliberately. Batch 14 closed because a
-> single spec sentence read as done and nobody checked it against reality
-> (rule 20). A walk document that exists only once it is finished is a document
-> nobody can check *on*, so this one exists from the start with its own holes
-> named.
+> This file was opened part-written, with its holes named, and filled in against a
+> real daemon. It is kept that way on purpose: batch 14 closed because a spec sentence
+> read as done and nobody checked it against reality (rule 20).
 
 Orchestrator. Started 2026-09-16. Authority: `docs/strategy/batch-15-spec.md`
 line 68 (Role A acceptance) and line 82 (Role B acceptance and the closing
@@ -29,9 +25,9 @@ pattern, so its absence was evidence rather than an oversight in recording.
 
 `pnpm test`, **from `packages/core`**. Result: **683 pass, 0 fail**, ~51s.
 
-Run before any of this session's engineer commits landed, on a clean tree at
-`bcdf042`. To be re-run on the final still tree before close-out; this figure is
-the session's baseline, not the closing number.
+Baseline 683/0 on a clean tree at `bcdf042`, before this session's work.
+**Closing number: 704 pass, 0 fail**, run by the lead on the still tree carrying every
+code change of batch 15 (at `a69f0e2`); only documentation has changed since.
 
 **On the command.** An earlier reading of mine held that `pnpm test` was not
 runnable in this repository. That was wrong, and the correction matters because
@@ -72,35 +68,187 @@ closed literal allow-list cannot.
 
 ---
 
-## Item 2 - every route driven by hand, daemon running, output pasted -- NOT YET RUN
+## Item 2 - every route driven by hand, daemon running, output pasted -- SATISFIED
 
-## Item 3 - the stream delivers a fake-adapter progress event end to end, and closes cleanly when the daemon stops -- NOT YET RUN
+Driven 2026-09-16 against a real `magarine serve` (fake adapter, its own temp state dir)
+by a script that aborts if the daemon's token appears in any response; it did not. The
+inventory was taken from `daemonApi.ts`, not from the README -- whose route table was
+found, while preparing this, to omit three of batch 15's routes (fixed at `cad05e5`).
 
-## Item 4 - a fake-adapter run where a ticket declares a file it does not produce reaches the retryable class with the artefact named -- NOT YET RUN
+| status | method | route | content-type | case |
+|---|---|---|---|---|
+| 200 | GET | `/` | text/html | page, no token |
+| 200 | GET | `/health` | application/json | health |
+| 401 | GET | `/health` | application/json | health, wrong token |
+| 200 | GET | `/projects` | application/json | projects |
+| 200 | GET | `/board?project={project}` | application/json | board |
+| 200 | GET | `/inbox?project={project}` | application/json | inbox |
+| 200 | GET | `/activity?project={project}` | application/json | activity |
+| 200 | GET | `/projects/{project}/scope` | application/json | scope |
+| 200 | GET | `/projects/{project}/conversation` | application/json | conversation |
+| 404 | GET | `/projects/proj_nope/conversation` | application/json | conversation, unknown project |
+| 200 | GET | `/tickets/{ticket}/progress` | application/json | progress, live ticket |
+| 404 | GET | `/tickets/tkt_nope/progress` | application/json | progress, unknown ticket |
+| 200 | GET | `/ui/tokens.css` | text/css | asset, no token |
+| 200 | GET | `/ui/IBMPlexSans.woff2` | font/woff2 | asset, font |
+| 400 | GET | `/ui/..%2Fpackage.json` | application/json | asset, encoded traversal |
+| 404 | GET | `/ui/nope.txt` | application/json | asset, unknown |
+| 401 | GET | `/events` | application/json | events, wrong token |
+| 401 | POST | `/tick` | application/json | tick, wrong token |
+| 201 | POST | `/tickets` | application/json | ticket, no expectedArtifacts |
+| 201 | POST | `/tickets` | application/json | ticket, one file expected |
+| 400 | POST | `/tickets` | application/json | ticket, [] refused |
+| 400 | POST | `/tickets` | application/json | ticket, unknown kind refused |
+| 200 | POST | `/deps` | application/json | deps |
+| 200 | POST | `/tickets/{ticket}/decide` | application/json | decide |
+| 200 | POST | `/tickets/{ticket}/retry` | application/json | retry |
+| 400 | POST | `/tickets/{ticket}/approve` | application/json | approve, ticket not in review |
+| 400 | POST | `/tickets/{ticket}/reject` | application/json | reject, ticket not in review |
+| 200 | POST | `/tickets/{ticket}/cancel` | application/json | cancel, live run |
+| 409 | POST | `/tickets/{ticket}/cancel` | application/json | cancel, no live run |
+| 200 | POST | `/projects/{project}/set` | application/json | project set |
+| 400 | POST | `/projects/{project}/resume` | application/json | project resume, not paused |
+| 201 | POST | `/projects/{project}/plan` | application/json | project plan (fake adapter) |
+| 200 | POST | `/tick` | application/json | tick |
 
-Ruling 16's new `scheduler.test.ts` test covers the **CLI-created** variant of
-item 4, which is a genuine strengthening. It does not discharge this item: a test
-is not the hand-driven run the spec asks for, and this session has already shown
-why that distinction is not pedantry -- see the last section.
+The refusals, verbatim (ids replaced):
 
-## Closing-condition addition from ruling 18 - one live-stream animation observed -- NOT YET RUN
+- health, wrong token: `{"error":"unauthorized"}`
+- conversation, unknown project: `{"error":"no such project: proj_nope"}`
+- progress, unknown ticket: `{"error":"no such ticket: tkt_nope"}`
+- asset, encoded traversal: `{"error":"invalid asset name: ..%2Fpackage.json"}`
+- asset, unknown: `{"error":"not found: nope.txt"}`
+- events, wrong token: `{"error":"unauthorized"}`
+- tick, wrong token: `{"error":"unauthorized"}`
+- ticket, [] refused: `{"error":"expectedArtifacts must be omitted or non-empty"}`
+- ticket, unknown kind refused: `{"error":"ticket.expected_artifacts[1].kind \"nonsense\" is not one of file, text, url, reference, manager_reply, manager_assessment"}`
+- approve, ticket not in review: `{"error":"ticket {ticket} is DONE, not REVIEW; there is nothing to approve"}`
+- reject, ticket not in review: `{"error":"ticket {ticket} is DONE, not REVIEW; there is nothing to reject"}`
+- cancel, no live run: `{"error":"ticket {ticket} is not currently running on this daemon; nothing to cancel"}`
+- project resume, not paused: `{"error":"project {project} is not paused; nothing to resume"}`
+
+Ticket created with no `expectedArtifacts` stored `null`, not `[]`.
+
+**Limits, stated rather than papered over:**
+- **approve and reject were driven only to their refusal.** No ticket could be put
+  into review: the CLI's `--fake-script` accepts seven kinds and `review` is not one.
+  The refusal is real and legible ("is DONE, not REVIEW"); the success path is covered
+  by tests, not by this walk. A harness gap, carried to batch 16.
+- **plan was driven with the fake adapter only**, so no real money was spent.
+- **Small wording defect found:** an unknown kind on `POST /tickets` names the field
+  `ticket.expected_artifacts[1].kind` -- the Manager's snake_case -- while this route's
+  caller sent `expectedArtifacts`. From reusing the Manager's validator as ruled.
+  Cosmetic; carried to batch 16.
+
+## Item 3 - the stream delivers a fake-adapter progress event end to end, and closes when the daemon stops -- SATISFIED, one half by test on this platform
+
+**Replay.** `GET /events?since=54` -> 200 `text/event-stream`. First frame:
+`id: 55`, `event: worker_progress`, data `{sequence: 55, eventType: worker_progress,
+entityType: run, state: reporting, visibility: internal}` -- the fake adapter's progress
+event, delivered despite being internal, because the stream's filter admits
+`worker_progress` by name. `id` equals `sequence` and `event` equals `eventType`, as the
+contract fixed. Internal non-progress events (59, 61, 64) were correctly absent.
+
+**Live.** Connected with `since` = the latest sequence at connect time (77). Then
+`POST /tickets` -> 201 (+1522 ms; creating a ticket writes no event, so no frame --
+correct) and `POST /tick` -> 200 (+2762 ms); frame `id: 80`, `dependencies_resolved`,
+arrived in that same millisecond. The page run under ruling 18 below independently
+shows a live `worker_progress` frame reaching the page 82 ms after the event.
+
+**Daemon stops.** With the client connected, the daemon was stopped; the client saw the
+connection end with `ECONNRESET` about a second later.
+
+**The limit.** On Windows a separate process can only hard-kill `serve` -- the daemon
+file reports `shutdownMode: hard-kill-only`, HARD-verified on this machine in batch 9
+(`daemon.ts` 15-24) -- so a reset is what "the daemon stops" looks like from outside here.
+The *graceful* path, where `serve` calls `closeAllStreams()` and every consumer's loop
+returns cleanly, runs only on a real Ctrl+C in the daemon's own console. It is covered by
+`daemonApi.test.ts:693`, in-process, and was not driven by this walk.
+
+**Also found and then withdrawn, recorded because it looked like a defect:** an earlier
+connection with `since=999999` received no live frames at all. That was the test, not
+the daemon -- `since` is an exclusive lower bound and applies to live events too.
+
+## Item 4 - a fake-adapter run where a ticket declares a file it does not produce reaches the retryable class with the artefact named -- SATISFIED
+
+A ticket created **by hand**, `ticket add --expected-artifact out.md --max-attempts 1`,
+run under the fake adapter's default success (which declares no `out.md`). On the board:
+status `FAILED`, attempts 1, reason
+`expected artefact(s) not produced: out.md -- magarine retry --ticket {ticket}, once the reason above is addressed`.
+The failure is the retryable `malformed_result` class (scheduler.ts); `--max-attempts 1`
+exhausts it in one attempt because only a FAILED ticket's reason reaches the board --
+a retryable failure is activity-only (`policy.ts:84`). Before rulings 16 and 17 in this
+batch, a hand-made ticket could not carry the expectation at all.
+
+## Closing-condition addition from ruling 18 - one live-stream animation observed -- SATISFIED
+
+Observed 2026-09-16 on the real page, served by a real `magarine serve` (fake adapter),
+in headless Chrome driven over the DevTools protocol, with a MutationObserver installed
+before any page script ran.
+
+**Setup, so the event could only arrive while the page was watching.** A project with
+one worker slot: a `hang` ticket at priority 10 holding the slot, and a `progress`
+ticket at priority 0 waiting `READY` behind it. Checked on `/board` before the page
+opened: `IN_PROGRESS holds the only slot`, `READY progress after the page is live`,
+`latestActivity: null`.
+
+**The run.** Page loaded, project selected, stream live (`data-live="stream"` at
+-2752 ms). `POST /tickets/{hang}/cancel` -> 200, then `POST /tick` -> 200 at t=0.
+
+| ms after the tick | what the page did |
+|---|---|
+| +81 | `refresh()` group (`/board`, `/inbox`, `/activity`, scope, conversation) -- a non-progress stream event |
+| +82 | **a `/board` read on its own** -- `refreshBoardOnly()`, which only a `worker_progress` frame calls |
+| **+89** | **the progress ticket's organism animates, `data-tick="reporting"`** -- the daemon's own mapped state |
+| +93, +1222 | `data-tick` re-written on the replacement nodes -- `resumeMotion`, inside `MOTION_MS` (1600) |
+| +5206 | the first 4-second poll -- nothing animates |
+
+**From the stream, not the poll:** the animation landed 89 ms after the event; the poll
+did not run until 5206 ms. **Once, not a loop:** the board's `latestActivity.sequence`
+stayed 55 -- one progress event -- so `syncMotion`'s comparison cannot fire a second
+pass; the later writes fall inside the resume window, and nothing was written after
+it. The observer counts attribute writes and cannot by itself tell a tick from a
+resume; the sequence and the window are what settle it.
+
+**Three errors of mine, found on the way, recorded because each looked like a page
+defect first:**
+1. The first run showed 0 cards and a polling page: my driver re-navigated to the same
+   URL, a same-document no-op, so the page never reloaded with the token.
+2. Two runs then showed the page *never* animating the new ticket. It had -- **before**
+   my tick: `daemon.ts:270` runs `void runOneTick()` at startup, and I had concluded
+   from a grep that only matched `setInterval` that nothing runs until the interval.
+   The page correctly animated the first observed event on load; there was no second
+   event to see. Hence the one-slot setup above.
+3. Two probe failures were escaping bugs in the injected script, one of which made
+   `evaluate` return `undefined` silently -- now surfaced as an exception, since an
+   observer that fails quietly is the exact failure this walk exists to refuse.
+
+Nothing on the page was changed to get this result.
 
 ---
 
-## Why these three are held rather than rushed
+## Observations for the owner's walk -- design questions, not defects
 
-Rule 13: exclusivity for measurement. Three agents were writing to
-`packages/core` while this file was created -- the Interface Designer spawning
-real `magarine serve` daemons and headless Chrome instances, the Invariants
-Engineer in `cli.ts`, `daemonApi.ts` and `commands/inbox.ts`. Driving the daemon
-by hand against that tree would either break on a half-saved file or measure
-something that is not what ships, and a port collision with the Designer's
-daemons would hand me a false failure to chase.
+Recorded here so they reach the owner's walk rather than a chat log. None blocks the
+acceptance items above; each is a choice the approved design or a ruling made, now
+visible on the real page.
 
-These run in **one pass on a still tree**, after the Engineer's three commits and
-the Designer's items land.
-
----
+1. **A long Needs-you reason is scrolled out of sight in the rail.** In board and scope
+   views, Needs you sits in a 355px rail that is its own scroll container (ruling 15,
+   requirement 5), so a long reason is cut at the fold -- and the command that clears
+   it (`magarine decide ...`) sits below that fold. It is reachable by scrolling, not
+   lost; the Needs-you view shows it whole. But app.js's own comment promises the reason
+   is "never truncated, clamped or scrolled away", and in two of three views the last
+   part of that promise no longer holds. Seen by the lead in
+   `batch-15-page/10-view-scope-light-100.png`. A ruling-15 layout choice meeting the
+   page's rule about reasons: the Strategist's or the owner's call.
+2. **The scope document is capped at `max-height: 19rem` with a fade** in scope view,
+   leaving empty space above Conversation in the one view whose purpose is the scope.
+   Exactly as drawn in the approved pass 3 design (`docs/design/pass3/tokens.css:502`).
+   Raised by the Interface Designer.
+3. **On the token gate, the three view links stay visible and clickable** while every
+   region is hidden. Harmless -- nothing changes -- but a user may expect something to.
+   Raised by the Interface Designer; same auth-not-views scoping as ruling 15's gate.
 
 ## The finding that makes this walk load-bearing
 
