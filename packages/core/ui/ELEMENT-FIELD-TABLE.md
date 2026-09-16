@@ -65,7 +65,7 @@ roster and no idle worker, so the fleet is exactly the set of running tickets.
 | name line | derived | the tier, from `organism.js`'s `tierOf(model)` — the ONE derivation |
 | model line | field | `BoardTicket.model`, or `ProjectListEntry.defaultModel` when null |
 | model line when both are absent | copy | "tickets.model is null and the project has no default" |
-| activity line | field | `BoardTicket.latest_activity.state` and `.tool` |
+| activity line | field | `BoardTicket.latestActivity.state` and `.tool` |
 | activity line when absent | copy | "no progress event recorded yet" — never a guessed state |
 | empty fleet | copy | "no ticket is IN_PROGRESS" |
 | legend | copy | — |
@@ -86,7 +86,7 @@ terminal lane with `DONE`, struck through, rather than being dropped.
 | card organism | derived | as section 2 |
 | card cost | field | `BoardTicket.costUsd` |
 | "at least … live estimate" | field | `BoardTicket.costIsEstimate` |
-| card activity line | field | `BoardTicket.latest_activity` — replaces the cost line while running |
+| card activity line | field | `BoardTicket.latestActivity` — replaces the cost line while running |
 | "N/M attempts" | field | `BoardTicket.attemptCount` / `.maxAttempts`; omitted at zero |
 | "blocked by …" | field | `BoardTicket.blockedBy`, shortened |
 | "priced at the fallback rate" | field | `BoardTicket.usedFallbackRate` |
@@ -120,7 +120,7 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | who: event type | field | `InboxItem.eventType`, shown raw rather than prettified |
 | ticket id | field | `InboxItem.ticketId`, or `.projectId` for a project-scoped item |
 | "12m ago" | derived | now − `InboxItem.createdAt` |
-| **Doing** | field | `BoardTicket.latest_activity` of the named ticket; the row is absent when null |
+| **Doing** | field | `BoardTicket.latestActivity` of the named ticket; the row is absent when null |
 | **Stopped** | field | `InboxItem.message`, **in full, never truncated, clamped or scrolled** |
 | the command inside the reason | field | part of `InboxItem.message` — `inbox.ts` appends it |
 | **Delivered** | field | the ticket's `artifacts`, same by-kind rule as the board |
