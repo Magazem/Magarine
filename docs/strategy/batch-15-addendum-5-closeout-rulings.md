@@ -57,3 +57,27 @@ A per-site fix at 706 leaves 684 broken and leaves the trap armed for the next b
 - Files touched: `cli.ts`, `README.md`, three test files (ruling 16); `commands/inbox.ts`, one scheduler comment, one test file (ruling 17). Nothing under `packages/core/ui/`.
 - UNKNOWN: whether Role A still has uncommitted edits in any of these files. At my first look this session `git status` showed `claudeCli.ts`, `activity.ts`, `daemonClient.ts` and `store.ts` modified, none of the files above. Check again before dispatch so two engineers are never in one file.
 - Cost, against the tree: each ruling is under an hour of sonnet work and one commit. Neither blocks the Designer, and batch 15 does not close until both land and are verified, because the close-out otherwise carries a guard that hand-made tickets cannot use and a reason the owner cannot see.
+
+## Ruling 16, amended — `POST /tickets` gains `expectedArtifacts`, validated by the Manager path's own validator
+
+Raised by the Orchestrator after ruling 16 was committed at d8482ab. Re-read this turn, all HARD.
+
+### Evidence
+
+- `daemonApi.ts` 152-165: the body type mirrors `ticket add` field for field, including `acceptanceCriteria` and `dependsOn`. The `createTicket` call at 167-176 passes no `expectedArtifacts`.
+- `README.md` 543 states the mirror as a guarantee: "Body mirrors `ticket add`'s flags", then lists them. Ruling 16 as written makes that sentence false the moment the CLI flag lands.
+- The route is the path the page and every non-CLI caller use. A guard the daemon's own API cannot express is the same half-answer ruling 16 was written to close.
+- `proposal.ts` 228: `validateExpectedArtifacts(value, prefix)` already validates the exact JSON shape against `ARTIFACT_KINDS`, requires `path` on kind `file` and forbids it elsewhere. It is not exported.
+- The route's existing pattern, `b.acceptanceCriteria ?? []` at 174, is the same trap the Orchestrator caught in `flagList`: the obvious mirror `b.expectedArtifacts ?? []` would persist `[]` as non-null (`store.ts` 423) and flip every ticket into verification mode.
+
+### The ruling
+
+1. `POST /tickets` accepts `expectedArtifacts`, an array in the same JSON shape the Manager's `create_ticket` accepts. The route is JSON, so it carries the full shape, not the CLI's path-only shorthand; the CLI's file-only rule is a limit of flag syntax, not of the store.
+2. Validation reuses `validateExpectedArtifacts`. Export it from `proposal.ts`; do not copy it. Any error is a 400 whose message is the validator's errors joined with `; `, the same join ruling 17 standardises.
+3. Absent: `null`, exactly as the CLI. Present and non-empty: stored. Present and empty (`[]`): 400, "expectedArtifacts must be omitted or non-empty". The route never persists `[]`, for the same reason the flag never produces it.
+4. `README.md` 543 adds `expectedArtifacts` to the listed fields, so the mirror sentence stays true.
+5. Tests in `daemonApi.test.ts`, mutation-checked: body without the field stores `null`; body with one valid file entry stores it; body with `[]` is 400; body with an entry of an unknown kind is 400 and the message names the entry's index.
+
+### Dispatch
+
+Same engineer, a third task after the CLI task, one commit. `daemonApi.ts` and `daemonApi.test.ts` are free. The `proposal.ts` change is one `export` keyword.
