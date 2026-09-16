@@ -625,8 +625,11 @@
     var doing = t && doingText(t);
     if (doing) ask.appendChild(step('Doing', doing + ' \u2014 last event ' + hhmmss(activityOf(t).at), true));
 
-    // THE REASON IS NEVER TRUNCATED, CLAMPED OR SCROLLED AWAY. A half-shown
-    // reason is useless, which is this panel's whole point. InboxItem.message
+    // THE REASON ELEMENT IS NEVER TRUNCATED OR CLAMPED, AND HAS NO SCROLL BOX OF
+    // ITS OWN. A half-shown reason is useless, which is this panel's whole point.
+    // In the board and scope views this panel is a rail that scrolls as a column
+    // (the approved layout), so a long reason can sit below the rail's fold; the
+    // Needs-you view shows it whole (batch-15-addendum-7 section 2(a)). InboxItem.message
     // already carries the exact command that clears the item.
     ask.appendChild(step('Stopped', item.message));
 
