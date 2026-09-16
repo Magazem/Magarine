@@ -103,6 +103,18 @@ reason on the board. Untouched, out of scope, worth a batch 16 item.
 21. **Delivered means in the product, not in the repository.** A committed design is an artefact;
     until the daemon serves it, the feature does not exist for the owner.
 
+## How to run the tests
+
+**`pnpm test`, from `packages/core`.** Its `test` script is `node --test`, so
+`cd packages/core && node --test` is the same run, not a substitute --
+worth knowing because **the command does not exist at the repository root**:
+there is no root `package.json`, no workspace file and no lockfile. Every
+acceptance line since batch 10 has meant "from `packages/core`". Documented in
+`packages/core/README.md` lines 21-24.
+
+The lead spent part of a session concluding `pnpm test` was unrunnable here
+before the Strategist corrected it; this section exists so nobody repeats that.
+
 ## Cost
 
 The owner is on a **Max subscription**. Dollar figures are **equivalent API cost**, useful for

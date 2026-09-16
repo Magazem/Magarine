@@ -10,6 +10,25 @@ shipped `.woff2` files. A throwaway stub in `.shots/` (gitignored) answers the
 daemon routes with responses shaped exactly like the real ones — `BoardResult`,
 `InboxItem[]`, `EventRow[]`, `ConversationEntry[]`.
 
+> **CORRECTION, 2026-09-16, added by the lead after these were captured.**
+> The claim below that the stub answers "shaped exactly like the real ones" is
+> **not true of one field, and it invalidates part of what these pictures show.**
+> The stub's board rows carried `latest_activity`; the daemon sends
+> `latestActivity` (`commands/board.ts` 98 and 231). The page read the stub's
+> spelling, so **the "doing" line visible under running tickets in these
+> captures is a line no real daemon would ever have rendered** — against a real
+> daemon `activityOf()` returned null for every ticket, always.
+>
+> The stub was written to match the page, so it agreed with the page's mistake:
+> a fixture validating the page against itself, which is the same failure shape
+> as a checker that cannot fail. Found by the Interface Designer against a real
+> spawned daemon, not by this suite and not by these screenshots.
+>
+> Everything else here — layout, palette, contrast, organisms, the polling
+> notice, the responsive states — is unaffected and stands. These captures are
+> being re-shot against a corrected stub; until they are, read the activity
+> line and nothing else as unreliable.
+
 **The fixture is in the harness, never in the product.** `src/ui/page.test.ts`
 asserts that no ticket id, project id or money figure appears anywhere under
 `packages/core/ui/`. Every organism, colour and layout below is what the real
