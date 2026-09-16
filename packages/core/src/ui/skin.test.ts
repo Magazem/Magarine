@@ -199,15 +199,57 @@ test('the animation runs once and cannot be made to loop from the stylesheet', (
   assert.equal(/setInterval\([^)]*tick\(/.test(APP), false, 'the organism is animated on a timer');
 });
 
-test('tick() is called from exactly one place: a progress event arriving', () => {
-  const calls = [...APP.matchAll(/(?<![a-zA-Z.])tick\(/g)].length;
-  const definition = 1;
-  assert.equal(calls - definition, 2,
-    'tick() is called from somewhere other than the worker_progress branch ' +
-    '(two calls are expected there: the mapped state, and the fallback after re-reading the board)');
-  const progressBranch = APP.slice(APP.indexOf("if (name === 'worker_progress')"), APP.indexOf('function openStream'));
-  assert.equal([...progressBranch.matchAll(/(?<![a-zA-Z.])tick\(/g)].length, 2,
-    'the two tick() calls are not both inside the worker_progress branch');
+// RULING 18 (docs/strategy/batch-15-addendum-6-organism-live-path.md).
+// REPLACES the old 'tick() is called from exactly one place: a progress event
+// arriving', which died with the branch it described -- and which is worth a
+// sentence, because it was a well-behaved test asserting the wrong thing. It
+// counted `tick(` occurrences inside a SLICE OF SOURCE TEXT, so it passed
+// whether or not that branch could ever fire. It could not: the frame's
+// entityId is a run id and every organism is keyed by ticket id, so the call
+// site it certified was dead. Mutation testing did its job -- it proved the
+// test discriminated on the property asserted -- and the property asserted was
+// the wrong one. A test like this proves the file has a shape; only a run
+// proves the shape does anything. src/ui/stream.test.ts is the run.
+test('the organism is animated only where a new progress sequence is observed', () => {
+  const calls = [...APP.matchAll(/(?<![a-zA-Z.])tick\(/g)];
+  assert.equal(calls.length - 1, 1,
+    `tick( has ${calls.length - 1} call sites outside its definition; ruling 18 allows exactly one`);
+
+  // That one site sits inside the branch that compares a per-ticket marker
+  // against the board's own latestActivity.sequence. Naming the comparison is
+  // the point: an unconditional call would animate on every render, which is a
+  // timer wearing a different hat.
+  const sync = APP.slice(APP.indexOf('function syncMotion('), APP.indexOf('function resumeMotion('));
+  assert.ok(sync.length > 0, 'syncMotion() was not found where the single call site is expected');
+  assert.equal([...sync.matchAll(/(?<![a-zA-Z.])tick\(/g)].length, 1,
+    'the one tick( call site is not inside syncMotion()');
+  assert.match(sync, /\.sequence\s*>\s*[a-zA-Z.]+\.sequence/,
+    'syncMotion() does not compare the marker against latestActivity.sequence, ' +
+    'so nothing bounds the animation to a NEW event');
+
+  // And no timer reaches it. A setInterval or setTimeout body containing
+  // tick( would reintroduce exactly the loader-spinning-over-nothing this
+  // whole batch exists to refuse.
+  for (const m of APP.matchAll(/set(?:Interval|Timeout)\(\s*function\s*\([^)]*\)\s*\{/g)) {
+    const body = APP.slice(m.index!, APP.indexOf('\n', APP.indexOf('}', m.index!)));
+    assert.equal(/(?<![a-zA-Z.])tick\(/.test(body), false,
+      `a timer body reaches tick(: ${body.slice(0, 80)}`);
+  }
+});
+
+test('a board read is coalesced, so a burst of progress events is not a burst of fetches', () => {
+  // RULING 18 requirement 3. The legend says hundreds of progress events in a
+  // single run, and under ruling 18 a frame's ONLY effect is to re-read the
+  // board -- so without a guard the page turns one run into hundreds of
+  // GET /board. One in flight, a frame during it marks dirty, one more
+  // follows. A QUEUE would be the same defect with a delay bolted on, which is
+  // why the marker has to be a boolean and not a counter or a list.
+  const fn = APP.slice(APP.indexOf('function refreshBoardOnly('), APP.indexOf('function refresh('));
+  assert.ok(fn.length > 0, 'refreshBoardOnly() was not found');
+  assert.match(fn, /inFlight/, 'refreshBoardOnly() has no in-flight guard');
+  assert.match(fn, /dirty\s*=\s*true/, 'nothing marks the board dirty while a read is in flight');
+  assert.equal(/push\(|\.concat\(|\[\s*\]\s*;/.test(fn), false,
+    'refreshBoardOnly() builds a collection -- a queue of pending reads is not coalescing');
 });
 
 // ------------------------------------------ 6. rule 8 applies to every skin

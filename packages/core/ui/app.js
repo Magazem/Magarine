@@ -33,8 +33,9 @@
 //
 //   THE ORGANISM ANIMATES ONCE, ON A REAL EVENT, AND NEVER LOOPS. A loader
 //   spinning while nothing runs is precisely the lie this batch exists to
-//   prevent. The one animation helper is called from exactly one place: a
-//   worker_progress event arriving. src/ui/skin.test.ts counts the call sites
+//   prevent. The one animation helper is called from exactly one place: the
+//   comparison that finds a ticket's progress sequence has ADVANCED on the
+//   board (ruling 18). src/ui/skin.test.ts counts the call sites
 //   with a whole-file grep and no comment stripping, so this paragraph avoids
 //   naming the helper rather than that test being weakened to tolerate it.
 //
@@ -68,7 +69,7 @@
 
   // -----------------------------------------------------------------------
   // ACTIVITY = MOTION. Which cells fire and in what ORDER when a real event
-  // lands. One entry per state in the daemon's latest_activity.state.
+  // lands. One entry per state in the daemon's latestActivity.state.
   //
   // ALL SIX STATES ARE REAL AND SOURCED (ruling 14): reading, writing,
   // running, testing, finishing, reporting. `testing` was sourceable but
@@ -157,8 +158,19 @@
     scopeText: '',
     convFilter: 'all',
     live: false,            // true only while a stream is genuinely open
-    lastSequence: 0
+    lastSequence: 0,
+    // RULING 18. THE PER-TICKET ANIMATION MARKER: the highest
+    // latestActivity.sequence this page has already animated for each ticket,
+    // with the state it animated and when. The organism ticks when — and only
+    // when — that integer ADVANCES, which is what makes "once per progress
+    // event" a structural fact rather than a timer's promise.
+    motion: {}
   };
+
+  // How long one pass of the organism runs, matching tokens.css's --tick
+  // budget. Used to decide whether an animation interrupted by a re-render is
+  // still owed the rest of its run.
+  var MOTION_MS = 1600;
 
   // -----------------------------------------------------------------------
   // tiny DOM helpers. `el` takes a class name and text; nothing here sets a
@@ -253,9 +265,11 @@
   // attribute nothing consumes is the same trap as an unused token that fails
   // contrast: it reads as a hook a skin can rely on, and it is not one.
   //
-  // Four were removed under that rule rather than left as decoration:
-  // data-ticket and data-event (nothing reads them; data-org-for and
-  // data-doing-for are the addressing hooks that are actually used),
+  // Five were removed under that rule rather than left as decoration:
+  // data-ticket and data-event (nothing reads them; data-org-for is the
+  // addressing hook that is actually used), data-doing-for (read only by the
+  // stream branch ruling 18 deleted -- the live line now comes from the board
+  // render, so the hook outlived its one reader),
   // data-reason on the pause banner (the cause is in the heading text), and
   // data-tier on the organism. THAT LAST ONE MATTERS: offering the tier as a
   // styling hook invites a skin to colour by tier, and colour is status. The
@@ -280,18 +294,95 @@
     return node;
   }
 
-  // ONE PASS. Called from exactly one place: a worker_progress event landing.
-  // Never on a timer, never on load, never on a click. The delay per cell is
-  // tokens.css's business; this writes only the cell's place in the order.
-  function tick(node, activityState) {
-    if (!node) return;
+  // ONE PASS. Called from exactly one place: syncMotion, when a ticket's
+  // latestActivity.sequence has ADVANCED past the last one animated (ruling
+  // 18). A timer can cause a board read; it can never cause a pass unless that
+  // read carries a new event. The delay per cell is tokens.css's business;
+  // this writes only the cell's place in the order.
+  // Put the firing order on the cells and arm the one animation. Split out of
+  // the one-pass helper below because a re-render that replaces the organism mid-run has to put
+  // the SAME pass back on the new node without that counting as a new event.
+  function applyMotion(node, activityState) {
     var order = motionFor(activityState);
     var cells = node.children;
     node.removeAttribute('data-tick');
     void node.offsetWidth;                       // restart the one animation
     for (var i = 0; i < cells.length; i++) cells[i].setAttribute('data-step', String(order(i)));
     node.setAttribute('data-tick', activityState);
-    window.setTimeout(function () { node.removeAttribute('data-tick'); }, 1600);
+  }
+
+  function tick(node, activityState) {
+    if (!node) return;
+    applyMotion(node, activityState);
+    window.setTimeout(function () { node.removeAttribute('data-tick'); }, MOTION_MS);
+  }
+
+  // RULING 18 REQUIREMENT 4, AND IT IS THE SUBTLE ONE. Under this ruling a
+  // progress frame's only effect is to RE-READ THE BOARD, and renderBoard
+  // builds a fresh card — and so a fresh organism — for every ticket on every
+  // render. So the very refresh a frame causes would replace the node that
+  // frame set animating, and the animation this whole path exists to produce
+  // would be destroyed by the path itself.
+  //
+  // A replaced node cannot simply be re-armed: re-applying the attributes
+  // restarts the pass from zero, so a run of renders inside the window would
+  // leave an organism twitching at its first frame forever and never
+  // completing. Instead the new node is armed and then FAST-FORWARDED to where
+  // the old one had got to, which is what makes the interruption invisible
+  // rather than merely survivable.
+  // RULING 18. THE ORGANISM ANIMATES FROM THE BOARD'S OWN MARKER, and this is
+  // the only place it animates at all.
+  //
+  // latestActivity.sequence IS the events.sequence of the newest
+  // worker_progress row on the running run — the same integer the stream frame
+  // carries as its `id`. So the page is not approximating the event from the
+  // board; it is reading the same event through the field the board already
+  // publishes. Nothing is invented (rule 8), the frame is what causes the read
+  // ("from the stream"), and the tick fires only when the integer advances, so
+  // "once per event" is structural.
+  //
+  // The reason this replaced reading the frame's own entity: a worker_progress
+  // event is recorded against the RUN (entityType 'run'), every organism on
+  // this page is keyed by TICKET id, and the event row carries no ticketId at
+  // all — so the old path could never resolve a node and never animated
+  // anything. src/ui/stream.test.ts proves that against a real daemon.
+  //
+  // THE SAME COMPARISON IS REACHED BY THE FOUR-SECOND POLL, deliberately. That
+  // is what turns "falls back to polling when the stream is down" from a
+  // sentence into an exercised branch: with no stream the marker still
+  // advances, just later.
+  function syncMotion() {
+    var tickets = (state.board && state.board.tickets) || [];
+    var now = Date.now();
+    var present = {};
+    for (var i = 0; i < tickets.length; i++) {
+      var t = tickets[i];
+      present[t.id] = true;
+      var a = activityOf(t);
+      // No mapped activity is not an event. The ticket is not ticked and its
+      // marker is left exactly as it was, so a ticket that stops reporting
+      // does not re-animate when it starts again at an older sequence.
+      if (!a) continue;
+      var mark = state.motion[t.id];
+      if (!mark || a.sequence > mark.sequence) {
+        state.motion[t.id] = { sequence: a.sequence, state: a.state, at: now };
+        tick(orgFor(t.id), a.state);
+      } else if (now - mark.at < MOTION_MS) {
+        // Same event, but a render has just replaced the node underneath a run
+        // that had not finished. Put it back where it was.
+        resumeMotion(orgFor(t.id), mark, now);
+      }
+    }
+    // A ticket that has left the board keeps no marker; it is gone, not idle.
+    for (var id in state.motion) if (!present[id]) delete state.motion[id];
+  }
+
+  function resumeMotion(node, mark, now) {
+    if (!node || !node.getAnimations) return;
+    applyMotion(node, mark.state);
+    var elapsed = now - mark.at;
+    var running = node.getAnimations({ subtree: true });
+    for (var i = 0; i < running.length; i++) running[i].currentTime = elapsed;
   }
 
   // -----------------------------------------------------------------------
@@ -336,7 +427,7 @@
     return null;
   }
 
-  /** latest_activity, from the board rows. null until Role A's field lands,
+  /** latestActivity, from the board rows -- the daemon's own spelling. null
    *  and null for any ticket that is not running — both render as no line,
    *  never as an invented one. */
   function activityOf(ticket) { return (ticket && ticket.latestActivity) || null; }
@@ -376,7 +467,6 @@
       var doing = doingText(t);
       var line = el('span', 'doing', doing || 'no progress event recorded yet');
       if (!doing) line.setAttribute('data-idle', '1');
-      line.setAttribute('data-doing-for', t.id);
       who.appendChild(line);
       r.appendChild(who);
       list.appendChild(r);
@@ -415,7 +505,6 @@
     var doing = doingText(t);
     var line = el('span', 'doing', doing || costText(t));
     if (!doing) line.setAttribute('data-idle', '1');
-    line.setAttribute('data-doing-for', t.id);
     meta.appendChild(line);
     card.appendChild(meta);
 
@@ -782,27 +871,12 @@
     if (id) state.lastSequence = Math.max(state.lastSequence, Number(id) || 0);
 
     if (name === 'worker_progress') {
-      // THE ONE PLACE THE ORGANISM IS ANIMATED. A real progress event, once, in the
-      // state THE DAEMON MAPPED — the tool-to-state map is the daemon's and is
-      // deliberately not duplicated here. If the row carries no mapped state
-      // the page re-reads the board and animates from latest_activity rather
-      // than guessing at one.
-      var ticketId = data && (data.entityId || data.ticketId);
-      var mapped = data && data.payload && data.payload.state;
-      if (mapped) {
-        tick(orgFor(ticketId), mapped);
-        var line = ticketId && document.querySelector(
-          '[data-doing-for="' + String(ticketId).replace(/["\\]/g, '\\$&') + '"]');
-        if (line) {
-          line.textContent = data.payload.tool ? mapped + ' \u00B7 ' + data.payload.tool : mapped;
-          line.removeAttribute('data-idle');
-        }
-      }
-      refreshBoardOnly().then(function () {
-        if (mapped) return;
-        var a = activityOf(ticketById(ticketId));
-        if (a) tick(orgFor(ticketId), a.state);
-      });
+      // RULING 18: A PROGRESS FRAME RE-READS THE BOARD AND DOES NOTHING ELSE.
+      // It resolves no entity, animates nothing and writes no text of its own.
+      // Everything visible follows from the board that comes back, through
+      // syncMotion's one comparison — which is also what the poll reaches, so
+      // there is ONE path here and not a live one beside a fallback one.
+      refreshBoardOnly();
       return;
     }
     refresh();   // anything else changes state the page is showing
@@ -875,12 +949,26 @@
       'On a subscription this is not money leaving your account; the real constraint is session limits.';
   }
 
+  // RULING 18 REQUIREMENT 3: COALESCED. A run emits hundreds of progress
+  // events and under ruling 18 each frame's only effect is to call this, so
+  // without a guard one run becomes hundreds of GET /board. One read in
+  // flight; any frame arriving during it sets a single dirty flag; exactly one
+  // more read follows when the first settles. A boolean, never a queue -- a
+  // list of pending reads is the same defect with a delay bolted on.
+  var boardRead = { inFlight: null, dirty: false };
+
   function refreshBoardOnly() {
     if (!state.projectId) return Promise.resolve();
-    return api('/board?project=' + encodeURIComponent(state.projectId)).then(function (b) {
+    if (boardRead.inFlight) { boardRead.dirty = true; return boardRead.inFlight; }
+    boardRead.inFlight = api('/board?project=' + encodeURIComponent(state.projectId)).then(function (b) {
       state.board = b;
       renderSpend(); renderFleet(); renderBoard(); renderPause();
-    }, fail);
+      syncMotion();
+    }, fail).then(function () {
+      boardRead.inFlight = null;
+      if (boardRead.dirty) { boardRead.dirty = false; return refreshBoardOnly(); }
+    });
+    return boardRead.inFlight;
   }
 
   function refresh() {
@@ -904,6 +992,7 @@
       setNotice('notice-daemon', null);
       renderSpend(); renderFleet(); renderBoard(); renderNeeds();
       renderActivity(); renderScope(); renderConversation(); renderPause();
+      syncMotion();            // the poll reaches the same one comparison
       checkCoverage();
     }, fail);
   }
