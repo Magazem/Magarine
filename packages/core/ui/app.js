@@ -339,7 +339,7 @@
   /** latest_activity, from the board rows. null until Role A's field lands,
    *  and null for any ticket that is not running — both render as no line,
    *  never as an invented one. */
-  function activityOf(ticket) { return (ticket && ticket.latest_activity) || null; }
+  function activityOf(ticket) { return (ticket && ticket.latestActivity) || null; }
 
   function doingText(ticket) {
     var a = activityOf(ticket);
@@ -964,6 +964,35 @@
     }
   }
 
+  // RULING 15 (docs/strategy/batch-15-addendum-4-views-survive.md). THE THREE
+  // VIEWS ARE ONE ATTRIBUTE ON THE ROOT. The nav never chose between three
+  // pages — all three pass-3 screens carry the same grid, and it only ever
+  // chose what the CENTRE COLUMN holds. So the script's whole job is to name
+  // the state; ui/skin-brutalist.css decides what the name means.
+  var VIEWS = ['board', 'needs-you', 'scope'];
+
+  function hashView() {
+    return String((window.location && window.location.hash) || '').replace(/^#/, '');
+  }
+
+  function setView(name) {
+    // An unknown hash falls back to board rather than becoming a view no
+    // stylesheet resolves, which would leave the centre column empty.
+    var view = VIEWS.indexOf(name) === -1 ? 'board' : name;
+    document.documentElement.setAttribute('data-view', view);
+    // The matching nav entry, marked as the current one. Addressed by the
+    // nav's own label rather than by a class name, so a skin renaming its
+    // classes cannot silently break it.
+    var links = document.querySelectorAll('nav[aria-label="Views"] a');
+    for (var i = 0; i < links.length; i++) {
+      if (links[i].getAttribute('href') === '#' + view) links[i].setAttribute('aria-current', 'page');
+      else links[i].removeAttribute('aria-current');
+    }
+    // NOTHING ELSE. This function takes nothing off the screen: with no
+    // attribute at all the skin hides no region and the page is the anchor
+    // page it started as. src/ui/skin.test.ts fails if that stops being true.
+  }
+
   function setTheme(name) {
     document.documentElement.setAttribute('data-theme', name);
     try { window.localStorage.setItem('magarine.theme', name); } catch (e) { /* private mode */ }
@@ -1009,6 +1038,10 @@
       if (t) setTheme(t.getAttribute('data-theme-set'));
     });
 
+    // The hrefs are real hashes, so the browser does the navigating, the
+    // history and the focus move; this only follows along.
+    window.addEventListener('hashchange', function () { setView(hashView()); });
+
     $('boardToggle').addEventListener('click', function (e) {
       var t = e.target.closest('[data-board-view]');
       if (t) setBoardView(t.getAttribute('data-board-view'));
@@ -1032,6 +1065,7 @@
     wire();
     setTheme(theme || 'oled');
     setBoardView('board');
+    setView(hashView());
     setLive(false, 'the page has not opened a stream yet');
     checkFonts();
 

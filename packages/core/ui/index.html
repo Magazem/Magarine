@@ -47,11 +47,27 @@
   5. THE ORGANISM IS PRODUCT, NOT SKIN. Its cells, symmetry and animation rule
      live in tokens.css and organism.js and hold under every skin.
 
-  All six regions are present at once and none is hidden: pass 3 was drawn as
-  three separate screens because three files were easier to review, and the
-  brief asks for ONE page carrying all of them. The nav below is real anchor
-  links to real regions — no JavaScript hides anything, so every region is
-  reachable by keyboard and findable by browser search.
+  ---------------------------------------------------------------------------
+  RULING 15 — THE THREE-VIEW NAVIGATION SURVIVES
+  (docs/strategy/batch-15-addendum-4-views-survive.md)
+
+  Pass 3 was drawn as three screens, and the three screens carry THE SAME
+  GRID. The nav never chose between three pages: it only ever chose WHAT THE
+  CENTRE COLUMN HOLDS. Fleet, Needs you and Activity are on screen in every
+  view. So:
+
+  1. THE VIEW IS ONE ATTRIBUTE ON THE ROOT. app.js writes
+     <html data-view="board|needs-you|scope">, default board, and sets
+     aria-current="page" on the matching nav entry. That is all it does.
+  2. THE SKIN DECIDES WHAT THE ATTRIBUTE MEANS. Per view it sets
+     grid-template-areas and hides the off-view regions. All of that is
+     ui/skin-brutalist.css; none of it is here and none of it is script.
+  3. THERE IS NO data-view IN THIS FILE, DELIBERATELY. With no attribute —
+     script broken, script not yet run, script refused — NOTHING IS HIDDEN and
+     this is the anchor page again: all six regions stacked, every one
+     reachable by keyboard and findable by browser search. JAVASCRIPT HIDES
+     NOTHING; it names a state a skin is free to ignore. src/ui/skin.test.ts
+     fails if any rule hides a region without being keyed on a view.
   ===========================================================================
 -->
 
@@ -73,12 +89,15 @@
   <select id="projectSelect" class="field"></select>
   <span class="proj"><span class="id mono" id="projectId"></span></span>
 
-  <nav class="nav" aria-label="Regions">
+  <!-- RULING 15. THREE VIEWS, AND THEY DECIDE WHAT THE CENTRE COLUMN HOLDS —
+       nothing more. Fleet, Needs you and Activity are on screen in every one
+       of them. The hrefs are HASHES, not buttons, so keyboard, deep links and
+       back/forward work without a line of script; app.js listens to
+       hashchange and writes data-view on <html>. -->
+  <nav class="nav" aria-label="Views">
     <a href="#board">Board</a>
     <a href="#needs-you">Needs you <span class="n" id="needsCount" hidden></span></a>
     <a href="#scope">Scope</a>
-    <a href="#conversation">Conversation</a>
-    <a href="#activity">Activity</a>
   </nav>
 
   <span class="spacer"></span>

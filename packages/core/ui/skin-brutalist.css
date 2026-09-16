@@ -47,7 +47,13 @@
     min-height: 100vh;
   }
 
-  /* WHY THE ROWS ARE SHAPED THIS WAY, because it is not arbitrary and the
+  /* THE RULE ABOVE IS NOW THE DEGRADED STATE (ruling 15, and see the RULING 15
+     block further down). It is what the page looks like with NO `data-view` on
+     the root: all six regions at once, stacked, the page scrolling as a page.
+     Every view layout is keyed on the attribute and overrides it from there.
+     Nothing below hides anything until a view says so.
+
+     WHY THE ROWS ARE SHAPED THIS WAY, because it is not arbitrary and the
      first two attempts were both wrong. A GRID ROW IS AS TALL AS ITS TALLEST
      MEMBER, so a tall region in one column inflates that row for every other
      column -- and there is no wrapper element here to scroll or stack inside,
@@ -118,6 +124,174 @@
       grid-template-columns: minmax(0, 1fr);
       grid-template-areas:
         "top" "notices" "gate" "fleet" "board" "needs-you" "scope" "conversation" "activity";
+    }
+  }
+
+  /* ========================================================== RULING 15 ====
+     THREE VIEWS, AND THIS FILE DECIDES WHAT THEY MEAN
+     (docs/strategy/batch-15-addendum-4-views-survive.md)
+
+     The nav was removed from the page and that was overruled on a fact that
+     had been missed: ALL THREE PASS-3 SCREENS CARRY THE SAME GRID. The nav
+     never chose between three pages. It only ever chose WHAT THE CENTRE
+     COLUMN HOLDS, and Fleet, Needs you and Activity are on screen in every
+     one of the three. So the view is one attribute on the root, app.js writes
+     it and nothing else, and every consequence is below.
+
+     EVERYTHING HERE IS KEYED ON `html[data-view=...]`, WITH NO HIDING
+     FALLBACK, and that is the requirement rather than a habit. The natural way
+     to write view CSS is a default that hides plus an override that shows —
+     and that would silently destroy the state above: with no attribute at all
+     (script broken, script not yet run, script refused) the page is the anchor
+     page, all six regions stacked, nothing taken off the screen, every one
+     reachable by keyboard and findable by browser search. JAVASCRIPT HIDES
+     NOTHING; it names a state this file is free to ignore.
+     src/ui/skin.test.ts fails if any rule hides a region unkeyed, and it fails
+     if Fleet, Needs you or Activity is hidden in any view at all.
+
+     PER-COLUMN SCROLLING COMES BACK with the views, because it is what the
+     views make possible: a tall rail region stops sharing a grid row with a
+     short centre region, which is the coupling that made page-scrolling the
+     only thing that worked without them. `height: 100vh` is keyed on a view
+     too — trapping the degraded anchor page in one screen would make it
+     unreadable, which is the one thing it exists to avoid.
+     ======================================================================== */
+
+  /* THE COLUMNS SCROLL, THE PAGE DOES NOT. Keyed on the attribute's presence:
+     no view, no scroll containers, and the anchor page scrolls as a page. */
+  html[data-view] #fleet,
+  html[data-view] #board,
+  html[data-view] #scope,
+  html[data-view] #conversation,
+  html[data-view] #needs-you,
+  html[data-view] #activity {
+    align-self: stretch;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* BOARD — the default. Centre is the board; the rail is Needs you above
+     Activity. The centre spans both rail rows, so its height is the window's
+     and not the rail's. */
+  html[data-view="board"] body {
+    height: 100vh;
+    grid-template-areas:
+      "top          top          top"
+      "notices      notices      notices"
+      "gate         gate         gate"
+      "fleet        board        needs-you"
+      "fleet        board        activity";
+    grid-template-rows: auto auto auto minmax(0, 1fr) minmax(0, 1fr);
+  }
+  html[data-view="board"] #scope,
+  html[data-view="board"] #conversation { display: none; }
+
+  /* NEEDS YOU — the panel is promoted to the centre, where a reason shown in
+     full has the width it needs. The rail is Activity alone: Needs you cannot
+     be in the rail and the centre at once. */
+  html[data-view="needs-you"] body {
+    height: 100vh;
+    grid-template-areas:
+      "top          top          top"
+      "notices      notices      notices"
+      "gate         gate         gate"
+      "fleet        needs-you    activity";
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+  }
+  html[data-view="needs-you"] #board,
+  html[data-view="needs-you"] #scope,
+  html[data-view="needs-you"] #conversation { display: none; }
+
+  /* SCOPE — Scope and Conversation share the centre, because talking to the
+     Manager about the scope while unable to see it is the one arrangement that
+     makes neither of them useful. The rail is the board view's rail: Needs you
+     is not in the centre here, so it is on screen in the rail, which the
+     ruling requires of it in every view. */
+  html[data-view="scope"] body {
+    height: 100vh;
+    grid-template-areas:
+      "top          top          top"
+      "notices      notices      notices"
+      "gate         gate         gate"
+      "fleet        scope        needs-you"
+      "fleet        conversation activity";
+    grid-template-rows: auto auto auto minmax(0, 1fr) minmax(0, 1fr);
+  }
+  html[data-view="scope"] #board { display: none; }
+
+  /* Below 1180px the rail drops beneath the centre — and once it is not a
+     column, there is nothing left to scroll independently, so the page goes
+     back to scrolling as a page. Three stacked regions dividing one viewport
+     height between them is how a "responsive" layout becomes three tiny
+     scrollers, none of which shows anything. */
+  @media (max-width: 1180px) {
+    html[data-view="board"] body,
+    html[data-view="needs-you"] body,
+    html[data-view="scope"] body {
+      height: auto;
+      min-height: 100vh;
+      grid-template-columns: 252px minmax(0, 1fr);
+    }
+    html[data-view] #fleet,
+    html[data-view] #board,
+    html[data-view] #scope,
+    html[data-view] #conversation,
+    html[data-view] #needs-you,
+    html[data-view] #activity {
+      overflow-y: visible;
+    }
+
+    html[data-view="board"] body {
+      grid-template-areas:
+        "top       top"
+        "notices   notices"
+        "gate      gate"
+        "fleet     board"
+        "needs-you needs-you"
+        "activity  activity";
+      grid-template-rows: auto auto auto auto auto auto;
+    }
+    html[data-view="needs-you"] body {
+      grid-template-areas:
+        "top      top"
+        "notices  notices"
+        "gate     gate"
+        "fleet    needs-you"
+        "activity activity";
+      grid-template-rows: auto auto auto auto auto;
+    }
+    html[data-view="scope"] body {
+      grid-template-areas:
+        "top       top"
+        "notices   notices"
+        "gate      gate"
+        "fleet     scope"
+        "fleet     conversation"
+        "needs-you needs-you"
+        "activity  activity";
+      grid-template-rows: auto auto auto auto auto auto auto;
+    }
+  }
+
+  /* Below 860px everything stacks in one column, in reading order, and the
+     view still decides what is in the stack. */
+  @media (max-width: 860px) {
+    html[data-view="board"] body,
+    html[data-view="needs-you"] body,
+    html[data-view="scope"] body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    html[data-view="board"] body {
+      grid-template-areas: "top" "notices" "gate" "fleet" "board" "needs-you" "activity";
+      grid-template-rows: auto auto auto auto auto auto auto;
+    }
+    html[data-view="needs-you"] body {
+      grid-template-areas: "top" "notices" "gate" "fleet" "needs-you" "activity";
+      grid-template-rows: auto auto auto auto auto auto;
+    }
+    html[data-view="scope"] body {
+      grid-template-areas: "top" "notices" "gate" "fleet" "scope" "conversation" "needs-you" "activity";
+      grid-template-rows: auto auto auto auto auto auto auto auto;
     }
   }
 

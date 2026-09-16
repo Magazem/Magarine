@@ -116,8 +116,25 @@ test('variation is carried on data attributes, where a skin can reach it', () =>
   // The positive half of the rule: having removed inline style, the state has
   // to be somewhere. A page that simply stopped expressing status would pass
   // the two checks above.
-  for (const attr of ['data-status', 'data-size', 'data-step', 'data-tick', 'data-board-view', 'data-lane']) {
-    assert.ok(APP.includes(attr), `app.js never writes ${attr}`);
+  //
+  // RULING 15 adds `data-view` here. THE MATCH IS ON THE QUOTED ATTRIBUTE
+  // NAME rather than a bare substring. To be exact about why, because an
+  // earlier version of this comment was not: `data-view` is NOT in fact a
+  // substring of `data-board-view` (`data-` is followed by `board-`), and the
+  // lead verified that with the real `setAttribute` write site removed BOTH
+  // the quoted and the unquoted form fail. So the bare form was not a check
+  // that cannot fail, and this tightening fixed no live defect.
+  //
+  // It is kept because it is unconditionally the more precise claim: the
+  // quoted form asserts "app.js writes this attribute", while the bare form
+  // asserts only "this string appears somewhere in app.js" -- which a comment
+  // or a selector would satisfy, and which WOULD silently pass if any future
+  // attribute here were a genuine substring of another. None of the seven
+  // currently are. Guarding a hypothetical is cheap; the false rationale was
+  // not, which is why it is corrected rather than deleted.
+  for (const attr of ['data-status', 'data-size', 'data-step', 'data-tick',
+                      'data-board-view', 'data-lane', 'data-view']) {
+    assert.ok(APP.includes(`'${attr}'`), `app.js never writes ${attr}`);
   }
 });
 
@@ -201,4 +218,152 @@ test('the skin decorates but cannot invent data: it contains no content property
   const contents = [...SKIN.matchAll(/content:\s*(['"])([^'"]*)\1/g)].map((m) => m[2]);
   const withText = contents.filter((c) => /[A-Za-z0-9]/.test(c));
   assert.deepEqual(withText, [], `the skin writes text no daemon field produced: ${withText.join(', ')}`);
+});
+
+// ================================================================ RULING 15
+// THE THREE-VIEW NAVIGATION SURVIVES
+// (docs/strategy/batch-15-addendum-4-views-survive.md)
+//
+// The nav was removed and that was overruled: all three pass-3 screens carry
+// the SAME grid, and the nav only ever decided WHAT THE CENTRE COLUMN HOLDS.
+// So the view is one attribute on the root, the skin decides what it means,
+// and the page with no attribute at all is the degraded state.
+
+const VIEWS = ['board', 'needs-you', 'scope'];
+
+// Innermost rule blocks, comments stripped. Nesting is only ever one level
+// deep here (@media), and the outer at-rule is skipped: this returns the
+// SELECTOR AND ITS DECLARATIONS, which is what every check below asks about.
+// Comments are stripped on purpose -- unlike the requirement-3 grep above, a
+// commented-out rule genuinely does not apply, and inert CSS hides nothing.
+function cssRules(css: string): { selector: string; body: string }[] {
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  return [...bare.matchAll(/([^{}]*)\{([^{}]*)\}/g)]
+    .map((m) => ({ selector: m[1].trim().replace(/\s+/g, ' '), body: m[2] }))
+    .filter((r) => r.selector.length > 0 && !r.selector.startsWith('@'));
+}
+
+// The SUBJECT of a selector is its last compound -- the element the
+// declarations actually land on. This is the whole reason the check is not a
+// grep for "#activity" near "display: none": `#board[data-board-view="board"]
+// .listview` names a region and hides a DESCENDANT of it, which is legitimate
+// and is one of the three rules on disk before this rework.
+function subjectOf(selector: string): string {
+  const parts = selector.split(/[\s>+~]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+// Does this rule take something off the screen?
+function hides(body: string): boolean {
+  return /(?:^|[;{\s])(?:display:\s*none|visibility:\s*hidden)\s*(?:;|$)/.test(body);
+}
+
+// Is this selector's subject one of the six regions ITSELF, rather than
+// something inside one?
+function subjectIsRegion(selector: string): string | null {
+  const subject = subjectOf(selector);
+  for (const id of REGIONS) {
+    if (subject === `#${id}` || subject.startsWith(`#${id}[`) ||
+        subject.startsWith(`#${id}:`) || subject.startsWith(`#${id}.`)) return id;
+  }
+  return null;
+}
+
+test('with no data-view on the root, the skin hides no region: the degraded page is whole', () => {
+  // REQUIREMENT 4, AS A TEST RATHER THAN A GREP. The natural way to write view
+  // CSS is a default that hides plus an override that shows, and that silently
+  // destroys the anchor-page state this ruling keeps. So: every rule that
+  // hides a REGION ITSELF must be keyed on a view, with no hiding fallback.
+  //
+  // BASELINE BEFORE THE REWORK: exactly three `display: none` rules, none of
+  // them hiding a region.
+  const offenders: string[] = [];
+  for (const rule of cssRules(SKIN)) {
+    if (!hides(rule.body)) continue;
+    for (const one of rule.selector.split(',')) {
+      const selector = one.trim();
+      if (!subjectIsRegion(selector)) continue;
+      if (!selector.startsWith('html[data-view=')) offenders.push(selector);
+    }
+  }
+  assert.deepEqual(offenders, [],
+    'these rules hide a product region without being keyed on a view, so the page ' +
+    'with no data-view attribute is no longer whole: ' + offenders.join(' | '));
+});
+
+test('the skin gives every one of the three views a meaning', () => {
+  // The other half of requirement 4. A skin that simply never mentions
+  // data-view would pass the check above by doing nothing at all.
+  for (const view of VIEWS) {
+    assert.ok(SKIN.includes(`html[data-view="${view}"]`),
+      `the skin never resolves html[data-view="${view}"], so that view does nothing`);
+  }
+});
+
+test('fleet, needs-you and activity are never hidden, in any view', () => {
+  // The invariant the ruling states outright: the three views were never three
+  // pages. Whatever the centre column holds, these three are on screen.
+  const always = ['fleet', 'needs-you', 'activity'];
+  const found: string[] = [];
+  for (const rule of cssRules(SKIN)) {
+    if (!hides(rule.body)) continue;
+    for (const one of rule.selector.split(',')) {
+      const selector = one.trim();
+      const id = subjectIsRegion(selector);
+      if (!id || !always.includes(id)) continue;
+      const view = /^html\[data-view="([a-z-]+)"\]/.exec(selector);
+      found.push(`#${id} is hidden${view ? ` in view "${view[1]}"` : ' unconditionally'}`);
+    }
+  }
+  assert.deepEqual(found, [],
+    'the ruling says fleet, activity and needs-you are on screen in EVERY view: ' + found.join(' | '));
+});
+
+test('the script names the view and sets aria-current, and does nothing else about it', () => {
+  // REQUIREMENT 1. Both are state. The script must not hide, show, move or
+  // style anything itself -- it writes the attribute and the skin decides.
+  assert.match(APP, /documentElement\.setAttribute\('data-view'/);
+  const fn = APP.slice(APP.indexOf('function setView('), APP.indexOf('function setTheme('));
+  assert.ok(fn.length > 0 && fn.length < 1400,
+    'setView() was not found between setBoardView() and setTheme(), where it was expected');
+  assert.match(fn, /aria-current/);
+  for (const forbidden of ['hidden', '.style.', 'classList', 'appendChild']) {
+    assert.equal(fn.includes(forbidden), false,
+      `setView() does ${forbidden} -- the view is state, and the skin decides what it means`);
+  }
+});
+
+test('the three views are hash links, so keyboard, deep links and back/forward work for free', () => {
+  // REQUIREMENT 2. A button only a click handler can reach would break every
+  // one of those for nothing gained.
+  assert.match(PAGE_HTML, /<nav class="nav" aria-label="Views">/);
+  const nav = PAGE_HTML.slice(PAGE_HTML.indexOf('<nav class="nav"'), PAGE_HTML.indexOf('</nav>'));
+  const hrefs = [...nav.matchAll(/href="#([a-z-]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(hrefs, VIEWS, 'the nav is not exactly the three views, as hash links');
+  assert.ok(nav.includes('id="needsCount"'), 'the needs count left the Needs you entry');
+  assert.match(APP, /addEventListener\('hashchange'/);
+});
+
+test('the view defaults to board, and an unknown hash does not blank the page', () => {
+  // REQUIREMENT 1's default, and the case a deep link makes reachable: someone
+  // arrives at #nonsense. A view nothing styles would leave the centre empty.
+  const fn = APP.slice(APP.indexOf('function setView('), APP.indexOf('function setTheme('));
+  assert.match(fn, /VIEWS\.indexOf\(|VIEWS\.includes\(/,
+    'setView() does not check the name against the three views, so any hash becomes a view');
+  assert.match(fn, /'board'/, 'setView() has no default view to fall back to');
+});
+
+test('per-column scrolling, and only where a view is named', () => {
+  // REQUIREMENT 5. The columns scroll; the page does not. But the degraded
+  // anchor page still has to scroll top to bottom, so the viewport-height
+  // bound is keyed on a view like everything else.
+  const rules = cssRules(SKIN);
+  const bounded = rules.filter((r) => /(?:^|[;{\s])height:\s*100vh/.test(r.body));
+  assert.ok(bounded.length > 0, 'nothing is bound to the viewport height, so no column can scroll');
+  assert.deepEqual(
+    bounded.filter((r) => !r.selector.startsWith('html[data-view=')).map((r) => r.selector), [],
+    'height: 100vh outside a view would trap the degraded anchor page in one screen');
+  assert.ok(rules.some((r) => /overflow-y:\s*auto/.test(r.body) &&
+    REGIONS.some((id) => r.selector.includes(`#${id}`))),
+    'no region scrolls on its own, so the columns are still coupled');
 });
