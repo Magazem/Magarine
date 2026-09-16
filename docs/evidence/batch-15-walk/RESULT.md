@@ -1,9 +1,15 @@
 # Batch 15 - the acceptance walk
 
 > **The acceptance walk is RUN: all five Role A items and ruling 18's live-stream
-> animation are satisfied, each with the limits stated where it is.** What remains
-> before batch 15 closes is spec line 82's own closing condition -- the owner's walk
-> through the Liaison -- and three design questions recorded below for it.
+> animation are satisfied, each with the limits stated where it is.** Two things remain
+> before batch 15 closes, both from spec line 82 and neither run yet:
+> 1. **One small real run** -- a single ticket on the real `claude` adapter, watched on
+>    the page. Everything above used the fake adapter, which is not the same claim.
+>    Held on the owner's confirmation: spec line 96 says their batch 1 permission for
+>    tiny runs covers it, while `batch-15-addendum-owner-answers.md:33` and the handover
+>    record it as still open. Asked through the Liaison rather than assumed.
+> 2. **The owner's walk** through the Liaison, which closes the batch -- with the three
+>    design questions recorded below.
 >
 > This file was opened part-written, with its holes named, and filled in against a
 > real daemon. It is kept that way on purpose: batch 14 closed because a spec sentence
