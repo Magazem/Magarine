@@ -544,7 +544,7 @@ stays behind `isAuthorized` exactly as before.
 | `GET` | `/activity?project=<id>\|ticket=<id>&all=true` | Same shape as `activity --json`. |
 | `GET` | `/projects` | Batch 11: same shape as `project list --json`. Added for the page's project selector — not in batch 8/9's original route list. |
 | `GET` | `/projects/{id}/scope` | Batch 11: `{scopeText}` — the project's scope document as plain text (`manager.ts`'s `readScopeText`, called read-only). Empty string when no scope file is set, never a 404 for that case; 404 only for an unknown project id. |
-| `POST` | `/tickets` | Body mirrors `ticket add`'s flags (`project`, `title`, `description`, `maxAttempts`, `priority`, `workspaceType`, `acceptanceCriteria`, `model`, `budget`, `dependsOn`). Attaches every `dependsOn` before resolving readiness, never before — same ordering guarantee as the CLI. |
+| `POST` | `/tickets` | Body mirrors `ticket add`'s flags (`project`, `title`, `description`, `maxAttempts`, `priority`, `workspaceType`, `acceptanceCriteria`, `model`, `budget`, `dependsOn`, `expectedArtifacts`). Attaches every `dependsOn` before resolving readiness, never before — same ordering guarantee as the CLI. `expectedArtifacts` carries the full `{kind, path?}` entry shape (same validation as the Manager's `create_ticket`/`update_ticket`), not the CLI's path-only `--expected-artifact` shorthand; omit it for no expectations, a non-empty array to verify DONE against, never `[]` (refused with 400). |
 | `POST` | `/deps` | `{project, ticket, dependsOn, type?}`. |
 | `POST` | `/tickets/{id}/decide` | `{answer}`. |
 | `POST` | `/tickets/{id}/retry` | No body. |

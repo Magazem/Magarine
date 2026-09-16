@@ -211,6 +211,80 @@ test('POST /tickets creates a ticket (with the same attach-deps-before-resolving
   }
 });
 
+// Ruling 16, amended: `POST /tickets` mirrors `ticket add`'s
+// `--expected-artifact`, but carries the FULL create_ticket JSON shape
+// (`{kind, path?}` entries), not the CLI's path-only shorthand -- and reuses
+// proposal.ts's `validateExpectedArtifacts` rather than a second copy of the
+// same rules.
+test('POST /tickets expectedArtifacts: absent stores null (never []), a valid entry is stored, an empty array is refused, and an unknown kind is refused naming the entry\'s index, and neither refusal leaves a ticket behind', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'tickets-expected-artifacts-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    assert.equal(projectRes.code, 0);
+    const project = JSON.parse(projectRes.stdout);
+
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const call = (method: 'GET' | 'POST', path: string, body?: unknown) =>
+        api(info.port, fileInfo.token, method, path, body);
+
+      const absentRes = await call('POST', '/tickets', { project: project.id, title: 'no expectations' });
+      assert.equal(absentRes.status, 201, absentRes.text);
+      const absent = absentRes.json as { expectedArtifacts: unknown };
+      assert.equal(absent.expectedArtifacts, null, 'absent must store null, not []');
+      assert.notDeepEqual(absent.expectedArtifacts, [], 'null is not the same as an empty list');
+
+      const validRes = await call('POST', '/tickets', {
+        project: project.id,
+        title: 'declares one',
+        expectedArtifacts: [{ kind: 'file', path: 'out.md' }],
+      });
+      assert.equal(validRes.status, 201, validRes.text);
+      const valid = validRes.json as { expectedArtifacts: unknown };
+      assert.deepEqual(valid.expectedArtifacts, [{ kind: 'file', path: 'out.md' }]);
+
+      const boardBefore = (await call('GET', `/board?project=${project.id}`)).json as { tickets: unknown[] };
+      const countBefore = boardBefore.tickets.length;
+
+      const emptyRes = await call('POST', '/tickets', {
+        project: project.id,
+        title: 'declares nothing',
+        expectedArtifacts: [],
+      });
+      assert.equal(emptyRes.status, 400);
+      assert.match((emptyRes.json as { error: string }).error, /expectedArtifacts must be omitted or non-empty/);
+
+      const boardAfterEmpty = (await call('GET', `/board?project=${project.id}`)).json as { tickets: unknown[] };
+      assert.equal(
+        boardAfterEmpty.tickets.length,
+        countBefore,
+        'a refused `[]` must leave no orphan ticket behind -- the 400 must fire before createTicket, not after'
+      );
+
+      const badKindRes = await call('POST', '/tickets', {
+        project: project.id,
+        title: 'bad kind',
+        expectedArtifacts: [{ kind: 'file', path: 'ok.txt' }, { kind: 'not-a-real-kind' }],
+      });
+      assert.equal(badKindRes.status, 400);
+      assert.match((badKindRes.json as { error: string }).error, /\[1\]/, 'must name the offending entry\'s index');
+
+      const boardAfterBadKind = (await call('GET', `/board?project=${project.id}`)).json as { tickets: unknown[] };
+      assert.equal(
+        boardAfterBadKind.tickets.length,
+        countBefore,
+        'a refused unknown-kind entry must leave no orphan ticket behind -- the 400 must fire before createTicket, not after'
+      );
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /tickets/{id}/cancel lands a hanging run in CANCELLED (not READY) without consuming an attempt, reopenable only via retry', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'tick-cancel-'));
   try {

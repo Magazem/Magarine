@@ -18,6 +18,7 @@ import { resolveReadiness } from './dependencies.ts';
 import { discussProject, ManagerError, readScopeText } from './manager.ts';
 import { buildConversation } from './commands/conversation.ts';
 import { planWithMission } from './commands/plan.ts';
+import { validateExpectedArtifacts } from './proposal.ts';
 import {
   addDependency,
   createTicket,
@@ -30,7 +31,7 @@ import {
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
 } from './store.ts';
-import type { AgentAdapter, DependencyType, EventRow, WorkspaceType } from './types.ts';
+import type { AgentAdapter, DependencyType, EventRow, ExpectedArtifact, WorkspaceType } from './types.ts';
 
 // The daemon's HTTP API -- docs/strategy/batch-8-spec.md section 2's route
 // list, verbatim: "GET /health, GET /board, GET /inbox, GET /activity, POST
@@ -161,8 +162,25 @@ async function handleCreateTicket(db: Db, body: unknown): Promise<RouteResult> {
     model?: string | null;
     budget?: number;
     dependsOn?: string[];
+    expectedArtifacts?: ExpectedArtifact[];
   };
   if (!b.project || !b.title) throw new ApiError(400, '"project" and "title" are required');
+
+  // Ruling 16, amended: the same null/[] discipline as the CLI's
+  // `ticket add --expected-artifact` (`flagList` there, this check here) --
+  // `createTicket` (store.ts) persists `[]` as a real, non-null list, so
+  // absent and empty must both be refused from ever reaching it as `[]`.
+  // Full JSON shape here (not the CLI's path-only shorthand), validated by
+  // the same function the Manager's create_ticket/update_ticket use.
+  let expectedArtifacts: ExpectedArtifact[] | null = null;
+  if (b.expectedArtifacts !== undefined) {
+    if (Array.isArray(b.expectedArtifacts) && b.expectedArtifacts.length === 0) {
+      throw new ApiError(400, 'expectedArtifacts must be omitted or non-empty');
+    }
+    const errors = validateExpectedArtifacts(b.expectedArtifacts, 'ticket');
+    if (errors.length > 0) throw new ApiError(400, errors.join('; '));
+    expectedArtifacts = b.expectedArtifacts;
+  }
 
   const ticket = createTicket(db, {
     projectId: b.project,
@@ -173,6 +191,7 @@ async function handleCreateTicket(db: Db, body: unknown): Promise<RouteResult> {
     workspaceType: (b.workspaceType ?? 'NONE') as WorkspaceType,
     acceptanceCriteria: b.acceptanceCriteria ?? [],
     model: b.model ?? null,
+    expectedArtifacts,
   });
 
   // MIN_BUDGET_USD floor is enforced inside setTicketBudgetOverride itself

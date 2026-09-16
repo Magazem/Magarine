@@ -225,7 +225,7 @@ function isStringArray(value: unknown): value is string[] {
 // there is nothing for a non-file kind's path to mean, and accepting one
 // silently would just be ignored later, which this project's own standing
 // rule treats as a defect to prevent rather than tolerate quietly.
-function validateExpectedArtifacts(value: unknown, prefix: string): string[] {
+export function validateExpectedArtifacts(value: unknown, prefix: string): string[] {
   if (!Array.isArray(value)) {
     return [`${prefix}.expected_artifacts must be an array when present`];
   }
