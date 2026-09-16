@@ -529,11 +529,15 @@ not asserted from a comment. All JSON, all behind the token
 `node:crypto`'s `timingSafeEqual`): a wrong or missing token gets a fixed
 `{"error": "unauthorized"}`, `401`, on every route including `/health`,
 before any other work happens. Node's built-in `http`/`fetch` only — no
-dependency was added for this. **One deliberate exception: `GET /`**, which
-serves the browser page (`ui/page.ts`) with no token check at all — it is
-the page the owner types the token INTO in the first place, so it cannot be
-gated behind that same token. Every route the page's own script then calls
-stays behind `isAuthorized` exactly as before.
+dependency was added for this. **Two deliberate exceptions: `GET /` and
+`GET /ui/<name>`**, neither behind a token check — `GET /` serves the
+browser page (`ui/page.ts`), the page the owner types the token INTO in the
+first place, so it cannot be gated behind that same token; `GET /ui/<name>`
+(ruling 12) serves the page's own static assets (`<script src>`,
+`<link>`, `@font-face`), which the browser loads natively and never attaches
+a custom `Authorization` header to, so gating them would just break the page
+that requests them. Every other route, including `/events`, stays behind
+`isAuthorized` exactly as before.
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -544,6 +548,10 @@ stays behind `isAuthorized` exactly as before.
 | `GET` | `/activity?project=<id>\|ticket=<id>&all=true` | Same shape as `activity --json`. |
 | `GET` | `/projects` | Batch 11: same shape as `project list --json`. Added for the page's project selector — not in batch 8/9's original route list. |
 | `GET` | `/projects/{id}/scope` | Batch 11: `{scopeText}` — the project's scope document as plain text (`manager.ts`'s `readScopeText`, called read-only). Empty string when no scope file is set, never a 404 for that case; 404 only for an unknown project id. |
+| `GET` | `/projects/{id}/conversation` | Batch 11 part 2: same shape as `commands/conversation.ts`'s `buildConversation` — the conversation panel's feed (owner messages, Manager replies/assessments, pending questions, scope updates), interleaved in order. 404 for an unknown project id. |
+| `GET` | `/tickets/{id}/progress` | Batch 15 ruling 7: one entry per run for that ticket — `{runId, runStatus, latest}`, where `latest` is that run's most recent `worker_progress` event (`{message, tool, state, costUsd, at, sequence}`) or `null` if none yet. 404 for an unknown ticket id. |
+| `GET` | `/events?since=<sequence>` | Batch 15 ruling 7: `text/event-stream`. `since` (default `0`) is exclusive — replays every event with `sequence` greater than it, then keeps streaming new ones as they land. Each SSE frame's `id` is the event's `sequence`, `event` is its `eventType`, `data` is the full JSON event row; only `worker_progress` events and non-`internal`-visibility events are streamed. A `: heartbeat` comment line every ~15s keeps a quiet connection provably alive (not a real frame). A wrong or missing token gets the same `401 {"error":"unauthorized"}` as every other route, not a stream. Every open stream is ended when the daemon shuts down, ahead of the HTTP server itself closing. |
+| `GET` | `/ui/<name>` | Batch 15 ruling 12: static assets from `packages/core/ui/` — **no token required** (see above). Serves only `.html`/`.css`/`.js`/`.woff2`/`.svg` by extension, with the matching `Content-Type`; no fallback, no sniffing. A name containing a path separator or a dot-segment (decoded first, so an encoded traversal is caught too) is refused with `400`; an unrecognized extension or a missing file answers `404`. |
 | `POST` | `/tickets` | Body mirrors `ticket add`'s flags (`project`, `title`, `description`, `maxAttempts`, `priority`, `workspaceType`, `acceptanceCriteria`, `model`, `budget`, `dependsOn`, `expectedArtifacts`). Attaches every `dependsOn` before resolving readiness, never before — same ordering guarantee as the CLI. `expectedArtifacts` carries the full `{kind, path?}` entry shape (same validation as the Manager's `create_ticket`/`update_ticket`), not the CLI's path-only `--expected-artifact` shorthand; omit it for no expectations, a non-empty array to verify DONE against, never `[]` (refused with 400). |
 | `POST` | `/deps` | `{project, ticket, dependsOn, type?}`. |
 | `POST` | `/tickets/{id}/decide` | `{answer}`. |
@@ -556,7 +564,9 @@ stays behind `isAuthorized` exactly as before.
 | `POST` | `/projects/{id}/plan` | `{mission}` — creates a manager ticket. See "Planning a project" below. |
 | `POST` | `/tick` | `{project}` — forces one scheduling pass for that project right now, outside the regular interval. |
 
-Nothing else — no websocket, no push, per spec. **There is no
+Nothing else — no websocket. The one push channel is `GET /events` above, a
+server-sent event stream added in batch 15 (ruling 7); earlier batches had
+none, which is what this sentence used to say. **There is no
 `POST /projects` (create)**: `project create` is not in this list, and stays
 a direct write even while a daemon is running (see "The single-writer rule"
 below) — a deliberate exception, not an oversight.
