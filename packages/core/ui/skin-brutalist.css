@@ -158,7 +158,32 @@
      ======================================================================== */
 
   /* THE COLUMNS SCROLL, THE PAGE DOES NOT. Keyed on the attribute's presence:
-     no view, no scroll containers, and the anchor page scrolls as a page. */
+     no view, no scroll containers, and the anchor page scrolls as a page.
+
+     `position: relative` IS LOAD-BEARING AND WAS FOUND THE HARD WAY. A scroll
+     container only clips an absolutely positioned descendant if it is also
+     that descendant's CONTAINING BLOCK, and tokens.css's `.sr-only` (the
+     visually-hidden label pattern) is `position: absolute`. With these regions
+     unpositioned, every such label escaped its column's clip and was laid out
+     against the initial containing block instead -- which in the scope view,
+     where the composer's label sits near the foot of 817px of content inside a
+     355px column, put it 236px below the fold and made the ROOT scrollable:
+     measured scrollHeight 1084 against a 848px viewport, a real 15px
+     scrollbar, and the page scrolling in a layout whose own grid rows summed
+     to exactly the viewport (62 + 76 + 0 + 355 + 355 = 848).
+
+     Clipping the root instead was tried first and is WRONG: it removes the
+     scrollbar while leaving the root programmatically scrolled to 236, so the
+     content stops being reachable rather than stopping being out of place.
+     Containing the label fixes the cause. */
+  html[data-view] #fleet,
+  html[data-view] #board,
+  html[data-view] #scope,
+  html[data-view] #conversation,
+  html[data-view] #needs-you,
+  html[data-view] #activity {
+    position: relative;
+  }
   html[data-view] #fleet,
   html[data-view] #board,
   html[data-view] #scope,
@@ -402,7 +427,7 @@
     letter-spacing: 0.06em; text-transform: uppercase;
   }
   .fleet-row .tier { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); letter-spacing: 0.08em; }
-  /* The live line. Drawn from latest_activity -- never invented. */
+  /* The live line. Drawn from latestActivity -- never invented. */
   .fleet-row .doing {
     font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2);
     overflow-wrap: anywhere; margin-top: 2px;
