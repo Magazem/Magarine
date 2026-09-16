@@ -1,0 +1,1052 @@
+// ===========================================================================
+// Magarine — the page's behaviour. Batch 15, Role B (batch-15-spec.md s3).
+//
+// THE VANILLA RULE. No build step, no framework, no bundler, no network beyond
+// this daemon. This file is shipped and parsed exactly as written.
+//
+// FOUR RULES THIS FILE IS WRITTEN AGAINST, each of which shows up as code:
+//
+//   RULE 8 — the interface shows only what the daemon measures. Every value
+//   rendered below comes out of a named response field. Where pass 3 drew
+//   something no field backs, it is ABSENT here and listed in
+//   ui/ELEMENT-FIELD-TABLE.md. There is no mock data in this file: search it
+//   for a ticket id, a title or an agent name and you will not find one.
+//
+//   RULE 9 — a silent fallback is not allowed. When the event stream is not
+//   available the page SAYS SO, in words, and says it is polling. When the
+//   interface font fails to load it says so. When the daemon sends text the
+//   bundled font cannot draw it says so. None of these is a colour change or
+//   a missing element; each is a sentence.
+//
+//   RULING 13 REQUIREMENT 3 — THE SCRIPT SETS STATE, NEVER STYLE. This file
+//   writes text, data-* attributes and semantic class names. It never reaches
+//   for an element's style property, never sets a style attribute, and sets no
+//   class name from the presentational list src/ui/skin.test.ts owns. That
+//   test is a WHOLE-FILE grep with no comment stripping, deliberately: a test
+//   that can be satisfied by moving a violation into a comment is fooled in
+//   both directions, so this paragraph is worded to avoid the literal tokens
+//   rather than the test being weakened to tolerate them.
+//   Colour comes from `data-status`, scale from
+//   `data-size`, the activity order from `data-step`, the board's view from
+//   `data-board-view` — every one of them resolved in CSS. That is what lets
+//   the owner's own design arrive later as a stylesheet instead of a rewrite.
+//
+//   THE ORGANISM ANIMATES ONCE, ON A REAL EVENT, AND NEVER LOOPS. A loader
+//   spinning while nothing runs is precisely the lie this batch exists to
+//   prevent. The one animation helper is called from exactly one place: a
+//   worker_progress event arriving. src/ui/skin.test.ts counts the call sites
+//   with a whole-file grep and no comment stripping, so this paragraph avoids
+//   naming the helper rather than that test being weakened to tolerate it.
+//
+// XSS: every daemon value reaches the DOM through textContent or a data
+// attribute. There is no innerHTML call taking daemon data anywhere here.
+// ===========================================================================
+(function () {
+  'use strict';
+
+  var ORG = globalThis.MagarineOrganism;
+  var COVERAGE = globalThis.MagarineFontCoverage;
+
+  // -----------------------------------------------------------------------
+  // The board's six lanes over the daemon's eight statuses. NOTHING IS
+  // HIDDEN: CANCELLED shares the terminal lane with DONE, struck through,
+  // rather than being dropped. A lane set that hides a status is forbidden.
+  // The statuses are types.ts's TicketStatus, exactly.
+  // -----------------------------------------------------------------------
+  var STATUS_LANES = [
+    { key: 'waiting', name: 'Waiting',     statuses: ['OPEN', 'READY'] },
+    { key: 'active',  name: 'In progress', statuses: ['IN_PROGRESS'] },
+    { key: 'review',  name: 'Review',      statuses: ['REVIEW'] },
+    { key: 'blocked', name: 'Blocked',     statuses: ['BLOCKED'] },
+    { key: 'failed',  name: 'Failed',      statuses: ['FAILED'] },
+    { key: 'done',    name: 'Done',        statuses: ['DONE', 'CANCELLED'] }
+  ];
+
+  // commands/board.ts's own STATUS_ORDER, so the list view reads in the same
+  // order the CLI board does.
+  var STATUS_ORDER = ['BLOCKED', 'FAILED', 'IN_PROGRESS', 'REVIEW', 'READY', 'OPEN', 'DONE', 'CANCELLED'];
+
+  // -----------------------------------------------------------------------
+  // ACTIVITY = MOTION. Which cells fire and in what ORDER when a real event
+  // lands. One entry per state in the daemon's latest_activity.state.
+  //
+  // ALL SIX STATES ARE REAL AND SOURCED (ruling 14): reading, writing,
+  // running, testing, finishing, reporting. `testing` was sourceable but
+  // discarded by the adapter; it was fixed at the source rather than drawn as
+  // a promise. THE TWO STATES IN THE OWNER'S LIST THAT NOTHING EMITS ARE NOT
+  // HERE — they are named in ui/ELEMENT-FIELD-TABLE.md's omissions list, and
+  // src/ui/motion.test.ts greps this whole file for them without stripping
+  // comments, so they are not named here either.
+  //
+  // Each returns an INTEGER 0..24: the cell's place in the firing order. The
+  // delay itself is tokens.css's table, keyed on data-step. The script decides
+  // order; the stylesheet decides timing. No state is "faster" or "more
+  // urgent" than another, because nothing measures that.
+  //
+  // An unmapped state plays `running` rather than being dropped or guessed at,
+  // and src/ui/motion.test.ts pins that.
+  // -----------------------------------------------------------------------
+  function row(i) { return Math.floor(i / 5); }
+  function col(i) { return i % 5; }
+  function ring(i) { return Math.max(Math.abs(row(i) - 2), Math.abs(col(i) - 2)); }
+
+  var MOTION = {
+    reading:   function (i) { return col(i); },                   // scan, column by column
+    writing:   function (i) { return row(i); },                   // line by line
+    running:   function (i) { return ring(i); },                  // fill, centre outward
+    testing:   function (i) { return ((row(i) + col(i)) % 2) * 3; }, // alternate
+    finishing: function (i) { return 2 - ring(i); },              // assemble, outside in
+    reporting: function (i) { return (i * 7) % 25; }              // scatter, deterministic
+  };
+  function motionFor(state) {
+    return Object.prototype.hasOwnProperty.call(MOTION, state) ? MOTION[state] : MOTION.running;
+  }
+
+  // "What happens next", keyed on InboxItem.eventType. THIS IS COPY, NOT A
+  // MEASUREMENT: it describes what the daemon will do with this item, which is
+  // fixed per event type. It is listed as copy in the element-field table
+  // rather than claimed as a field. An event type with no entry gets no line
+  // at all rather than an invented one.
+  var WHAT_NEXT = {
+    worker_needs_user_decision:
+      'Answer and the ticket returns to READY; this worker resumes and anything blocked behind it unblocks.',
+    worker_needs_review:
+      'Approve and it lands DONE. Reject with a reason and it retries with that reason attached.',
+    worker_failed_final:
+      'Retry once the reason above is addressed: attempts reset and the ticket returns to READY.',
+    project_spend_cap_reached:
+      'Raise the cap and the project resumes from where it stopped.',
+    adapter_unavailable:
+      'Resume the project once the adapter is reachable again.'
+  };
+
+  // The actions an item offers, keyed on the same field. An event type with no
+  // entry offers none — rule 7's converse: if the daemon cannot name a next
+  // command for it, the page does not draw a button pretending it can.
+  var ACTIONS = {
+    worker_needs_user_decision: [
+      { kind: 'answer', label: 'Answer', route: 'decide', field: 'answer', placeholder: 'your answer', go: true }
+    ],
+    worker_needs_review: [
+      { kind: 'button', label: 'Approve', route: 'approve', go: true },
+      { kind: 'answer', label: 'Reject', route: 'reject', field: 'reason', placeholder: 'reject reason' }
+    ],
+    worker_failed_final: [
+      { kind: 'button', label: 'Retry', route: 'retry' }
+    ]
+  };
+
+  var EVENT_TONE = {
+    worker_failed_final: 'bad', worker_failed_retryable: 'bad',
+    project_spend_cap_reached: 'bad', adapter_unavailable: 'bad',
+    worker_needs_user_decision: 'attention', worker_needs_review: 'attention',
+    worker_done: 'good'
+  };
+
+  var POLL_MS = 4000;
+  var FONT_NOTICE = 'interface font did not load, run magarine doctor';
+
+  var state = {
+    token: null,
+    projectId: null,
+    projects: [],
+    board: null,
+    inbox: [],
+    activity: [],
+    conversation: [],
+    scopeText: '',
+    convFilter: 'all',
+    live: false,            // true only while a stream is genuinely open
+    lastSequence: 0
+  };
+
+  // -----------------------------------------------------------------------
+  // tiny DOM helpers. `el` takes a class name and text; nothing here sets a
+  // style, and src/ui/skin.test.ts proves the file contains no way to.
+  // -----------------------------------------------------------------------
+  function $(id) { return document.getElementById(id); }
+
+  // Every class name in this file is lowercase kebab-case, space-separated.
+  // THIS IS CHECKED, NOT ASSUMED, AND IT IS NOT DECORATION: `el(tag, text)` --
+  // forgetting the null in the middle -- silently puts a DAEMON VALUE in the
+  // class attribute. It happened here: an artefact's path shipped as
+  // class="C:/work/sqlite-notes/delete.md" and the path simply vanished from
+  // the page, with no error anywhere. That is a silent failure (rule 9) and a
+  // daemon value becoming a class name (ruling 13 requirement 3) in one
+  // mistake, so the choice is removed rather than documented (rule 6).
+  var CLASS_SHAPE = /^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*)*$/;
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) {
+      if (!CLASS_SHAPE.test(cls)) throw new Error('not a class name: ' + cls);
+      n.className = cls;
+    }
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
+  // -----------------------------------------------------------------------
+  // the daemon
+  //
+  // Auth: the token is typed in once and kept in sessionStorage (cleared when
+  // the tab closes) — never a cookie, never in the URL, never sent anywhere
+  // but as the Authorization header on this page's own calls to the daemon it
+  // was loaded from. The browser's EventSource cannot set a header, which is
+  // why the stream below is a streaming fetch() and not an EventSource.
+  // -----------------------------------------------------------------------
+  function api(path, opts) {
+    opts = opts || {};
+    var headers = { 'Authorization': 'Bearer ' + state.token };
+    if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+    return fetch(path, {
+      method: opts.method || 'GET',
+      headers: headers,
+      body: opts.body === undefined ? undefined : JSON.stringify(opts.body)
+    }).then(function (res) {
+      if (res.status === 401 || res.status === 403) {
+        showGate('that token was refused by the daemon');
+        throw new Error('unauthorized');
+      }
+      if (!res.ok) {
+        return res.text().then(function (t) { throw new Error(res.status + ' ' + path + ': ' + t); });
+      }
+      return res.status === 204 ? null : res.json();
+    });
+  }
+
+  // -----------------------------------------------------------------------
+  // NOTICES — rule 9. Each says, in a sentence, a specific thing that is not
+  // working. None is dismissible: the condition clears it, a click does not.
+  // -----------------------------------------------------------------------
+  function setNotice(id, text, why, cmd) {
+    var box = $('notices');
+    var existing = document.getElementById(id);
+    if (!text) { if (existing) box.removeChild(existing); return; }
+    var n = existing || el('div', 'notice');
+    n.id = id;
+    clear(n);
+    n.appendChild(document.createTextNode(text));
+    if (cmd) n.appendChild(el('span', 'cmd', cmd));
+    if (why) n.appendChild(el('span', 'why', why));
+    if (!existing) box.appendChild(n);
+  }
+
+  // -----------------------------------------------------------------------
+  // THE ORGANISM. Shape from the generator, colour from the ticket status,
+  // motion only on a real event.
+  //
+  // THE TIER IS DERIVED ONCE, IN organism.js. This file calls ORG.tierOf and
+  // never re-implements it (batch 15 spec, deliverable 3).
+  // -----------------------------------------------------------------------
+  function seedFor(modelId) {
+    // BoardTicket.model is null when the ticket falls back to the project's
+    // default. Handing null to the generator would render every such ticket
+    // as the "unknown" tier — wrong, and plausible-looking, which is worse.
+    var project = currentProject();
+    return modelId || (project && project.defaultModel) || '';
+  }
+
+  // EVERY data-* THIS FILE WRITES IS EITHER RESOLVED BY A STYLESHEET OR USED BY
+  // A SELECTOR HERE, and src/ui/skin.test.ts enforces exactly that. An
+  // attribute nothing consumes is the same trap as an unused token that fails
+  // contrast: it reads as a hook a skin can rely on, and it is not one.
+  //
+  // Four were removed under that rule rather than left as decoration:
+  // data-ticket and data-event (nothing reads them; data-org-for and
+  // data-doing-for are the addressing hooks that are actually used),
+  // data-reason on the pause banner (the cause is in the heading text), and
+  // data-tier on the organism. THAT LAST ONE MATTERS: offering the tier as a
+  // styling hook invites a skin to colour by tier, and colour is status. The
+  // three channels must not collide, so the hook does not exist. The tier is
+  // still in the organism's title and aria-label, where it is a name and not a
+  // selector.
+  function makeOrg(modelId, status, size) {
+    var seed = seedFor(modelId);
+    var node = el('span', 'org');
+    var tier = seed ? ORG.tierOf(seed) : 'unknown';
+    if (size) node.setAttribute('data-size', size);
+    if (status) node.setAttribute('data-status', status);
+    node.setAttribute('role', 'img');
+    node.setAttribute('aria-label', 'agent organism, model tier ' + tier);
+    node.title = (seed || 'no model recorded') + ' \u00B7 tier ' + tier;
+    var cells = ORG.organism(seed);
+    for (var i = 0; i < cells.length; i++) {
+      var cell = el('i');
+      if (cells[i]) cell.setAttribute('data-on', '1');
+      node.appendChild(cell);
+    }
+    return node;
+  }
+
+  // ONE PASS. Called from exactly one place: a worker_progress event landing.
+  // Never on a timer, never on load, never on a click. The delay per cell is
+  // tokens.css's business; this writes only the cell's place in the order.
+  function tick(node, activityState) {
+    if (!node) return;
+    var order = motionFor(activityState);
+    var cells = node.children;
+    node.removeAttribute('data-tick');
+    void node.offsetWidth;                       // restart the one animation
+    for (var i = 0; i < cells.length; i++) cells[i].setAttribute('data-step', String(order(i)));
+    node.setAttribute('data-tick', activityState);
+    window.setTimeout(function () { node.removeAttribute('data-tick'); }, 1600);
+  }
+
+  // -----------------------------------------------------------------------
+  // small formatters
+  // -----------------------------------------------------------------------
+  function currentProject() {
+    for (var i = 0; i < state.projects.length; i++) {
+      if (state.projects[i].id === state.projectId) return state.projects[i];
+    }
+    return null;
+  }
+
+  function money(usd) { return '$' + Number(usd || 0).toFixed(2); }
+
+  // Cards carry the short id; the full id is in the list view, in Needs you
+  // and in the conversation. A card spending three lines on an id is not
+  // dense, it is just full.
+  function shortId(id) {
+    if (!id) return '';
+    var cut = String(id).indexOf('-');
+    return cut > 0 ? String(id).slice(0, cut) : String(id);
+  }
+
+  function ago(iso) {
+    var then = Date.parse(iso);
+    if (!then) return '';
+    var s = Math.max(0, Math.round((Date.now() - then) / 1000));
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.round(s / 60) + 'm';
+    if (s < 86400) return Math.round(s / 3600) + 'h';
+    return Math.round(s / 86400) + 'd';
+  }
+
+  function hhmmss(iso) {
+    var t = Date.parse(iso);
+    return t ? new Date(t).toISOString().slice(11, 19) : '';
+  }
+
+  function ticketById(id) {
+    var ts = (state.board && state.board.tickets) || [];
+    for (var i = 0; i < ts.length; i++) if (ts[i].id === id) return ts[i];
+    return null;
+  }
+
+  /** latest_activity, from the board rows. null until Role A's field lands,
+   *  and null for any ticket that is not running — both render as no line,
+   *  never as an invented one. */
+  function activityOf(ticket) { return (ticket && ticket.latest_activity) || null; }
+
+  function doingText(ticket) {
+    var a = activityOf(ticket);
+    if (!a) return null;
+    return a.tool ? a.state + ' \u00B7 ' + a.tool : a.state;
+  }
+
+  function costText(t) {
+    return t.costIsEstimate ? 'at least ' + money(t.costUsd) + ' \u2014 live estimate' : money(t.costUsd);
+  }
+
+  // ------------------------------------------------------------ fleet ----
+  // A row per ticket that is actually running. The daemon has no agent
+  // entity, no roster and no idle worker, so neither does this.
+  function renderFleet() {
+    var list = $('fleetList');
+    clear(list);
+    var running = ((state.board && state.board.tickets) || []).filter(function (t) {
+      return t.status === 'IN_PROGRESS';
+    });
+    $('fleetCount').textContent = running.length + (running.length === 1 ? ' worker' : ' workers');
+    if (!running.length) {
+      list.appendChild(el('div', 'empty', 'no ticket is IN_PROGRESS'));
+      return;
+    }
+    running.forEach(function (t) {
+      var r = el('div', 'fleet-row');
+      r.setAttribute('data-status', t.status);
+      r.appendChild(makeOrg(t.model, t.status));
+      var who = el('span', 'who');
+      var model = seedFor(t.model);
+      who.appendChild(el('span', 'name', model ? ORG.tierOf(model) : 'no model recorded'));
+      who.appendChild(el('span', 'tier', model || 'tickets.model is null and the project has no default'));
+      var doing = doingText(t);
+      var line = el('span', 'doing', doing || 'no progress event recorded yet');
+      if (!doing) line.setAttribute('data-idle', '1');
+      line.setAttribute('data-doing-for', t.id);
+      who.appendChild(line);
+      r.appendChild(who);
+      list.appendChild(r);
+    });
+  }
+
+  // ------------------------------------------------------------ board ----
+  function artsNode(artifacts) {
+    if (!artifacts || !artifacts.length) return null;
+    var wrap = el('span', 'arts');
+    artifacts.forEach(function (a) {
+      var art = el('span', 'art');
+      art.setAttribute('data-kind', a.kind);
+      art.appendChild(el('span', 'k', a.kind));
+      // ARTEFACT BY KIND: a file shows its path; a text-bearing kind shows its
+      // kind and a LENGTH, never its body. The body is the worker's output and
+      // belongs in the ticket, not on a card.
+      art.appendChild(el('span', null, a.kind === 'file'
+        ? (a.content || '(no path recorded)')
+        : (String(a.content || '').length + ' chars')));
+      wrap.appendChild(art);
+    });
+    return wrap;
+  }
+
+  function ticketCard(t) {
+    var card = el('div', 'ticket');
+    card.setAttribute('data-status', t.status);
+    card.appendChild(el('span', 'tid', shortId(t.id)));
+    card.appendChild(el('div', 'title', t.title));
+
+    var meta = el('div', 'meta');
+    var org = makeOrg(t.model, t.status, 'sm');
+    org.setAttribute('data-org-for', t.id);
+    meta.appendChild(org);
+    var doing = doingText(t);
+    var line = el('span', 'doing', doing || costText(t));
+    if (!doing) line.setAttribute('data-idle', '1');
+    line.setAttribute('data-doing-for', t.id);
+    meta.appendChild(line);
+    card.appendChild(meta);
+
+    if (t.attemptCount > 0) card.appendChild(el('div', 'dep', t.attemptCount + '/' + t.maxAttempts + ' attempts'));
+    if (t.blockedBy && t.blockedBy.length) {
+      card.appendChild(el('div', 'dep', 'blocked by ' + t.blockedBy.map(shortId).join(', ')));
+    }
+    if (t.usedFallbackRate) {
+      card.appendChild(el('div', 'dep', 'priced at the fallback rate \u2014 this model is not in pricing.ts'));
+    }
+    var arts = artsNode(t.artifacts);
+    if (arts) card.appendChild(arts);
+    return card;
+  }
+
+  function renderBoard() {
+    var lanes = $('lanes');
+    clear(lanes);
+    var tickets = (state.board && state.board.tickets) || [];
+    var running = tickets.filter(function (t) { return t.status === 'IN_PROGRESS'; }).length;
+    $('boardCount').textContent = tickets.length + (tickets.length === 1 ? ' ticket' : ' tickets') +
+      ' \u00B7 ' + running + ' running';
+
+    STATUS_LANES.forEach(function (spec) {
+      var mine = tickets.filter(function (t) { return spec.statuses.indexOf(t.status) >= 0; });
+      var lane = el('div', 'lane');
+      lane.setAttribute('data-lane', spec.key);
+      var head = el('div', 'lane-head');
+      head.appendChild(el('span', 'name', spec.name));
+      head.appendChild(el('span', 'count', String(mine.length)));
+      lane.appendChild(head);
+      var body = el('div', 'lane-body');
+      mine.forEach(function (t) { body.appendChild(ticketCard(t)); });
+      lane.appendChild(body);
+      lanes.appendChild(lane);
+    });
+
+    renderList(tickets);
+  }
+
+  function renderList(tickets) {
+    var body = $('listBody');
+    clear(body);
+    tickets.slice().sort(function (a, b) {
+      return STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status);
+    }).forEach(function (t) {
+      var tr = el('tr');
+      tr.setAttribute('data-status', t.status);
+      var first = el('td');
+      first.appendChild(el('div', 'title', t.title));
+      first.appendChild(el('span', 'tid mono', t.id));
+      tr.appendChild(first);
+      tr.appendChild(el('td', 'num', t.status));
+      tr.appendChild(el('td', 'num', t.attemptCount + '/' + t.maxAttempts));
+      var cost = el('td', 'num', costText(t));
+      if (t.costIsEstimate) cost.setAttribute('data-estimate', '1');
+      tr.appendChild(cost);
+      tr.appendChild(el('td', 'num', doingText(t) || '\u2014'));
+      body.appendChild(tr);
+    });
+  }
+
+  // -------------------------------------------------------- needs you ----
+  function actionRow(item) {
+    var specs = ACTIONS[item.eventType];
+    if (!specs || !item.ticketId) return null;
+    var acts = el('div', 'acts');
+    specs.forEach(function (spec) {
+      if (spec.kind === 'button') {
+        var b = el('button', spec.go ? 'btn btn-go' : 'btn', spec.label);
+        b.type = 'button';
+        b.addEventListener('click', function () { post(item.ticketId, spec.route, {}); });
+        acts.appendChild(b);
+        return;
+      }
+      var input = el('input', 'field');
+      input.type = 'text';
+      input.placeholder = spec.placeholder;
+      input.setAttribute('aria-label', spec.placeholder);
+      var go = el('button', spec.go ? 'btn btn-go' : 'btn', spec.label);
+      go.type = 'button';
+      go.addEventListener('click', function () {
+        if (!input.value) { input.focus(); return; }
+        var payload = {};
+        payload[spec.field] = input.value;
+        post(item.ticketId, spec.route, payload);
+      });
+      input.addEventListener('keydown', function (e) { if (e.key === 'Enter') go.click(); });
+      acts.appendChild(input);
+      acts.appendChild(go);
+    });
+    return acts;
+  }
+
+  function step(k, v, mono) {
+    var s = el('div', 'step');
+    s.appendChild(el('span', 'k', k));
+    s.appendChild(el('span', mono ? 'v mono' : 'v', v));
+    return s;
+  }
+
+  function askNode(item) {
+    var t = item.ticketId ? ticketById(item.ticketId) : null;
+    var status = t ? t.status : 'BLOCKED';
+    var ask = el('div', 'ask');
+    ask.setAttribute('data-status', status);
+
+    var head = el('div', 'ask-head');
+    head.appendChild(makeOrg(t && t.model, status, 'lg'));
+    var who = el('span', 'who');
+    var model = seedFor(t && t.model);
+    who.appendChild(el('span', 'name', (model ? ORG.tierOf(model) : 'project') + ' \u00B7 ' + item.eventType));
+    who.appendChild(el('span', 'tid', item.ticketId || item.projectId || ''));
+    head.appendChild(who);
+    head.appendChild(el('span', 'when', ago(item.createdAt) + ' ago'));
+    ask.appendChild(head);
+
+    var doing = t && doingText(t);
+    if (doing) ask.appendChild(step('Doing', doing + ' \u2014 last event ' + hhmmss(activityOf(t).at), true));
+
+    // THE REASON IS NEVER TRUNCATED, CLAMPED OR SCROLLED AWAY. A half-shown
+    // reason is useless, which is this panel's whole point. InboxItem.message
+    // already carries the exact command that clears the item.
+    ask.appendChild(step('Stopped', item.message));
+
+    if (t && t.artifacts && t.artifacts.length) {
+      var d = el('div', 'step');
+      d.appendChild(el('span', 'k', 'Delivered'));
+      var v = el('span', 'v');
+      v.appendChild(artsNode(t.artifacts));
+      d.appendChild(v);
+      ask.appendChild(d);
+    }
+    if (WHAT_NEXT[item.eventType]) ask.appendChild(step('Then', WHAT_NEXT[item.eventType]));
+
+    var acts = actionRow(item);
+    if (acts) ask.appendChild(acts);
+    return ask;
+  }
+
+  function renderNeeds() {
+    var items = state.inbox || [];
+    $('needsSub').textContent = items.length + ' \u00B7 autonomous work has stopped and handed back';
+    var badge = $('needsCount');
+    badge.textContent = String(items.length);
+    badge.hidden = items.length === 0;
+
+    var list = $('needsList');
+    clear(list);
+    if (!items.length) { list.appendChild(el('div', 'empty', 'nothing is waiting on you')); return; }
+    items.forEach(function (item) { list.appendChild(askNode(item)); });
+  }
+
+  // --------------------------------------------------------- activity ----
+  function renderActivity() {
+    var feed = $('feed');
+    clear(feed);
+    var events = (state.activity || []).slice().sort(function (a, b) { return b.sequence - a.sequence; });
+    $('activityCount').textContent = events.length ? hhmmss(events[0].createdAt) + ' \u00B7 UTC' : 'UTC';
+    if (!events.length) { feed.appendChild(el('div', 'empty', 'no events recorded for this project')); return; }
+    events.slice(0, 60).forEach(function (e) {
+      var r = el('div', 'ev');
+      r.appendChild(el('span', 't', hhmmss(e.createdAt)));
+      var k = el('span', 'k', e.eventType);
+      if (EVENT_TONE[e.eventType]) k.setAttribute('data-tone', EVENT_TONE[e.eventType]);
+      r.appendChild(k);
+      r.appendChild(el('span', 'e', shortId(e.entityId)));
+      feed.appendChild(r);
+    });
+  }
+
+  // ------------------------------------------- scope and conversation ----
+  function renderScope() {
+    $('scopeText').textContent = state.scopeText ||
+      '(this project has no scope file, or it could not be read)';
+  }
+
+  function renderConversation() {
+    var entries = state.conversation || [];
+    $('convCount').textContent = entries.length + (entries.length === 1 ? ' entry' : ' entries') +
+      ' \u00B7 newest last';
+
+    var tabs = $('convTabs');
+    clear(tabs);
+    var ids = [];
+    entries.forEach(function (e) { if (e.ticketId && ids.indexOf(e.ticketId) < 0) ids.push(e.ticketId); });
+    ['all'].concat(ids).forEach(function (id) {
+      var b = el('button', null, id === 'all' ? 'All' : shortId(id));
+      b.type = 'button';
+      b.setAttribute('aria-pressed', String(state.convFilter === id));
+      b.addEventListener('click', function () { state.convFilter = id; renderConversation(); });
+      tabs.appendChild(b);
+    });
+
+    var list = $('convList');
+    clear(list);
+    var shown = entries.filter(function (e) {
+      return state.convFilter === 'all' || e.ticketId === state.convFilter;
+    });
+    if (!shown.length) { list.appendChild(el('div', 'empty', 'no entries for this filter')); return; }
+    shown.forEach(function (e) {
+      var art = el('article', 'entry');
+      art.setAttribute('data-kind', e.kind);
+      var t = e.ticketId ? ticketById(e.ticketId) : null;
+      var who = el('div', 'who');
+      if (e.kind !== 'owner_message' && e.kind !== 'scope_updated') {
+        who.appendChild(makeOrg(t && t.model, t && t.status, 'sm'));
+      }
+      who.appendChild(el('span', 'name', e.kind === 'owner_message' ? 'You' : e.kind));
+      who.appendChild(el('span', 'at', e.createdAt));
+      art.appendChild(who);
+      art.appendChild(el('div', 'text', e.text));
+
+      // Only a still-unanswered question carries a live answer box, matching
+      // the daemon's own rule that only a BLOCKED ticket has anything to
+      // answer. `answered` is the entry's own field; absence is not "false".
+      if (e.kind === 'question' && e.ticketId && e.answered !== true) {
+        var acts = actionRow({ eventType: 'worker_needs_user_decision', ticketId: e.ticketId });
+        if (acts) art.appendChild(acts);
+      }
+      list.appendChild(art);
+    });
+  }
+
+  // ------------------------------------------------------------ pause ----
+  function renderPause() {
+    var banner = $('pauseBanner');
+    var b = state.board;
+    if (!b || !b.pauseMessage) { banner.hidden = true; return; }
+    banner.hidden = false;
+    $('pauseHead').textContent = b.pauseReason === 'spend_cap'
+      ? 'Paused \u2014 spend cap reached'
+      : (b.pauseReason === 'adapter_unavailable' ? 'Paused \u2014 adapter unavailable' : 'Paused');
+    $('pauseBody').textContent = b.pauseMessage;
+
+    var acts = $('pauseActs');
+    clear(acts);
+    // pauseReason is structured precisely so the page can offer the fix that
+    // matches the cause without parsing the message text.
+    if (b.pauseReason === 'spend_cap') {
+      var input = el('input', 'field');
+      input.type = 'number';
+      input.step = '0.01';
+      input.placeholder = 'new max spend (usd)';
+      input.setAttribute('aria-label', 'New maximum spend, in US dollars');
+      input.setAttribute('data-field', 'max-spend');
+      var go = el('button', 'btn btn-go', 'Raise cap');
+      go.type = 'button';
+      go.addEventListener('click', function () {
+        if (!input.value) { input.focus(); return; }
+        api('/projects/' + encodeURIComponent(state.projectId) + '/set',
+            { method: 'POST', body: { maxSpendUsd: Number(input.value) } }).then(refresh, fail);
+      });
+      acts.appendChild(input);
+      acts.appendChild(go);
+    }
+    var resume = el('button', 'btn', 'Resume');
+    resume.type = 'button';
+    resume.addEventListener('click', function () {
+      api('/projects/' + encodeURIComponent(state.projectId) + '/resume', { method: 'POST', body: {} })
+        .then(refresh, fail);
+    });
+    acts.appendChild(resume);
+  }
+
+  // -----------------------------------------------------------------------
+  // FONT READINESS — batch 14 ruling 1, checked through the browser's own
+  // font-loading interface rather than by guessing at a timeout.
+  //
+  // document.fonts.check() answers "would this family be used for this text",
+  // so it is asked AFTER document.fonts.ready resolves, for each family the
+  // page actually sets. A browser with no FontFaceSet cannot be asked, and is
+  // told so rather than given a silent pass.
+  // -----------------------------------------------------------------------
+  function checkFonts() {
+    if (!document.fonts || !document.fonts.ready || !document.fonts.check) {
+      setNotice('notice-font', FONT_NOTICE,
+                'this browser does not expose a font-loading interface, so readiness cannot be confirmed');
+      return;
+    }
+    var probe = 'Magarine';
+    Promise.all([
+      document.fonts.load('400 1rem "Magarine Sans"', probe),
+      document.fonts.load('400 1rem "JetBrains Mono"', probe)
+    ]).catch(function () { /* the check below is the verdict, not this */ })
+      .then(function () { return document.fonts.ready; })
+      .then(function () {
+        var missing = [];
+        if (!document.fonts.check('400 1rem "Magarine Sans"', probe)) missing.push('Magarine Sans (IBM Plex Sans)');
+        if (!document.fonts.check('400 1rem "JetBrains Mono"', probe)) missing.push('JetBrains Mono');
+        if (missing.length) setNotice('notice-font', FONT_NOTICE, 'not loaded: ' + missing.join(', '), 'magarine doctor');
+        else setNotice('notice-font', null);
+      });
+  }
+
+  // -----------------------------------------------------------------------
+  // FONT COVERAGE — the other half of tokens.css's unicode-range blocks.
+  // ONE call site, taking every string the page renders from the daemon. Miss
+  // one here and the notice is wrong, so they are collected in one place
+  // rather than at each render.
+  // -----------------------------------------------------------------------
+  function renderedStrings() {
+    var out = [];
+    (state.projects || []).forEach(function (p) { out.push(p.name, p.id, p.defaultModel); });
+    ((state.board && state.board.tickets) || []).forEach(function (t) {
+      out.push(t.title, t.id, t.status, t.model, t.modelReason);
+      (t.blockedBy || []).forEach(function (b) { out.push(b); });
+      (t.artifacts || []).forEach(function (a) { out.push(a.kind, a.content); });
+      var act = activityOf(t);
+      if (act) out.push(act.state, act.tool);
+    });
+    if (state.board && state.board.pauseMessage) out.push(state.board.pauseMessage);
+    (state.inbox || []).forEach(function (i) { out.push(i.message, i.eventType, i.ticketId, i.projectId); });
+    (state.activity || []).forEach(function (e) { out.push(e.eventType, e.entityId); });
+    (state.conversation || []).forEach(function (c) { out.push(c.text, c.kind, c.ticketId); });
+    out.push(state.scopeText);
+    return out.filter(function (s) { return typeof s === 'string' && s.length > 0; });
+  }
+
+  function checkCoverage() {
+    var verdict = COVERAGE.textOutsideFontCoverage(renderedStrings());
+    // One line, once, beside the font-load notice. No per-string decoration,
+    // no colour, no interruption — the owner's ruling.
+    if (verdict.outside) {
+      setNotice('notice-coverage', COVERAGE.COVERAGE_NOTICE, 'outside the bundled subsets: ' + verdict.sample);
+    } else {
+      setNotice('notice-coverage', null);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // THE EVENT STREAM, and saying so when there isn't one.
+  //
+  // EventSource cannot set an Authorization header and the token must never go
+  // in a URL, so this is a streaming fetch() that parses the server-sent event
+  // framing itself.
+  //
+  // setLive IS NEVER OPTIMISTIC. It reads "polling" until a stream is actually
+  // open, and returns to "polling" the instant one ends — including when the
+  // daemon dies, which its fifteen-second comment line makes detectable. A
+  // page saying "live" while nothing is connected is the same lie as a spinner
+  // over nothing.
+  // -----------------------------------------------------------------------
+  function setLive(isLive, why) {
+    state.live = isLive;
+    var node = $('liveState');
+    node.setAttribute('data-live', isLive ? 'stream' : 'poll');
+    node.textContent = isLive ? 'live' : 'polling';
+    if (isLive) {
+      setNotice('notice-stream', null);
+    } else {
+      setNotice('notice-stream',
+        'the event stream is not connected, so this page is polling every ' +
+        (POLL_MS / 1000) + ' seconds and is not live', why || null);
+    }
+  }
+
+  function orgFor(ticketId) {
+    if (!ticketId) return null;
+    return document.querySelector('[data-org-for="' + String(ticketId).replace(/["\\]/g, '\\$&') + '"]');
+  }
+
+  function handleStreamEvent(name, id, data) {
+    if (id) state.lastSequence = Math.max(state.lastSequence, Number(id) || 0);
+
+    if (name === 'worker_progress') {
+      // THE ONE PLACE THE ORGANISM IS ANIMATED. A real progress event, once, in the
+      // state THE DAEMON MAPPED — the tool-to-state map is the daemon's and is
+      // deliberately not duplicated here. If the row carries no mapped state
+      // the page re-reads the board and animates from latest_activity rather
+      // than guessing at one.
+      var ticketId = data && (data.entityId || data.ticketId);
+      var mapped = data && data.payload && data.payload.state;
+      if (mapped) {
+        tick(orgFor(ticketId), mapped);
+        var line = ticketId && document.querySelector(
+          '[data-doing-for="' + String(ticketId).replace(/["\\]/g, '\\$&') + '"]');
+        if (line) {
+          line.textContent = data.payload.tool ? mapped + ' \u00B7 ' + data.payload.tool : mapped;
+          line.removeAttribute('data-idle');
+        }
+      }
+      refreshBoardOnly().then(function () {
+        if (mapped) return;
+        var a = activityOf(ticketById(ticketId));
+        if (a) tick(orgFor(ticketId), a.state);
+      });
+      return;
+    }
+    refresh();   // anything else changes state the page is showing
+  }
+
+  function openStream() {
+    if (!window.fetch || !window.ReadableStream) {
+      setLive(false, 'this browser cannot read a streaming response');
+      return;
+    }
+    fetch('/events?since=' + encodeURIComponent(state.lastSequence),
+          { headers: { 'Authorization': 'Bearer ' + state.token, 'Accept': 'text/event-stream' } })
+      .then(function (res) {
+        if (!res.ok || !res.body) throw new Error('stream refused: ' + res.status);
+        setLive(true);
+        var reader = res.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        function pump() {
+          return reader.read().then(function (r) {
+            if (r.done) throw new Error('the daemon closed the stream');
+            buffer += decoder.decode(r.value, { stream: true });
+            var frames = buffer.split('\n\n');
+            buffer = frames.pop();
+            frames.forEach(function (frame) {
+              var name = 'message', id = null, dataLines = [];
+              frame.split('\n').forEach(function (line) {
+                if (line.charAt(0) === ':') return;                  // the keep-alive comment
+                if (line.indexOf('event:') === 0) name = line.slice(6).trim();
+                else if (line.indexOf('id:') === 0) id = line.slice(3).trim();
+                else if (line.indexOf('data:') === 0) dataLines.push(line.slice(5).trim());
+              });
+              if (!dataLines.length) return;
+              var parsed = null;
+              try { parsed = JSON.parse(dataLines.join('\n')); } catch (e) { return; }
+              handleStreamEvent(name, id, parsed);
+            });
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .catch(function (e) {
+        setLive(false, String((e && e.message) || e));
+        // One retry per few poll intervals. Not a tight loop, and the page goes
+        // on saying it is polling for as long as that is what it is doing.
+        window.setTimeout(function () { if (state.token && !state.live) openStream(); }, POLL_MS * 4);
+      });
+  }
+
+  // -----------------------------------------------------------------------
+  // loading
+  // -----------------------------------------------------------------------
+  function fail(err) {
+    if (err && err.message === 'unauthorized') return;
+    setNotice('notice-daemon', 'the daemon did not answer', String((err && err.message) || err));
+  }
+
+  function renderSpend() {
+    var b = state.board;
+    var node = $('spend');
+    if (!b) { node.textContent = ''; return; }
+    var text = (b.projectSpendIsEstimate ? 'at least ' : '') + money(b.projectSpendUsd);
+    if (b.projectMaxSpendUsd !== null && b.projectMaxSpendUsd !== undefined) {
+      text += ' of ' + money(b.projectMaxSpendUsd);
+    }
+    if (b.projectUsedFallbackRate) text += ' \u00B7 fallback rate used';
+    node.textContent = text;
+    node.title = 'equivalent API cost \u2014 what the tool would have billed at metered rates. ' +
+      'On a subscription this is not money leaving your account; the real constraint is session limits.';
+  }
+
+  function refreshBoardOnly() {
+    if (!state.projectId) return Promise.resolve();
+    return api('/board?project=' + encodeURIComponent(state.projectId)).then(function (b) {
+      state.board = b;
+      renderSpend(); renderFleet(); renderBoard(); renderPause();
+    }, fail);
+  }
+
+  function refresh() {
+    if (!state.projectId) return Promise.resolve();
+    var p = encodeURIComponent(state.projectId);
+    return Promise.all([
+      api('/board?project=' + p),
+      api('/inbox?project=' + p),
+      api('/activity?project=' + p),
+      api('/projects/' + p + '/scope'),
+      api('/projects/' + p + '/conversation')
+    ]).then(function (r) {
+      state.board = r[0];
+      state.inbox = r[1] || [];
+      state.activity = r[2] || [];
+      state.scopeText = (r[3] && r[3].scopeText) || '';
+      state.conversation = r[4] || [];
+      state.activity.forEach(function (e) {
+        state.lastSequence = Math.max(state.lastSequence, e.sequence || 0);
+      });
+      setNotice('notice-daemon', null);
+      renderSpend(); renderFleet(); renderBoard(); renderNeeds();
+      renderActivity(); renderScope(); renderConversation(); renderPause();
+      checkCoverage();
+    }, fail);
+  }
+
+  function loadProjects() {
+    return api('/projects').then(function (list) {
+      state.projects = list || [];
+      var sel = $('projectSelect');
+      clear(sel);
+      state.projects.forEach(function (p) {
+        var o = el('option', null, p.name || p.id);
+        o.value = p.id;
+        sel.appendChild(o);
+      });
+      if (!state.projectId && state.projects.length) state.projectId = state.projects[0].id;
+      // An empty <select> renders as a small blank box that looks like a
+      // broken control. There is nothing to choose between until the daemon
+      // has answered, so there is nothing to show.
+      sel.hidden = state.projects.length === 0;
+      sel.value = state.projectId || '';
+      $('projectId').textContent = state.projectId || '';
+      return refresh();
+    }, fail);
+  }
+
+  function post(ticketId, route, body) {
+    api('/tickets/' + encodeURIComponent(ticketId) + '/' + route, { method: 'POST', body: body })
+      .then(refresh, fail);
+  }
+
+  // -----------------------------------------------------------------------
+  // the gate, the switches
+  // -----------------------------------------------------------------------
+  var REGIONS = ['fleet', 'board', 'needs-you', 'scope', 'conversation', 'activity'];
+
+  function showGate(why) {
+    state.token = null;
+    try { window.sessionStorage.removeItem('magarine.token'); } catch (e) { /* private mode */ }
+    $('gate').hidden = false;
+    $('projectSelect').hidden = true;
+    setNotice('notice-auth', why || 'this page needs the daemon token before it can show anything', null);
+    REGIONS.forEach(function (id) { $(id).hidden = true; });
+  }
+
+  function hideGate() {
+    $('gate').hidden = true;
+    setNotice('notice-auth', null);
+    REGIONS.forEach(function (id) { $(id).hidden = false; });
+  }
+
+  function setBoardView(name) {
+    // The view is state on the region; which of the two is displayed is the
+    // skin's decision, resolved on [data-board-view] in CSS.
+    $('board').setAttribute('data-board-view', name);
+    var buttons = $('boardToggle').children;
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute('aria-pressed', String(buttons[i].getAttribute('data-board-view') === name));
+    }
+  }
+
+  function setTheme(name) {
+    document.documentElement.setAttribute('data-theme', name);
+    try { window.localStorage.setItem('magarine.theme', name); } catch (e) { /* private mode */ }
+    var buttons = $('themeToggle').children;
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute('aria-pressed', String(buttons[i].getAttribute('data-theme-set') === name));
+    }
+    // A theme swap changes which surfaces text lands on; the font faces are
+    // unchanged by it, but re-asking costs nothing and keeps the notice honest
+    // if a face was still loading at first paint.
+    checkFonts();
+  }
+
+  // RULING 13 REQUIREMENT 4: the page loads the skin the root names. One skin
+  // ships (brutalist); this is the mechanism, not a second skin.
+  function applySkin() {
+    var name = document.documentElement.getAttribute('data-skin') || 'brutalist';
+    var link = $('skin');
+    var href = '/ui/skin-' + name + '.css';
+    if (link && link.getAttribute('href') !== href) link.setAttribute('href', href);
+  }
+
+  function wire() {
+    $('saveToken').addEventListener('click', function () {
+      var v = $('token').value.trim();
+      if (!v) { $('token').focus(); return; }
+      state.token = v;
+      try { window.sessionStorage.setItem('magarine.token', v); } catch (e) { /* private mode */ }
+      $('token').value = '';
+      hideGate();
+      loadProjects().then(function () { if (state.token) openStream(); });
+    });
+    $('token').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('saveToken').click(); });
+
+    $('projectSelect').addEventListener('change', function (e) {
+      state.projectId = e.target.value;
+      $('projectId').textContent = state.projectId;
+      refresh();
+    });
+
+    $('themeToggle').addEventListener('click', function (e) {
+      var t = e.target.closest('[data-theme-set]');
+      if (t) setTheme(t.getAttribute('data-theme-set'));
+    });
+
+    $('boardToggle').addEventListener('click', function (e) {
+      var t = e.target.closest('[data-board-view]');
+      if (t) setBoardView(t.getAttribute('data-board-view'));
+    });
+
+    $('send').addEventListener('click', function () {
+      var text = $('say').value.trim();
+      if (!text || !state.projectId) { $('say').focus(); return; }
+      $('say').value = '';
+      api('/projects/' + encodeURIComponent(state.projectId) + '/discuss',
+          { method: 'POST', body: { message: text } }).then(refresh, fail);
+    });
+  }
+
+  function start() {
+    var saved = null, theme = null;
+    try { saved = window.sessionStorage.getItem('magarine.token'); } catch (e) { /* private mode */ }
+    try { theme = window.localStorage.getItem('magarine.theme'); } catch (e) { /* private mode */ }
+
+    applySkin();
+    wire();
+    setTheme(theme || 'oled');
+    setBoardView('board');
+    setLive(false, 'the page has not opened a stream yet');
+    checkFonts();
+
+    if (!saved) { showGate(); return; }
+    state.token = saved;
+    hideGate();
+    loadProjects().then(function () { if (state.token) openStream(); });
+  }
+
+  // THE POLL. Runs whether or not a stream is open, because the stream carries
+  // events and the board carries state, and a dropped stream must not leave
+  // the page frozen on a stale board. Four seconds, the interval the previous
+  // page used.
+  window.setInterval(function () { if (state.token) refresh(); }, POLL_MS);
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();

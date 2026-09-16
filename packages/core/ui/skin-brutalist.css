@@ -1,0 +1,521 @@
+  /* ==========================================================================
+     Magarine — SKIN: brutalist. The only skin that ships.
+
+     BATCH 15 RULING 13 (docs/strategy/batch-15-addendum-2-second-skin.md).
+     The owner asked for their own proposal back later as "an extra theme".
+     It is not a palette: it has the SAME SIX PRODUCT REGIONS arranged
+     differently, in a different visual language, with decoration pass 3
+     deliberately lacks. So it is a SKIN, and this file is what a skin is.
+
+     TWO INDEPENDENT SWITCHES ON THE ROOT, and they do not overlap:
+       data-theme  PALETTE.  oled | dark | light. Lives in ui/tokens.css.
+       data-skin   VISUAL LANGUAGE.  brutalist, the only value shipped. Each
+                   skin is ui/skin-<name>.css and the page loads the one the
+                   root names.
+
+     WHAT LIVES HERE: placement, spacing, rhythm, borders, type choices, every
+     component's look. WHAT DOES NOT: the token values and the three palettes
+     (ui/tokens.css), the organism's cells, symmetry and animation rule (also
+     tokens.css -- the organism is PRODUCT, requirement 5), and anything the
+     daemon measures (app.js). A SKIN MAY DECORATE; A SKIN MAY NOT INVENT DATA.
+
+     THE SIX REGIONS ARE ADDRESSED BY ID AND BY NOTHING ELSE:
+       #fleet  #board  #needs-you  #scope  #conversation  #activity
+     There is no layout wrapper element between <body> and a region, on
+     purpose: a wrapper that exists only to serve THIS arrangement is exactly
+     what makes a second skin a rewrite of index.html rather than a new
+     stylesheet. Rearranging the product is changing the grid-template-areas
+     below and nothing else.
+     ========================================================================== */
+
+  /* ============================================================= shell ==== */
+  /* NO BROWSER CHROME. The operating system draws the window frame; this is
+     the application's own surface, edge to edge. Nothing here imitates a tab,
+     a URL bar, or window controls. */
+  body {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr) 360px;
+    grid-template-areas:
+      "top          top          top"
+      "notices      notices      notices"
+      "gate         gate         gate"
+      "fleet        board        needs-you"
+      "fleet        scope        needs-you"
+      "fleet        conversation needs-you"
+      "fleet        .            activity";
+    grid-template-rows: auto auto auto auto auto auto 1fr;
+    min-height: 100vh;
+  }
+
+  /* WHY THE ROWS ARE SHAPED THIS WAY, because it is not arbitrary and the
+     first two attempts were both wrong. A GRID ROW IS AS TALL AS ITS TALLEST
+     MEMBER, so a tall region in one column inflates that row for every other
+     column -- and there is no wrapper element here to scroll or stack inside,
+     by ruling 13 requirement 2. Needs-you has no height bound at all (a reason
+     is never truncated), so it spans EVERY centre row: board, scope and
+     conversation together are the tallest thing the centre can be, which is
+     the only span that does not leave a hole under a short centre. Activity
+     then sits in a final row whose centre cell is deliberately empty, so its
+     height is free and couples to nothing. Notices and the gate span all three
+     columns -- also where a rule-9 notice belongs, across the top, impossible
+     to miss.
+
+     A SECOND SKIN REARRANGES THE PRODUCT BY EDITING THE AREAS ABOVE AND
+     NOTHING ELSE. That is the whole claim ruling 13 makes, and it is why there
+     is no markup here to change. */
+
+  #topbar       { grid-area: top; }
+  #notices      { grid-area: notices; }
+  #gate         { grid-area: gate; }
+  #fleet        { grid-area: fleet; }
+  #board        { grid-area: board; }
+  #scope        { grid-area: scope; }
+  #conversation { grid-area: conversation; }
+  #needs-you    { grid-area: needs-you; }
+  #activity     { grid-area: activity; }
+
+  #fleet, #board, #scope, #conversation, #needs-you, #activity, #notices, #gate {
+    min-width: 0;
+    align-self: start;
+  }
+
+  /* Zones separate by SURFACE, not by a heavy rule around everything --
+     "structure can be brutalist, every component does not need to be". */
+  #fleet     { background: var(--surface); padding: var(--s4) var(--s3) var(--s6); }
+  #needs-you { background: var(--surface); padding: var(--s4) var(--s3) var(--s4); }
+  #activity  { background: var(--surface); padding: var(--s4) var(--s3) var(--s6); }
+  #notices, #gate, #board, #scope, #conversation {
+    background: var(--bg);
+    padding: 0 var(--s4) var(--s5);
+  }
+  #notices { padding: var(--s3) var(--s4) 0; }
+  #gate    { padding: var(--s3) var(--s4); }
+  #board   { padding-top: var(--s4); }
+
+  /* The two side columns keep their full height so their background reaches
+     the foot of the window even when the centre is short. */
+  #fleet, #needs-you, #activity { align-self: stretch; }
+
+  /* Below 1180px the rail drops beneath the centre; below 860px everything
+     stacks. A SECOND SKIN CHANGES THESE AREAS AND NOTHING ELSE. */
+  @media (max-width: 1180px) {
+    body {
+      grid-template-columns: 252px minmax(0, 1fr);
+      grid-template-areas:
+        "top       top"
+        "notices   notices"
+        "gate      gate"
+        "fleet     board"
+        "fleet     scope"
+        "fleet     conversation"
+        "needs-you needs-you"
+        "activity  activity";
+      grid-template-rows: auto auto auto auto auto auto auto auto;
+    }
+  }
+  @media (max-width: 860px) {
+    body {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas:
+        "top" "notices" "gate" "fleet" "board" "needs-you" "scope" "conversation" "activity";
+    }
+  }
+
+  /* Machine text. Breaks anywhere rather than widening its column -- the rule
+     that survives from pass 2 unchanged. */
+  .mono {
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .label {
+    font-family: var(--font-mono);
+    font-size: var(--t-2xs);
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+  }
+
+
+
+  #topbar {
+    display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
+    padding: var(--s3) var(--s4);
+    background: var(--surface-2);
+    border-bottom: var(--rule) solid var(--line);
+  }
+  #topbar > * { min-width: 0; }
+
+  .brand {
+    margin: 0; font-family: var(--font-mono);
+    font-size: var(--t-lg); font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+  }
+  .brand b { color: var(--st-active); font-weight: 700; }
+
+  .proj { font-size: var(--t-md); font-weight: 600; }
+  .proj .id { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); display: block; }
+
+  .spacer { flex: 1 1 auto; }
+
+  .nav { display: flex; gap: 1px; background: var(--line); padding: 1px; }
+  .nav a {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+    padding: var(--s2) var(--s3); background: var(--surface-2); color: var(--fg-2); text-decoration: none;
+  }
+  .nav a:hover { background: var(--fg); color: var(--bg); }
+  .nav a .n { color: var(--st-blocked); }
+
+  .btn {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    background: transparent; color: var(--fg-2);
+    border: var(--rule) solid var(--line); border-radius: var(--r);
+    padding: var(--s2) var(--s3); cursor: pointer;
+  }
+  .btn:hover { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .btn-go { background: var(--st-active); border-color: var(--st-active); color: var(--on-status); }
+  .btn-go:hover { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+
+  .field {
+    background: var(--bg); color: var(--fg);
+    border: var(--rule) solid var(--line); border-radius: var(--r);
+    padding: var(--s2) var(--s3); font-family: var(--font-sans); font-size: var(--t-md);
+    width: 100%; min-width: 0;
+  }
+  .field::placeholder { color: var(--fg-3); }
+
+  /* Field widths are the skin's business, which is why app.js no longer sets
+     any of them inline. Each is keyed on where the field sits or on the
+     data-field it declares. */
+  #topbar .field { width: auto; max-width: 22ch; }
+  #gate .field { flex: 1 1 24rem; }
+  .composer .field { width: 100%; }
+  .field[data-field="max-spend"] { flex: 0 0 12rem; }
+
+  /* ============================================================= panel ==== */
+  .panel { margin-bottom: var(--s4); }
+  .panel-head {
+    display: flex; align-items: center; gap: var(--s2);
+    padding: 0 0 var(--s2);
+    border-bottom: var(--rule) solid var(--line);
+    margin-bottom: var(--s3);
+  }
+  .panel-head h2 {
+    margin: 0; font-family: var(--font-mono);
+    font-size: var(--t-2xs); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--fg-2);
+  }
+  .panel-head .count { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); }
+
+  /* ============================================================= fleet ==== */
+  .fleet-row {
+    display: flex; gap: var(--s3); align-items: flex-start;
+    padding: var(--s2) var(--s2);
+    border-left: var(--rule-2) solid transparent;
+    cursor: pointer;
+  }
+  .fleet-row:hover { background: var(--surface-2); }
+  .fleet-row[aria-current="true"] { background: var(--surface-2); border-left-color: var(--st-active); }
+
+  .fleet-row .who { min-width: 0; flex: 1 1 auto; }
+  .fleet-row .who > span { display: block; }
+  .fleet-row .name {
+    font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .fleet-row .tier { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); letter-spacing: 0.08em; }
+  /* The live line. Drawn from latest_activity -- never invented. */
+  .fleet-row .doing {
+    font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2);
+    overflow-wrap: anywhere; margin-top: 2px;
+  }
+  .fleet-row .doing[data-idle] { color: var(--fg-3); }
+
+  /* ============================================================= board ==== */
+  .boardbar { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s3); flex-wrap: wrap; }
+
+  .toggle { display: flex; gap: 1px; background: var(--line); padding: 1px; }
+  .toggle button {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    background: var(--surface); color: var(--fg-2); border: 0; padding: var(--s1) var(--s3); cursor: pointer;
+  }
+  .toggle button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+
+  .lanes { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--s2); align-items: start; }
+  /* Six across only when there is genuinely room for it. Measured: at 1500px
+     six columns are ~120px each and every title wraps to three lines, which is
+     "dense and chaotic". Wrapping to two rows of three keeps all six columns
+     visible -- nothing is hidden -- and the cards become readable. */
+  @media (max-width: 1600px) { .lanes { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 860px)  { .lanes { grid-template-columns: minmax(0, 1fr); } }
+
+  .lane { min-width: 0; }
+
+  /* THE LANE'S COLOUR. app.js writes data-lane -- a product concept, the
+     status GROUP the lane collects -- and the mapping to a colour is made
+     here, in the skin, because which colour a lane wears is a visual choice.
+     The per-ticket colour is separate and is tokens.css's [data-status], since
+     STATUS = COLOUR is a product rule that holds under every skin. */
+  .lane[data-lane="waiting"] { --col: var(--st-waiting); }
+  .lane[data-lane="active"]  { --col: var(--st-active); }
+  .lane[data-lane="review"]  { --col: var(--st-review); }
+  .lane[data-lane="blocked"] { --col: var(--st-blocked); }
+  .lane[data-lane="failed"]  { --col: var(--st-failed); }
+  .lane[data-lane="done"]    { --col: var(--st-done); }
+  .lane-head {
+    display: flex; align-items: center; gap: var(--s2);
+    padding: var(--s2) var(--s2) var(--s2) var(--s2);
+    border-top: var(--rule-2) solid var(--col);
+    background: var(--surface);
+  }
+  .lane-head .name {
+    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--col);
+  }
+  .lane-head .count { margin-left: auto; font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); }
+  .lane-body { display: flex; flex-direction: column; gap: 1px; margin-top: 1px; }
+
+  .ticket {
+    background: var(--surface);
+    border-left: var(--rule-2) solid var(--col, var(--st-waiting));
+    padding: var(--s2) var(--s3) var(--s3);
+  }
+  .ticket:hover { background: var(--surface-2); }
+  .ticket .tid { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); overflow-wrap: anywhere; }
+  .ticket .title { font-size: var(--t-md); line-height: var(--lh-tight); margin: 3px 0 var(--s2); }
+  .ticket .meta { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+  .ticket .doing {
+    font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2);
+    overflow-wrap: anywhere; min-width: 0;
+  }
+  .ticket .doing[data-idle] { color: var(--fg-3); }
+  .ticket[data-status="CANCELLED"] .title { text-decoration: line-through; color: var(--fg-3); }
+  .ticket .dep { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); overflow-wrap: anywhere; margin-top: var(--s1); }
+
+  /* Delivered artefacts. "file" shows its path; a text-bearing kind shows its
+     kind and a LENGTH, never its body -- the CLI printed 1643 characters into
+     a table cell and that is the defect this rule exists to prevent. */
+  .arts { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s2); min-width: 0; }
+  /* Inline-block, not flex: normal inline flow wraps BETWEEN the kind and the
+     value and never squeezes one on top of the other. A flex chip with two
+     nowrap children overlapped them when the column got narrow. */
+  .art {
+    display: inline-block; max-width: 100%;
+    font-family: var(--font-mono); font-size: 0.5625rem; line-height: 1.6;
+    border: var(--rule) solid var(--st-done); color: var(--fg);
+  }
+  /* the kind is a name and must never break mid-word; only the value may */
+  .art .k {
+    display: inline-block; white-space: nowrap;
+    background: var(--st-done); color: var(--on-status);
+    font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 0 3px; margin-right: 4px;
+  }
+  .art span:last-child { padding-right: 4px; overflow-wrap: anywhere; }
+  .art span:last-child { padding-right: 4px; overflow-wrap: anywhere; }
+
+  /* the pass-2 table, kept as the list view -- nothing approved is thrown away */
+  #board[data-board-view="board"] .listview { display: none; }
+  #board[data-board-view="list"] .lanes { display: none; }
+  
+  table.grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.grid th {
+    text-align: left; font-family: var(--font-mono);
+    font-size: 0.5625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--fg-3); padding: var(--s2); border-bottom: var(--rule) solid var(--line);
+  }
+  table.grid td { padding: var(--s2); border-bottom: var(--rule) solid var(--line-soft); vertical-align: top; }
+  table.grid tbody tr:hover td { background: var(--surface-2); }
+  .num { font-family: var(--font-mono); font-size: var(--t-2xs); white-space: nowrap; color: var(--fg-2); }
+  .num[data-estimate] { white-space: normal; }
+
+  /* ========================================================= needs you ==== */
+  /* Not an inbox: the moment autonomous work hands control back. Who asked,
+     what they were doing, why they stopped, what is needed, what happens next. */
+  .ask {
+    background: var(--surface);
+    border-left: var(--rule-2) solid var(--col, var(--st-blocked));
+    padding: var(--s3);
+  }
+  .ask + .ask { margin-top: var(--s2); }
+  #needs-you .ask { background: var(--surface); }
+  .ask-head { display: flex; gap: var(--s3); align-items: flex-start; margin-bottom: var(--s2); }
+  .ask-head .who { min-width: 0; flex: 1 1 auto; }
+  .ask-head .name {
+    font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .ask-head .tid { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); overflow-wrap: anywhere; display: block; }
+  .ask-head .when { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); white-space: nowrap; }
+
+  .ask .step { display: flex; gap: var(--s2); margin-bottom: var(--s2); }
+  /* DIRECT CHILD, deliberately. `.k` is also the artefact chip's kind label,
+     and a descendant selector here gave that chip this rule's fixed 74px box:
+     "manager_assessment" overflowed it and the byte count rendered on top of
+     the word. Caught in a screenshot of the Delivered row, which is the one
+     place a chip sits inside a step. */
+  .ask .step > .k {
+    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3);
+    flex: none; width: 74px; padding-top: 2px;
+  }
+  /* The reason is never truncated, clamped, or scrolled away. It wraps, in
+     full, however long. That is this panel's entire purpose. */
+  .ask .step > .v { min-width: 0; overflow-wrap: anywhere; max-width: 72ch; }
+
+  .cmd {
+    display: block; font-family: var(--font-mono); font-size: var(--t-2xs);
+    color: var(--st-active); background: var(--bg);
+    border: var(--rule) solid var(--line);
+    padding: var(--s2); margin-top: var(--s2);
+    overflow-wrap: anywhere; white-space: pre-wrap;
+  }
+  .cmd::before { content: "$ "; color: var(--fg-3); }
+
+  .acts { display: flex; gap: var(--s2); align-items: stretch; margin-top: var(--s3); flex-wrap: wrap; }
+  .acts .field { flex: 1 1 12rem; }
+
+  /* ========================================================== activity ==== */
+  .feed { display: flex; flex-direction: column; }
+  .ev {
+    display: flex; gap: var(--s2); align-items: baseline;
+    padding: 3px 0; border-bottom: var(--rule) solid var(--line-soft);
+    font-family: var(--font-mono); font-size: var(--t-2xs);
+  }
+  .ev .t { color: var(--fg-3); white-space: nowrap; }
+  .ev .k { color: var(--fg); overflow-wrap: anywhere; }
+  .ev .k[data-tone="bad"] { color: var(--st-failed); }
+  .ev .k[data-tone="attention"] { color: var(--st-blocked); }
+  .ev .k[data-tone="good"] { color: var(--st-done); }
+  .ev .e { color: var(--fg-3); margin-left: auto; white-space: nowrap; }
+
+  /* ===================================================== scope + talk ===== */
+  .scope-wrap { position: relative; }
+  .scope {
+    font-family: var(--font-mono); font-size: var(--t-2xs); line-height: 1.8;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    background: var(--surface); color: var(--fg-2);
+    padding: var(--s3); margin: 0; max-height: 19rem; overflow-y: auto;
+  }
+  .scope-wrap::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.25rem;
+    background: linear-gradient(to bottom, rgba(0,0,0,0), var(--surface)); pointer-events: none;
+  }
+
+  .tabs { display: flex; gap: 1px; background: var(--line); padding: 1px; margin-bottom: var(--s3); flex-wrap: wrap; }
+  .tabs button {
+    font-family: var(--font-mono); font-size: var(--t-2xs);
+    background: var(--surface); color: var(--fg-2); border: 0;
+    padding: var(--s1) var(--s2); cursor: pointer;
+  }
+  .tabs button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+
+  .entry { padding: var(--s2) 0 var(--s3) var(--s3); border-left: var(--rule-2) solid var(--line); }
+  .entry + .entry { margin-top: var(--s2); }
+  .entry .who { display: flex; gap: var(--s2); align-items: baseline; margin-bottom: 3px; }
+  .entry .who .name {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .entry .who .at { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); }
+  .entry .text { overflow-wrap: anywhere; max-width: 76ch; }
+  .entry[data-kind="owner_message"] { border-left-color: var(--fg-3); }
+  .entry[data-kind="manager_reply"] { border-left-color: var(--st-done); }
+  .entry[data-kind="manager_assessment"] { border-left-color: var(--st-review); }
+  .entry[data-kind="question"] { border-left-color: var(--st-blocked); }
+  .entry[data-kind="scope_updated"] { border-left-color: var(--line); color: var(--fg-2); }
+
+  .composer { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s2); align-items: flex-end; }
+
+  /* ============================================================= misc ===== */
+  .legend {
+    margin-top: var(--s5); padding-top: var(--s3);
+    border-top: var(--rule) solid var(--line);
+    font-size: var(--t-2xs); color: var(--fg-3); max-width: 78ch;
+  }
+  .legend b { color: var(--fg-2); font-weight: 600; }
+  .banner {
+    background: var(--surface); border-left: var(--s2) solid var(--st-blocked);
+    padding: var(--s3); margin-bottom: var(--s3);
+  }
+  .banner .h {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--st-blocked); margin-bottom: var(--s2);
+  }
+  .banner .b { overflow-wrap: anywhere; max-width: 76ch; }
+
+  /* ========================================= BUILT IN BATCH 15, NOT PASS 3 ==
+     Everything below is new for the served page. Pass 3 was three static
+     screens with no daemon behind them; a real page has to say when it is not
+     working, has to be let in with a token, and has to switch views without a
+     navigation. NO NEW COLOUR VALUES ARE INTRODUCED HERE -- every rule below
+     reuses a token already in the three theme blocks, so rule 16's matrix
+     (src/ui/contrast.test.ts) still covers every pair on the page.
+     ======================================================================= */
+
+  /* Never let `hidden` lose to a display rule. A view that is meant to be off
+     and is merely transparent is the same class of lie as a silent fallback. */
+
+  /* ------------------------------------------------------------ NOTICES ---
+     Rule 9: a silent fallback is not allowed. Each of these says, in words, a
+     specific thing that is NOT working -- the interface font did not load, the
+     daemon's text contains characters the bundled font cannot draw, the event
+     stream is unavailable and the page is polling instead. They stack at the
+     top of the centre column where they cannot be missed, they are plain text
+     rather than colour-coded status, and NONE of them is dismissible: the
+     condition clears the notice, a click does not.
+     ---------------------------------------------------------------------- */
+  #notices { display: flex; flex-direction: column; gap: 1px; margin-bottom: var(--s3); }
+  #notices:empty { display: none; }
+  .notice {
+    background: var(--surface-2);
+    border-left: var(--s2) solid var(--st-blocked);
+    padding: var(--s2) var(--s3);
+    font-family: var(--font-mono);
+    font-size: var(--t-sm);
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .notice .cmd { margin-top: var(--s1); }
+  .notice .why { display: block; color: var(--fg-3); font-size: var(--t-2xs); margin-top: 2px; }
+
+  /* ---------------------------------------------------------------- GATE ---
+     The daemon authenticates every route with an Authorization header, so the
+     page cannot show anything until the token `magarine serve` printed has
+     been typed in. This is a real state, not a splash: with no token there is
+     no data, and inventing some would be the mock this batch exists to
+     refuse. Kept in sessionStorage -- never a cookie, never in a URL.
+     ---------------------------------------------------------------------- */
+  #gate { max-width: 60ch; }
+  #gate .b { margin: var(--s2) 0 var(--s3); color: var(--fg-2); }
+  #gate .acts { align-items: center; }
+
+  /* --------------------------------------------------------- EMPTY STATE ---
+     What the daemon measured, when what it measured is nothing. Says which
+     field was empty rather than showing a blank panel. */
+  .empty {
+    font-family: var(--font-mono); font-size: var(--t-xs); color: var(--fg-3);
+    padding: var(--s3) 0;
+  }
+
+  /* --------------------------------------------------- LIVE / NOT LIVE -----
+     One word in the topbar for whether the page is being pushed events or is
+     polling. It is never optimistic: it reads "polling" until a stream is
+     actually open, and returns to "polling" the moment one drops. */
+  .live {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-3);
+  }
+  .live[data-live="stream"] { color: var(--st-done); }
+
+  /* Long values must wrap rather than widen their column -- the pass-2 rule,
+     applied to the two fields a person can make arbitrarily long: an inbox
+     reason and a scope path. `.ask .step .v` and `.scope` already wrap; these
+     are the containers that would otherwise refuse to shrink. */
+  .ask, .ask .step, .ask-head { min-width: 0; }
+  .ask-head .who { min-width: 0; }

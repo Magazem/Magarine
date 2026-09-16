@@ -184,7 +184,13 @@
      surface, surface-2 and surface-3 in all three themes. Re-measure all four
      whenever one of them moves. */
 
+
   /* ============================================================== base ==== */
+  /* PRODUCT, NOT SKIN. Everything below holds under every skin: the box model,
+     a readable default, a VISIBLE FOCUS RING (an accessibility guarantee a skin
+     does not get to remove), and the two utilities the markup depends on.
+     Typographic choices -- .mono, .label and every component -- are in
+     ui/skin-brutalist.css, because a second skin retypes them. */
   * { box-sizing: border-box; }
 
   body {
@@ -196,38 +202,38 @@
     line-height: var(--lh-body);
   }
 
-  /* Machine text. Breaks anywhere rather than widening its column — the rule
-     that survives from pass 2 unchanged. */
-  .mono {
-    font-family: var(--font-mono);
-    font-size: var(--t-sm);
-    overflow-wrap: anywhere;
-    word-break: break-word;
-  }
-
-  .label {
-    font-family: var(--font-mono);
-    font-size: var(--t-2xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--fg-3);
-  }
-
   :focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 
+  /* Never let `hidden` lose to a display rule. An element meant to be absent
+     and merely transparent is the same class of lie as a silent fallback. */
+  [hidden] { display: none !important; }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+  }
+
   /* ===================================================== AGENT ORGANISM === */
-  /* THREE CHANNELS, AND THEY MUST NOT COLLIDE.
-       IDENTITY = SHAPE   the lit cells. Deterministic, stable forever.
-       ACTIVITY = MOTION  which cells light and in what order when an event
-                          lands. Set by JS at tick time as --d per cell.
-       STATUS   = COLOUR  one colour per ticket, inherited via currentColor.
-     Identity has the better claim on shape because it must be CONSTANT. An
+  /* THE ORGANISM IS PRODUCT, NOT SKIN (batch 15 ruling 13, requirement 5).
+     A skin may restyle the organism's CONTAINER and its SCALE. It may not
+     touch the cells, the symmetry, or the animation rule -- those are the
+     identity layer and they hold under every skin.
+
+     THREE CHANNELS, AND THEY MUST NOT COLLIDE.
+       IDENTITY = SHAPE   the lit cells, from ui/organism.js. Stable forever.
+       ACTIVITY = MOTION  which cells fire and in what order when a real event
+                          lands. Ordering only; see data-step below.
+       STATUS   = COLOUR  one colour per ticket, inherited via currentColor
+                          from --col, which [data-status] sets.
+     Identity has the better claim on shape because it must be CONSTANT: an
      agent has to be recognisable at 18px before you read anything.
 
-     THE RULE: it animates when a real worker_progress event arrives, once,
-     and is static otherwise. It is not a loader. Motion always means real
-     computation. */
+     THE RULE: IT ANIMATES ONCE WHEN A REAL worker_progress EVENT ARRIVES AND
+     IS STATIC OTHERWISE. NEVER A LOOP: the iteration count below is 1, and no
+     CSS keyword that would make it repeat may appear in this file. A
+     loader spinning while nothing runs is the lie this batch exists to
+     prevent, and `animation-iteration-count: 1` below is where that is
+     enforced in CSS rather than only in the script. */
   .org {
     display: inline-grid;
     grid-template-columns: repeat(5, 1fr);
@@ -235,21 +241,71 @@
     width: 20px; height: 20px;
     flex: none;
     vertical-align: -4px;
-    color: var(--st-waiting);
+    color: var(--col, var(--st-waiting));
   }
 
-  .org.sm { width: 16px; height: 16px; }
-  .org.lg { width: 44px; height: 44px; gap: 2px; }
+  /* SCALE BY ATTRIBUTE, NOT BY CLASS. app.js writes data-size; it never sets a
+     presentational class name (ruling 13, requirement 3). */
+  .org[data-size="sm"] { width: 16px; height: 16px; }
+  .org[data-size="lg"] { width: 44px; height: 44px; gap: 2px; }
 
   .org i { display: block; background: currentColor; opacity: 0.13; }
-  .org i.on { opacity: 0.92; }
+  .org i[data-on="1"] { opacity: 0.92; }
 
-  /* One pass, played on a real event. --d is written by the tick handler and
-     is the only thing that differs between activity states. */
-  .org.tick i {
+  /* STATUS = COLOUR. One colour per ticket, set on any element carrying
+     data-status and inherited by the organism inside it. The organism itself
+     also carries data-status, so a bare one outside a card still colours. */
+  [data-status="OPEN"],        [data-status="READY"]       { --col: var(--st-waiting); }
+  [data-status="IN_PROGRESS"]                              { --col: var(--st-active); }
+  [data-status="REVIEW"]                                   { --col: var(--st-review); }
+  [data-status="BLOCKED"]                                  { --col: var(--st-blocked); }
+  [data-status="FAILED"]                                   { --col: var(--st-failed); }
+  [data-status="DONE"]                                     { --col: var(--st-done); }
+  [data-status="CANCELLED"]                                { --col: var(--st-cancelled); }
+
+  /* ONE PASS. `data-tick` is set by the tick handler on a real progress event
+     and removed when the pass ends. iteration-count is 1, deliberately. */
+  .org[data-tick] i {
     animation: org-cell var(--tick) var(--ease) 1;
-    animation-delay: calc(var(--d, 0) * 1ms);
   }
+
+  /* THE ACTIVITY ORDER, AS CSS RATHER THAN AS AN INLINE STYLE.
+     app.js computes one integer per cell -- its position in the firing order
+     for the state THE DAEMON MAPPED -- and writes it as data-step. These 25
+     rules turn that integer into a delay at a fixed 26ms interval.
+
+     WHY NOT AN INLINE STYLE: ruling 13 requirement 3. The script sets state,
+     never style. The delay table is presentation and belongs here.
+     WHY A FLAT INTERVAL: the order is the only thing that differs between
+     states. No state is "faster" or "more urgent" than another, because
+     nothing measures that (rule 8).
+     src/ui/motion.test.ts re-derives every one of these from the same
+     formulas in app.js and fails if the table and the script disagree. */
+  .org[data-tick] i[data-step="0"] { animation-delay: 0ms; }
+  .org[data-tick] i[data-step="1"] { animation-delay: 26ms; }
+  .org[data-tick] i[data-step="2"] { animation-delay: 52ms; }
+  .org[data-tick] i[data-step="3"] { animation-delay: 78ms; }
+  .org[data-tick] i[data-step="4"] { animation-delay: 104ms; }
+  .org[data-tick] i[data-step="5"] { animation-delay: 130ms; }
+  .org[data-tick] i[data-step="6"] { animation-delay: 156ms; }
+  .org[data-tick] i[data-step="7"] { animation-delay: 182ms; }
+  .org[data-tick] i[data-step="8"] { animation-delay: 208ms; }
+  .org[data-tick] i[data-step="9"] { animation-delay: 234ms; }
+  .org[data-tick] i[data-step="10"] { animation-delay: 260ms; }
+  .org[data-tick] i[data-step="11"] { animation-delay: 286ms; }
+  .org[data-tick] i[data-step="12"] { animation-delay: 312ms; }
+  .org[data-tick] i[data-step="13"] { animation-delay: 338ms; }
+  .org[data-tick] i[data-step="14"] { animation-delay: 364ms; }
+  .org[data-tick] i[data-step="15"] { animation-delay: 390ms; }
+  .org[data-tick] i[data-step="16"] { animation-delay: 416ms; }
+  .org[data-tick] i[data-step="17"] { animation-delay: 442ms; }
+  .org[data-tick] i[data-step="18"] { animation-delay: 468ms; }
+  .org[data-tick] i[data-step="19"] { animation-delay: 494ms; }
+  .org[data-tick] i[data-step="20"] { animation-delay: 520ms; }
+  .org[data-tick] i[data-step="21"] { animation-delay: 546ms; }
+  .org[data-tick] i[data-step="22"] { animation-delay: 572ms; }
+  .org[data-tick] i[data-step="23"] { animation-delay: 598ms; }
+  .org[data-tick] i[data-step="24"] { animation-delay: 624ms; }
 
   @keyframes org-cell {
     0%   { }
@@ -258,408 +314,5 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .org.tick i { animation: none; }
+    .org[data-tick] i { animation: none; }
   }
-
-  /* ============================================================= shell ==== */
-  /* NO BROWSER CHROME. The operating system draws the window frame; this is
-     the application's own surface, edge to edge. Nothing here imitates a tab,
-     a URL bar, or window controls. */
-  .app {
-    display: grid;
-    grid-template-columns: 260px minmax(0, 1fr) 360px;
-    grid-template-rows: auto minmax(0, 1fr);
-    grid-template-areas: "top top top" "fleet centre rail";
-    height: 100vh;
-  }
-
-  .topbar { grid-area: top; }
-  .fleet  { grid-area: fleet; }
-  .centre { grid-area: centre; }
-  .rail   { grid-area: rail; }
-
-  .fleet, .centre, .rail { min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
-
-  /* Zones separate by SURFACE, not by a heavy rule around everything --
-     "structure can be brutalist, every component does not need to be". */
-  .fleet  { background: var(--surface); padding: var(--s4) var(--s3) var(--s6); }
-  .centre { background: var(--bg); padding: var(--s4) var(--s4) var(--s6); }
-  .rail   { background: var(--surface); padding: var(--s4) var(--s3) var(--s6); }
-
-  @media (max-width: 1180px) {
-    .app {
-      grid-template-columns: 252px minmax(0, 1fr);
-      grid-template-rows: auto auto auto;
-      grid-template-areas: "top top" "fleet centre" "rail rail";
-      height: auto;
-    }
-    .fleet, .centre, .rail { overflow: visible; }
-  }
-  @media (max-width: 860px) {
-    .app { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "fleet" "centre" "rail"; }
-  }
-
-  .topbar {
-    display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap;
-    padding: var(--s3) var(--s4);
-    background: var(--surface-2);
-    border-bottom: var(--rule) solid var(--line);
-  }
-  .topbar > * { min-width: 0; }
-
-  .brand {
-    margin: 0; font-family: var(--font-mono);
-    font-size: var(--t-lg); font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
-  }
-  .brand b { color: var(--st-active); font-weight: 700; }
-
-  .proj { font-size: var(--t-md); font-weight: 600; }
-  .proj .id { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); display: block; }
-
-  .spacer { flex: 1 1 auto; }
-
-  .nav { display: flex; gap: 1px; background: var(--line); padding: 1px; }
-  .nav a {
-    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
-    letter-spacing: 0.1em; text-transform: uppercase;
-    padding: var(--s2) var(--s3); background: var(--surface-2); color: var(--fg-2); text-decoration: none;
-  }
-  .nav a[aria-current="page"] { background: var(--fg); color: var(--bg); }
-  .nav a .n { color: var(--st-blocked); }
-
-  .btn {
-    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    background: transparent; color: var(--fg-2);
-    border: var(--rule) solid var(--line); border-radius: var(--r);
-    padding: var(--s2) var(--s3); cursor: pointer;
-  }
-  .btn:hover { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-  .btn-go { background: var(--st-active); border-color: var(--st-active); color: var(--on-status); }
-  .btn-go:hover { background: var(--fg); border-color: var(--fg); color: var(--bg); }
-
-  .field {
-    background: var(--bg); color: var(--fg);
-    border: var(--rule) solid var(--line); border-radius: var(--r);
-    padding: var(--s2) var(--s3); font-family: var(--font-sans); font-size: var(--t-md);
-    width: 100%; min-width: 0;
-  }
-  .field::placeholder { color: var(--fg-3); }
-
-  /* A marker for anything the page cannot do until the shell exists. Named
-     with its batch so it reads as a plan, not a promise. */
-  .shell-only {
-    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
-    letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--fg-3); border: var(--rule) solid var(--line);
-    padding: 0 3px; border-radius: var(--r); white-space: nowrap;
-  }
-
-  /* ============================================================= panel ==== */
-  .panel { margin-bottom: var(--s4); }
-  .panel-head {
-    display: flex; align-items: center; gap: var(--s2);
-    padding: 0 0 var(--s2);
-    border-bottom: var(--rule) solid var(--line);
-    margin-bottom: var(--s3);
-  }
-  .panel-head h2 {
-    margin: 0; font-family: var(--font-mono);
-    font-size: var(--t-2xs); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
-    color: var(--fg-2);
-  }
-  .panel-head .count { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); }
-
-  /* ============================================================= fleet ==== */
-  .fleet-row {
-    display: flex; gap: var(--s3); align-items: flex-start;
-    padding: var(--s2) var(--s2);
-    border-left: var(--rule-2) solid transparent;
-    cursor: pointer;
-  }
-  .fleet-row:hover { background: var(--surface-2); }
-  .fleet-row[aria-current="true"] { background: var(--surface-2); border-left-color: var(--st-active); }
-
-  .fleet-row .who { min-width: 0; flex: 1 1 auto; }
-  .fleet-row .who > span { display: block; }
-  .fleet-row .name {
-    font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase;
-  }
-  .fleet-row .tier { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); letter-spacing: 0.08em; }
-  /* The live line. Drawn from latest_activity -- never invented. */
-  .fleet-row .doing {
-    font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2);
-    overflow-wrap: anywhere; margin-top: 2px;
-  }
-  .fleet-row .doing.idle { color: var(--fg-3); }
-
-  /* ============================================================= board ==== */
-  .boardbar { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s3); flex-wrap: wrap; }
-
-  .toggle { display: flex; gap: 1px; background: var(--line); padding: 1px; }
-  .toggle button {
-    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
-    letter-spacing: 0.08em; text-transform: uppercase;
-    background: var(--surface); color: var(--fg-2); border: 0; padding: var(--s1) var(--s3); cursor: pointer;
-  }
-  .toggle button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
-
-  .columns { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--s2); align-items: start; }
-  /* Six across only when there is genuinely room for it. Measured: at 1500px
-     six columns are ~120px each and every title wraps to three lines, which is
-     "dense and chaotic". Wrapping to two rows of three keeps all six columns
-     visible -- nothing is hidden -- and the cards become readable. */
-  @media (max-width: 1600px) { .columns { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (max-width: 860px)  { .columns { grid-template-columns: minmax(0, 1fr); } }
-
-  .col { min-width: 0; }
-  .col-head {
-    display: flex; align-items: center; gap: var(--s2);
-    padding: var(--s2) var(--s2) var(--s2) var(--s2);
-    border-top: var(--rule-2) solid var(--col);
-    background: var(--surface);
-  }
-  .col-head .name {
-    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
-    letter-spacing: 0.12em; text-transform: uppercase; color: var(--col);
-  }
-  .col-head .count { margin-left: auto; font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); }
-  .col-body { display: flex; flex-direction: column; gap: 1px; margin-top: 1px; }
-
-  .ticket {
-    background: var(--surface);
-    border-left: var(--rule-2) solid var(--col);
-    padding: var(--s2) var(--s3) var(--s3);
-  }
-  .ticket:hover { background: var(--surface-2); }
-  .ticket .tid { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); overflow-wrap: anywhere; }
-  .ticket .title { font-size: var(--t-md); line-height: var(--lh-tight); margin: 3px 0 var(--s2); }
-  .ticket .foot { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
-  .ticket .doing {
-    font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2);
-    overflow-wrap: anywhere; min-width: 0;
-  }
-  .ticket .doing.idle { color: var(--fg-3); }
-  .ticket.is-cancelled .title { text-decoration: line-through; color: var(--fg-3); }
-  .ticket .dep { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); overflow-wrap: anywhere; margin-top: var(--s1); }
-
-  /* Delivered artefacts. "file" shows its path; a text-bearing kind shows its
-     kind and a LENGTH, never its body -- the CLI printed 1643 characters into
-     a table cell and that is the defect this rule exists to prevent. */
-  .arts { display: flex; flex-wrap: wrap; gap: var(--s1); margin-top: var(--s2); min-width: 0; }
-  /* Inline-block, not flex: normal inline flow wraps BETWEEN the kind and the
-     value and never squeezes one on top of the other. A flex chip with two
-     nowrap children overlapped them when the column got narrow. */
-  .art {
-    display: inline-block; max-width: 100%;
-    font-family: var(--font-mono); font-size: 0.5625rem; line-height: 1.6;
-    border: var(--rule) solid var(--st-done); color: var(--fg);
-  }
-  /* the kind is a name and must never break mid-word; only the value may */
-  .art .k {
-    display: inline-block; white-space: nowrap;
-    background: var(--st-done); color: var(--on-status);
-    font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
-    padding: 0 3px; margin-right: 4px;
-  }
-  .art span:last-child { padding-right: 4px; overflow-wrap: anywhere; }
-  .art span:last-child { padding-right: 4px; overflow-wrap: anywhere; }
-
-  /* the pass-2 table, kept as the list view -- nothing approved is thrown away */
-  .listview { display: none; }
-  .listview.on { display: block; }
-  .columns.off { display: none; }
-  table.grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
-  table.grid th {
-    text-align: left; font-family: var(--font-mono);
-    font-size: 0.5625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
-    color: var(--fg-3); padding: var(--s2); border-bottom: var(--rule) solid var(--line);
-  }
-  table.grid td { padding: var(--s2); border-bottom: var(--rule) solid var(--line-soft); vertical-align: top; }
-  table.grid tbody tr:hover td { background: var(--surface-2); }
-  .num { font-family: var(--font-mono); font-size: var(--t-2xs); white-space: nowrap; color: var(--fg-2); }
-  .num.phrase { white-space: normal; }
-
-  /* ========================================================= needs you ==== */
-  /* Not an inbox: the moment autonomous work hands control back. Who asked,
-     what they were doing, why they stopped, what is needed, what happens next. */
-  .ask {
-    background: var(--surface);
-    border-left: var(--rule-2) solid var(--col, var(--st-blocked));
-    padding: var(--s3);
-  }
-  .ask + .ask { margin-top: var(--s2); }
-  .centre .ask { background: var(--surface); }
-  .ask-head { display: flex; gap: var(--s3); align-items: flex-start; margin-bottom: var(--s2); }
-  .ask-head .who { min-width: 0; flex: 1 1 auto; }
-  .ask-head .name {
-    font-family: var(--font-mono); font-size: var(--t-xs); font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase;
-  }
-  .ask-head .tid { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); overflow-wrap: anywhere; display: block; }
-  .ask-head .when { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); white-space: nowrap; }
-
-  .ask .step { display: flex; gap: var(--s2); margin-bottom: var(--s2); }
-  .ask .step .k {
-    font-family: var(--font-mono); font-size: 0.5625rem; font-weight: 700;
-    letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3);
-    flex: none; width: 74px; padding-top: 2px;
-  }
-  /* The reason is never truncated, clamped, or scrolled away. It wraps, in
-     full, however long. That is this panel's entire purpose. */
-  .ask .step .v { min-width: 0; overflow-wrap: anywhere; max-width: 72ch; }
-
-  .cmd {
-    display: block; font-family: var(--font-mono); font-size: var(--t-2xs);
-    color: var(--st-active); background: var(--bg);
-    border: var(--rule) solid var(--line);
-    padding: var(--s2); margin-top: var(--s2);
-    overflow-wrap: anywhere; white-space: pre-wrap;
-  }
-  .cmd::before { content: "$ "; color: var(--fg-3); }
-
-  .acts { display: flex; gap: var(--s2); align-items: stretch; margin-top: var(--s3); flex-wrap: wrap; }
-  .acts .field { flex: 1 1 12rem; }
-
-  /* ========================================================== activity ==== */
-  .feed { display: flex; flex-direction: column; }
-  .ev {
-    display: flex; gap: var(--s2); align-items: baseline;
-    padding: 3px 0; border-bottom: var(--rule) solid var(--line-soft);
-    font-family: var(--font-mono); font-size: var(--t-2xs);
-  }
-  .ev .t { color: var(--fg-3); white-space: nowrap; }
-  .ev .k { color: var(--fg); overflow-wrap: anywhere; }
-  .ev .k.bad { color: var(--st-failed); }
-  .ev .k.need { color: var(--st-blocked); }
-  .ev .k.good { color: var(--st-done); }
-  .ev .e { color: var(--fg-3); margin-left: auto; white-space: nowrap; }
-
-  /* ===================================================== scope + talk ===== */
-  .scope-wrap { position: relative; }
-  .scope {
-    font-family: var(--font-mono); font-size: var(--t-2xs); line-height: 1.8;
-    white-space: pre-wrap; overflow-wrap: anywhere;
-    background: var(--surface); color: var(--fg-2);
-    padding: var(--s3); margin: 0; max-height: 19rem; overflow-y: auto;
-  }
-  .scope-wrap::after {
-    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2.25rem;
-    background: linear-gradient(to bottom, rgba(0,0,0,0), var(--surface)); pointer-events: none;
-  }
-
-  .tabs { display: flex; gap: 1px; background: var(--line); padding: 1px; margin-bottom: var(--s3); flex-wrap: wrap; }
-  .tabs button {
-    font-family: var(--font-mono); font-size: var(--t-2xs);
-    background: var(--surface); color: var(--fg-2); border: 0;
-    padding: var(--s1) var(--s2); cursor: pointer;
-  }
-  .tabs button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
-
-  .entry { padding: var(--s2) 0 var(--s3) var(--s3); border-left: var(--rule-2) solid var(--line); }
-  .entry + .entry { margin-top: var(--s2); }
-  .entry .who { display: flex; gap: var(--s2); align-items: baseline; margin-bottom: 3px; }
-  .entry .who .name {
-    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
-    letter-spacing: 0.1em; text-transform: uppercase;
-  }
-  .entry .who .at { font-family: var(--font-mono); font-size: 0.5625rem; color: var(--fg-3); }
-  .entry .text { overflow-wrap: anywhere; max-width: 76ch; }
-  .entry.owner_message { border-left-color: var(--fg-3); }
-  .entry.manager_reply { border-left-color: var(--st-done); }
-  .entry.manager_assessment { border-left-color: var(--st-review); }
-  .entry.question { border-left-color: var(--st-blocked); }
-  .entry.scope_updated { border-left-color: var(--line); color: var(--fg-2); }
-
-  .composer { margin-top: var(--s3); display: flex; flex-direction: column; gap: var(--s2); align-items: flex-end; }
-
-  /* ============================================================= misc ===== */
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-  .legend {
-    margin-top: var(--s5); padding-top: var(--s3);
-    border-top: var(--rule) solid var(--line);
-    font-size: var(--t-2xs); color: var(--fg-3); max-width: 78ch;
-  }
-  .legend b { color: var(--fg-2); font-weight: 600; }
-  .banner {
-    background: var(--surface); border-left: var(--s2) solid var(--st-blocked);
-    padding: var(--s3); margin-bottom: var(--s3);
-  }
-  .banner .h {
-    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
-    letter-spacing: 0.12em; text-transform: uppercase; color: var(--st-blocked); margin-bottom: var(--s2);
-  }
-  .banner .b { overflow-wrap: anywhere; max-width: 76ch; }
-
-  /* ========================================= BUILT IN BATCH 15, NOT PASS 3 ==
-     Everything below is new for the served page. Pass 3 was three static
-     screens with no daemon behind them; a real page has to say when it is not
-     working, has to be let in with a token, and has to switch views without a
-     navigation. NO NEW COLOUR VALUES ARE INTRODUCED HERE -- every rule below
-     reuses a token already in the three theme blocks, so rule 16's matrix
-     (src/ui/contrast.test.ts) still covers every pair on the page.
-     ======================================================================= */
-
-  /* Never let `hidden` lose to a display rule. A view that is meant to be off
-     and is merely transparent is the same class of lie as a silent fallback. */
-  [hidden] { display: none !important; }
-
-  /* ------------------------------------------------------------ NOTICES ---
-     Rule 9: a silent fallback is not allowed. Each of these says, in words, a
-     specific thing that is NOT working -- the interface font did not load, the
-     daemon's text contains characters the bundled font cannot draw, the event
-     stream is unavailable and the page is polling instead. They stack at the
-     top of the centre column where they cannot be missed, they are plain text
-     rather than colour-coded status, and NONE of them is dismissible: the
-     condition clears the notice, a click does not.
-     ---------------------------------------------------------------------- */
-  .notices { display: flex; flex-direction: column; gap: 1px; margin-bottom: var(--s3); }
-  .notices:empty { display: none; }
-  .notice {
-    background: var(--surface-2);
-    border-left: var(--s2) solid var(--st-blocked);
-    padding: var(--s2) var(--s3);
-    font-family: var(--font-mono);
-    font-size: var(--t-sm);
-    color: var(--fg);
-    overflow-wrap: anywhere;
-  }
-  .notice .cmd { margin-top: var(--s1); }
-  .notice .why { display: block; color: var(--fg-3); font-size: var(--t-2xs); margin-top: 2px; }
-
-  /* ---------------------------------------------------------------- GATE ---
-     The daemon authenticates every route with an Authorization header, so the
-     page cannot show anything until the token `magarine serve` printed has
-     been typed in. This is a real state, not a splash: with no token there is
-     no data, and inventing some would be the mock this batch exists to
-     refuse. Kept in sessionStorage -- never a cookie, never in a URL.
-     ---------------------------------------------------------------------- */
-  .gate { max-width: 60ch; }
-  .gate .b { margin: var(--s2) 0 var(--s3); color: var(--fg-2); }
-  .gate .acts { align-items: center; }
-
-  /* --------------------------------------------------------- EMPTY STATE ---
-     What the daemon measured, when what it measured is nothing. Says which
-     field was empty rather than showing a blank panel. */
-  .empty {
-    font-family: var(--font-mono); font-size: var(--t-xs); color: var(--fg-3);
-    padding: var(--s3) 0;
-  }
-
-  /* --------------------------------------------------- LIVE / NOT LIVE -----
-     One word in the topbar for whether the page is being pushed events or is
-     polling. It is never optimistic: it reads "polling" until a stream is
-     actually open, and returns to "polling" the moment one drops. */
-  .live {
-    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
-    letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-3);
-  }
-  .live[data-live="stream"] { color: var(--st-done); }
-
-  /* Long values must wrap rather than widen their column -- the pass-2 rule,
-     applied to the two fields a person can make arbitrarily long: an inbox
-     reason and a scope path. `.ask .step .v` and `.scope` already wrap; these
-     are the containers that would otherwise refuse to shrink. */
-  .ask, .ask .step, .ask-head { min-width: 0; }
-  .ask-head .who { min-width: 0; }

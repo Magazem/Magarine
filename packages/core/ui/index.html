@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en" data-theme="oled" data-skin="brutalist">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magarine</title>
+
+<!--
+  ===========================================================================
+  Magarine — the served page. Batch 15 (docs/strategy/batch-15-spec.md
+  section 3, Role B), which is batch 14 step 2: pass 3 built as the thing the
+  daemon actually serves, replacing the 443-line inline page in
+  packages/core/src/ui/page.ts. The design is docs/design/pass3/, approved by
+  the owner.
+
+  THE VANILLA RULE. No build step, no bundler, no framework, no network. Every
+  asset is a file in this directory, served at GET /ui/<name> (ruling 12) and
+  by nothing else. Icons are inline SVG. Open this file, read it, and you are
+  reading what ships.
+
+  THIS FILE IS STRUCTURE ONLY AND CARRIES NO DATA. Every region below is empty;
+  app.js fills them from the daemon and from nothing else. There is no
+  placeholder ticket, no example agent, no sample conversation in this file —
+  rule 8: mock data does not ship, and anything pass 3 drew that no daemon
+  field backs is OMITTED and LISTED in ui/ELEMENT-FIELD-TABLE.md, not faked.
+
+  ---------------------------------------------------------------------------
+  RULING 13 — THIS PAGE IS BUILT SO A SECOND SKIN CAN EXIST
+  (docs/strategy/batch-15-addendum-2-second-skin.md)
+
+  The owner's own proposal comes back later as a SECOND SKIN: same six product
+  regions, different arrangement, different visual language. So:
+
+  1. SIX REGIONS, FIXED IDS. #fleet #board #needs-you #scope #conversation
+     #activity. A skin addresses them by these ids and by nothing else.
+  2. PLACEMENT IS IN THE SKIN. The regions are DIRECT CHILDREN OF <body> and
+     are placed by grid areas in ui/skin-brutalist.css. There is deliberately
+     NO wrapper element grouping them — a wrapper that exists only to serve
+     this arrangement is precisely what would make a second skin a rewrite of
+     this file. Rearranging the product is editing grid-template-areas.
+  3. THE SCRIPT SETS STATE, NEVER STYLE. app.js writes text, data-* attributes
+     and semantic class names. It never writes an inline style and never sets
+     a presentational class name. src/ui/skin.test.ts proves it.
+  4. TWO SWITCHES ON <html>, INDEPENDENT. data-theme is the palette (oled |
+     dark | light, in tokens.css). data-skin is the visual language; the page
+     loads ui/skin-<name>.css for whatever the root names. ONE SKIN SHIPS.
+  5. THE ORGANISM IS PRODUCT, NOT SKIN. Its cells, symmetry and animation rule
+     live in tokens.css and organism.js and hold under every skin.
+
+  All six regions are present at once and none is hidden: pass 3 was drawn as
+  three separate screens because three files were easier to review, and the
+  brief asks for ONE page carrying all of them. The nav below is real anchor
+  links to real regions — no JavaScript hides anything, so every region is
+  reachable by keyboard and findable by browser search.
+  ===========================================================================
+-->
+
+<!-- PALETTE + PRODUCT. Tokens, the three themes, and the organism. -->
+<link rel="stylesheet" href="/ui/tokens.css">
+<!-- VISUAL LANGUAGE. Rewritten by app.js from <html data-skin>; the default is
+     hard-coded here so the page is never unstyled while the script loads. -->
+<link rel="stylesheet" href="/ui/skin-brutalist.css" id="skin">
+</head>
+<body>
+
+<!-- The application's own bar. There is deliberately NO browser chrome and no
+     imitation window controls: on Windows the OS draws the frame, and a page
+     that paints fake ones is lying about what it is. -->
+<header id="topbar">
+  <h1 class="brand">MAGA<b>R</b>INE</h1>
+
+  <label class="sr-only" for="projectSelect">Project</label>
+  <select id="projectSelect" class="field"></select>
+  <span class="proj"><span class="id mono" id="projectId"></span></span>
+
+  <nav class="nav" aria-label="Regions">
+    <a href="#board">Board</a>
+    <a href="#needs-you">Needs you <span class="n" id="needsCount" hidden></span></a>
+    <a href="#scope">Scope</a>
+    <a href="#conversation">Conversation</a>
+    <a href="#activity">Activity</a>
+  </nav>
+
+  <span class="spacer"></span>
+
+  <!-- BoardResult.projectSpendUsd, prefixed "at least" when any contributing
+       run is still a live estimate (projectSpendIsEstimate). -->
+  <span class="mono spend" id="spend"></span>
+
+  <!-- Whether the page is being PUSHED events or is polling. Never optimistic:
+       see app.js's setLive. -->
+  <span class="live" id="liveState" data-live="poll"
+        title="how this page is getting its updates">polling</span>
+
+  <span class="toggle" id="themeToggle">
+    <button type="button" data-theme-set="oled" aria-pressed="true">OLED</button>
+    <button type="button" data-theme-set="dark" aria-pressed="false">Navy</button>
+    <button type="button" data-theme-set="light" aria-pressed="false">Paper</button>
+  </span>
+</header>
+
+<!-- RULE 9 LIVES HERE. Every notice names something that is NOT working: the
+     interface font did not load, the daemon sent text the bundled font cannot
+     draw, the event stream is down and the page is polling. Each is a
+     sentence, not a colour. None is dismissible — the condition clears it. -->
+<div id="notices"></div>
+
+<!-- The daemon authenticates every route with an Authorization header, so
+     there is nothing to show until the token is in. Not a splash screen: with
+     no token there is no data, and inventing some is the mock this batch
+     exists to refuse. -->
+<section id="gate" class="panel" hidden>
+  <div class="panel-head"><h2>Daemon token</h2></div>
+  <div class="b">
+    Paste the token <span class="mono">magarine serve</span> printed. It is kept for
+    this tab only and sent as an <span class="mono">Authorization</span> header to the
+    daemon this page was loaded from — never a cookie, never in a URL.
+  </div>
+  <div class="acts">
+    <label class="sr-only" for="token">Daemon token</label>
+    <input class="field" id="token" type="password" autocomplete="off" placeholder="daemon token">
+    <button class="btn btn-go" type="button" id="saveToken">Connect</button>
+  </div>
+</section>
+
+<!-- ===================================================== REGION: fleet === -->
+<section id="fleet" aria-labelledby="fleetHead">
+  <div class="panel-head"><h2 id="fleetHead">Fleet</h2><span class="count" id="fleetCount"></span></div>
+  <div id="fleetList"></div>
+
+  <p class="legend">
+    <b>Identity is generated, not drawn.</b> Each organism comes from a
+    deterministic function seeded by the worker's <b>model tier</b>, derived from
+    <b>BoardTicket.model</b> — or from the project's <b>defaultModel</b> when the
+    ticket carries no override. Same tier, same creature, every time, on every
+    machine. Colour is the ticket's status and is never part of identity.
+    <br><br>
+    <b>This is every worker that is actually running.</b> A row is a ticket in
+    IN_PROGRESS. The daemon has no roster, no idle agent and no per-agent name,
+    so this list has none either.
+  </p>
+</section>
+
+<!-- ===================================================== REGION: board === -->
+<section id="board" data-board-view="board" aria-labelledby="boardHead">
+  <!-- BoardResult.pauseMessage / pauseReason. Structured, so the page offers
+       the fix that matches the cause rather than parsing the message text. -->
+  <div class="banner" id="pauseBanner" hidden>
+    <div class="h" id="pauseHead"></div>
+    <div class="b" id="pauseBody"></div>
+    <div class="acts" id="pauseActs"></div>
+  </div>
+
+  <div class="boardbar">
+    <div class="panel-head"><h2 id="boardHead">Board</h2><span class="count" id="boardCount"></span></div>
+    <span class="toggle" id="boardToggle">
+      <button type="button" data-board-view="board" aria-pressed="true">Board</button>
+      <button type="button" data-board-view="list" aria-pressed="false">List</button>
+    </span>
+  </div>
+
+  <!-- Six lanes, eight statuses, NOTHING HIDDEN: CANCELLED shares the terminal
+       lane with DONE, struck through, rather than being dropped. Lanes are
+       built by app.js from STATUS_LANES. -->
+  <div class="lanes" id="lanes"></div>
+
+  <!-- The approved pass-2 table, kept as the list view behind the toggle. -->
+  <div class="listview">
+    <table class="grid">
+      <colgroup><col><col><col><col><col></colgroup>
+      <thead><tr><th>Ticket</th><th>Status</th><th>Attempts</th><th>Equivalent cost</th><th>Doing</th></tr></thead>
+      <tbody id="listBody"></tbody>
+    </table>
+  </div>
+
+  <p class="legend">
+    <b>Every element here names the field it is drawn from</b>, line by line, in
+    <span class="mono">ui/ELEMENT-FIELD-TABLE.md</span>. The live line under a
+    running ticket is <b>latest_activity</b>, the most recent
+    <b>worker_progress</b> event mapped to a state by the daemon. Costs are ticket
+    <b>costUsd</b>, and "at least" appears when a run is still live, which makes
+    the figure a lower bound.
+    <br><br>
+    <b>Equivalent API cost</b> — what the tool would have billed at metered rates.
+    On a subscription this is not money leaving your account; the real constraint
+    is session limits.
+    <br><br>
+    <b>Nothing on this page is invented.</b> There are no progress percentages,
+    because nothing measures completion.
+  </p>
+</section>
+
+<!-- ================================================= REGION: needs-you === -->
+<!-- Not an inbox. The moment autonomous work reaches a boundary and hands
+     control back, so it answers five questions: WHO asked, WHAT they were
+     doing, WHY they stopped (in full, never truncated), WHAT is needed, and
+     WHAT happens next. -->
+<section id="needs-you" aria-labelledby="needsHead">
+  <div class="panel-head"><h2 id="needsHead">Needs you</h2><span class="count" id="needsSub"></span></div>
+  <div id="needsList"></div>
+
+  <p class="legend">
+    <b>Who, what they were doing, why they stopped, what is needed, what happens
+    next.</b> "Doing" is <b>latest_activity</b>, the last <b>worker_progress</b>
+    event before the worker handed back. The reason is <b>InboxItem.message</b>,
+    shown <b>in full and never truncated</b>; a half-shown reason is useless,
+    which is this panel's whole point. "Then" is fixed copy keyed on
+    <b>InboxItem.eventType</b> — it describes what the daemon will do, and is
+    listed as copy rather than as a measurement in the element-field table.
+  </p>
+</section>
+
+<!-- ===================================================== REGION: scope === -->
+<section id="scope" aria-labelledby="scopeHead">
+  <div class="panel-head">
+    <h2 id="scopeHead">Scope</h2><span class="count">SCOPE.md</span>
+    <span class="spacer"></span>
+    <span class="count">read-only here · edited on disk or by asking the Manager</span>
+  </div>
+  <div class="scope-wrap">
+    <pre class="scope" id="scopeText" tabindex="0"></pre>
+  </div>
+</section>
+
+<!-- ============================================== REGION: conversation === -->
+<section id="conversation" aria-labelledby="convHead">
+  <div class="panel-head"><h2 id="convHead">Conversation</h2><span class="count" id="convCount"></span></div>
+
+  <!-- A per-ticket FILTER of one project thread, which is what the data
+       supports: the conversation is project-scoped and its entries carry a
+       ticketId. Per-ticket discussion is a later batch. -->
+  <div class="tabs" id="convTabs"></div>
+  <div id="convList"></div>
+
+  <div class="composer">
+    <label class="sr-only" for="say">Message to the Manager</label>
+    <textarea class="field" id="say" rows="3"
+      placeholder="Talk to the Manager — answer a question, or ask it to change something."></textarea>
+    <button class="btn btn-go" type="button" id="send">Send</button>
+  </div>
+
+  <p class="legend">
+    <b>A filter, not a thread.</b> The conversation is project-scoped in the data
+    and entries carry a <b>ticketId</b>, so filtering by ticket is real where
+    threading is not. Only a still-unanswered <b>question</b> carries a live
+    answer box, matching the daemon's own rule that only a BLOCKED ticket has
+    anything to answer.
+  </p>
+</section>
+
+<!-- ================================================== REGION: activity === -->
+<section id="activity" aria-labelledby="actHead">
+  <div class="panel-head"><h2 id="actHead">Activity</h2><span class="count" id="activityCount"></span></div>
+  <div class="feed" id="feed"></div>
+  <p class="legend">
+    <b>worker_progress stays out of this feed.</b> There are hundreds in a single
+    run and they would drown it; the daemon records them with internal
+    visibility, so this feed — <span class="mono">GET /activity</span>, which
+    returns every non-internal event — never sees them. They reach the screen as
+    the live line on a card instead.
+  </p>
+</section>
+
+<!-- THE GENERATOR, ONE FILE (ruling 11). The daemon serves this route from
+     packages/core/ui/organism.js byte-identical, docs/design/pass3/check-organism.js
+     reads that same file, and the tier is derived exactly once inside it. -->
+<script src="/ui/organism.js"></script>
+<!-- The other half of tokens.css's unicode-range blocks. -->
+<script src="/ui/fontCoverage.js"></script>
+<script src="/ui/app.js"></script>
+</body>
+</html>
