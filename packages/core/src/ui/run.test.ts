@@ -16,11 +16,11 @@
 
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { testTempRoot } from '../testSupport.ts';
 import { DatabaseSync } from 'node:sqlite';
-import { withDaemon } from './testDaemon.ts';
+import { withDaemon, spawnServe, runCli } from './testDaemon.ts';
 import { openPage } from './domHarness.ts';
 import { UI_DIR } from './page.ts';
 
@@ -228,5 +228,71 @@ test('the harness throws on anything it does not implement, rather than answerin
       'a selector list answered instead of throwing');
     assert.throws(() => page.document.querySelectorAll('div > span'), /not implemented/,
       'a child combinator answered instead of throwing');
+  });
+});
+
+// ------------------------------------------- Batch 16 item 3: the slots header
+
+/** A machine with TWO projects: `busy` has one long-running ticket, `idle` has none. */
+async function withBusyMachine(
+  body: (d: { baseUrl: string; token: string; idle: string; busy: string }) => Promise<void>,
+): Promise<void> {
+  const stateDir = mkdtempSync(join(root.root, 'slots-'));
+  const mk = async (name: string) => {
+    const dir = mkdtempSync(join(root.root, 'work-'));
+    return JSON.parse((await runCli(['project', 'create', '--name', name, '--max-parallel', '2', '--dir', dir,
+      '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  };
+  const idle = await mk('Idle');
+  const busy = await mk('Busy');
+  const t = JSON.parse((await runCli(['ticket', 'add', '--project', busy.id, '--title', 'long job',
+    '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  const script: string[] = [];
+  for (let i = 0; i < 60; i++) script.push('--fake-script', `${t.id}=progress:step ${i + 1}`);
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json',
+    '--max-parallel', '3', '--fake-progress-gap', '500', ...script]);
+  try {
+    const { port } = await handle.waitForListening();
+    const token = (JSON.parse(readFileSync(join(stateDir, 'daemon.json'), 'utf8')) as { token: string }).token;
+    await body({ baseUrl: `http://127.0.0.1:${port}`, token, idle: idle.id, busy: busy.id });
+  } finally {
+    await handle.kill();
+  }
+}
+
+async function selectProject(page: ReturnType<typeof openPage>, id: string) {
+  await page.waitFor(() => optionValues(page).includes(id), 'the project to reach the selector');
+  const select = page.byId('projectSelect');
+  select.value = id;
+  select.dispatch('change');
+  await page.settle();
+}
+
+test('the fleet header shows the daemon\'s machine-wide slots, not this project\'s workers', async () => {
+  // The distinction that matters: the page is on the IDLE project (0 workers of
+  // its own) while another project holds the one running ticket. The ceiling is
+  // machine-wide, so 1 of 3 is the only comparable count.
+  await withBusyMachine(async (d) => {
+    const page = openPage({ baseUrl: d.baseUrl, token: d.token });
+    await selectProject(page, d.idle);
+    await pollUntil(page, () => page.text('fleetSlots').startsWith('1 of 3 slots'),
+      `the daemon's real 1 of 3 (header says "${page.text('fleetSlots')}")`);
+    assert.equal(page.text('fleetCount'), '0 workers', 'this project has no running ticket of its own');
+  });
+});
+
+test('a cap the daemon did not measure (null) is not given a denominator', async () => {
+  // A real daemon always sends its cap; null is what the offline CLI gets. The
+  // one field is rewritten on the daemon's real response, by name.
+  await withBusyMachine(async (d) => {
+    const page = openPage({
+      baseUrl: d.baseUrl, token: d.token,
+      rewriteJson: (path, body) => (path === '/board' ? { ...body, slots: { ...body.slots, cap: null } } : body),
+    });
+    await selectProject(page, d.idle);
+    await pollUntil(page, () => page.text('fleetSlots').length > 0, 'the header to render');
+    const text = page.text('fleetSlots');
+    assert.match(text, /^1 slots? in use/, `the used count still shows: "${text}"`);
+    assert.doesNotMatch(text, /of \d/, `an M was invented: "${text}"`);
   });
 });

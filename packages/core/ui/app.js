@@ -467,6 +467,17 @@
     return t.costIsEstimate ? 'at least ' + money(t.costUsd) + ' \u2014 live estimate' : money(t.costUsd);
   }
 
+  // The machine's concurrency ceiling, which is why "only one thing is moving".
+  // `used` counts IN_PROGRESS tickets across EVERY project, so it can exceed
+  // this project's own worker count; `cap` is the daemon's --max-parallel and
+  // is null when nothing measured it -- then no denominator is shown.
+  function slotsText(slots) {
+    if (!slots || typeof slots.used !== 'number') return '';
+    if (typeof slots.cap !== 'number') return slots.used + ' slots in use machine-wide';
+    var text = slots.used + ' of ' + slots.cap + ' slots in use machine-wide';
+    return slots.used >= slots.cap ? text + ' — full, other tickets wait' : text;
+  }
+
   // ------------------------------------------------------------ fleet ----
   // A row per ticket that is actually running. The daemon has no agent
   // entity, no roster and no idle worker, so neither does this.
@@ -477,6 +488,7 @@
       return t.status === 'IN_PROGRESS';
     });
     $('fleetCount').textContent = running.length + (running.length === 1 ? ' worker' : ' workers');
+    $('fleetSlots').textContent = slotsText(state.board && state.board.slots);
     if (!running.length) {
       list.appendChild(el('div', 'empty', 'no ticket is IN_PROGRESS'));
       return;

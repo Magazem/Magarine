@@ -225,6 +225,8 @@ export interface PageOptions {
   baseUrl: string;
   /** The real daemon token; seeded into sessionStorage, as the gate would. Pass null to open the page signed out. */
   token?: string | null;
+  /** See pageFetch: changes a real JSON response before the page reads it. Off unless a test names it. */
+  rewriteJson?: (path: string, body: any) => unknown;
 }
 
 export interface Page {
@@ -280,9 +282,22 @@ export function openPage(opts: PageOptions): Page {
   // NODE'S OWN fetch, against the real daemon. The only thing added is what a
   // browser does for free: a relative path is resolved against the page's
   // origin. Nothing here inspects, shapes or answers a response.
+  //
+  // ONE OPT-IN EXCEPTION, `opts.rewriteJson`: for a state the real daemon
+  // cannot be made to produce over the wire (`slots.cap: null` is only ever
+  // sent to the offline CLI). The test that passes it says so by name; the
+  // response is still the daemon's, with only the named field changed.
   const pageFetch = (path: string, init?: RequestInit) => {
     requests.push(path);
-    const p = fetch(new URL(path, opts.baseUrl), init);
+    let p: Promise<Response> = fetch(new URL(path, opts.baseUrl), init);
+    const rewrite = opts.rewriteJson;
+    if (rewrite) {
+      p = p.then(async (res) => {
+        if (!res.headers.get('content-type')?.includes('json')) return res;
+        const body = rewrite(path.split('?')[0], await res.json());
+        return new Response(JSON.stringify(body), { status: res.status, headers: res.headers });
+      });
+    }
     inFlight.add(p);
     void p.catch(() => undefined).finally(() => inFlight.delete(p));
     return p;
