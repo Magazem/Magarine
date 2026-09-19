@@ -418,7 +418,7 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
 // four at once and got one, and could not raise an existing project).
 test('a project whose cap is raised after creation runs that many workers on the next ticks, under a higher machine-wide ceiling', async (t) => {
   const db = openDb(':memory:');
-  const project = createProject(db, { name: 'p' });
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const tickets = [1, 2, 3].map((n) => createTicket(db, { projectId: project.id, title: `t${n}`, workspaceType: 'NONE' }));
   const adapter = new FakeAdapter();
   for (const tk of tickets) adapter.setScript(tk.id, { kind: 'hang' });
@@ -435,13 +435,42 @@ test('a project whose cap is raised after creation runs that many workers on the
   const deadline1 = Date.now() + 2000;
   while (loop.live.size < 1 && Date.now() < deadline1) await new Promise((resolve) => setTimeout(resolve, 20));
   await new Promise((resolve) => setTimeout(resolve, 150));
-  assert.equal(loop.live.size, 1, 'a default-created project (cap 1) runs one at a time even under a machine ceiling of 4');
+  assert.equal(loop.live.size, 1, 'a project with an explicit cap of 1 runs one at a time even under a machine ceiling of 4');
 
   setProjectMaxParallelWorkers(db, project.id, 3);
 
   const deadline2 = Date.now() + 2000;
   while (loop.live.size < 3 && Date.now() < deadline2) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(loop.live.size, 3, 'after `project set --max-parallel 3` the next ticks run all three');
+});
+
+// Batch 16 Role A item 4 (ruling 23 items 4-5): one number governs. A project
+// created WITHOUT a cap has none of its own (NULL), so the daemon's
+// machine-wide ceiling alone decides -- the owner's "4 tasks, 4 agents" needed
+// no second flag. Before this, the project's own default of 1 silently
+// capped every default-created project at one worker.
+test('a project created without a cap of its own runs as many workers as the machine-wide ceiling allows (two, under --max-parallel 2)', async (t) => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  assert.equal(project.maxParallelWorkers, null, 'no cap of its own');
+  const tickets = [1, 2, 3].map((n) => createTicket(db, { projectId: project.id, title: `t${n}`, workspaceType: 'NONE' }));
+  const adapter = new FakeAdapter();
+  for (const tk of tickets) adapter.setScript(tk.id, { kind: 'hang' });
+
+  const loop = startDaemonLoop({
+    db,
+    adapter,
+    maxParallelWorkers: 2,
+    artifactsDir: join(testRoot.root, 'artifacts-null-cap'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const deadline = Date.now() + 2000;
+  while (loop.live.size < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(loop.live.size, 2, 'both machine-wide slots are used by the one uncapped project');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(loop.live.size, 2, 'and the machine-wide ceiling still holds: never a third');
 });
 
 // Batch 9 housekeeping item 1 ruling 1: `serve --max-parallel` is now the

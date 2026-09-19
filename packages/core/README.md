@@ -112,9 +112,16 @@ doesn't exist.
 --max-parallel <n>` set the project's own worker cap (ruling 23, batch 15
 addendum 10): a whole number of 1 or more, refused with the same message by
 both (one validator in `store.ts`, also behind the daemon's `POST
-/projects/{id}/set`); the default stays 1. The effective cap under `serve` is
-the smaller of this and `serve --max-parallel` (see "Running it"), which
-is why `serve`'s human listening line names "up to <n> workers at once".
+/projects/{id}/set`). Batch 16 (ruling 23 items 4-5, migration 0014): the
+default is now NULL — no cap of its own — so a project created without the flag
+is governed by `serve --max-parallel` alone (see "Running it"); `project set
+--max-parallel none` clears an explicit cap back to NULL. Projects that already
+had a value keep it (they were created under the old meaning, "one at a time").
+`--max-parallel` is validated by that same validator on `serve`, `tick` and
+`run` too: `0` and non-numbers are refused with the flag named, and `serve`
+refuses before it opens the database or binds a port. The effective cap under
+`serve` is the smaller of an explicit project cap and `serve --max-parallel`,
+which is why `serve`'s human listening line names "up to <n> workers at once".
 
 `project list` (Batch 10, Role Q) prints every project in this state
 directory's database -- id, name, default model, spend against its cap, and
@@ -476,12 +483,13 @@ every project in its database. A project's own effective cap for a given
 tick is `min(<the project's own max_parallel_workers, from "project create
 --max-parallel">, <however much of the machine-wide ceiling is not already
 spent by every project's current in-flight workers>)` — see `daemon.ts`'s
-`computeProjectCap`. Before this batch `projects.max_parallel_workers` was
+`computeProjectCap`. Before Batch 9 `projects.max_parallel_workers` was
 written at `project create` time but never actually consulted anywhere in
 scheduling, so N projects under one daemon could together run N times
-`--max-parallel` workers; a default-created project (`max_parallel_workers`
-defaults to 1) now runs one worker at a time under `serve` regardless of
-`--max-parallel`, unless given its own `--max-parallel` at `project create`.
+`--max-parallel` workers. As of Batch 16 a project's own cap is NULL by
+default and NULL means unbounded on the project side, so a default-created
+project runs as many workers as `--max-parallel` allows (NOT one); only a
+project given an explicit `--max-parallel` is held below the machine ceiling.
 `tick`/`run --until-idle` are unchanged — they each run one project at a
 time, so there is no "other projects" for a machine-wide ceiling to mean
 anything against.
@@ -587,7 +595,7 @@ that requests them. Every other route, including `/events`, stays behind
 | --- | --- | --- |
 | `GET` | `/` | The browser page. No auth (see above). |
 | `GET` | `/health` | `{pid, startedAt, uptimeMs}` — never the token. |
-| `GET` | `/board?project=<id>` | Same shape as `board --json`. |
+| `GET` | `/board?project=<id>` | Same shape as `board --json`, plus `slots: { used, cap }` — `used` is every IN_PROGRESS ticket across all projects, `cap` is this daemon's `--max-parallel` (the offline `board --json` reports `cap: null`, it cannot know). |
 | `GET` | `/inbox?project=<id>` | Same shape as `inbox --json`. |
 | `GET` | `/activity?project=<id>\|ticket=<id>&all=true` | Same shape as `activity --json`. |
 | `GET` | `/projects` | Batch 11: same shape as `project list --json`. Added for the page's project selector — not in batch 8/9's original route list. |

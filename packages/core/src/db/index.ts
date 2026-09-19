@@ -55,10 +55,22 @@ export function runMigrations(db: Db): void {
 
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.id)) continue;
+    // A table rebuild needs foreign key enforcement OFF, and that pragma
+    // cannot be changed inside a transaction -- so it brackets it.
+    const foreignKeysWere = migration.rebuildsReferencedTable
+      ? (db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys
+      : 0;
+    if (migration.rebuildsReferencedTable) db.exec('PRAGMA foreign_keys = OFF;');
     db.exec('BEGIN');
     try {
       if (migration.sql) db.exec(migration.sql);
       if (migration.run) migration.run(db);
+      if (migration.rebuildsReferencedTable) {
+        const violations = db.prepare('PRAGMA foreign_key_check').all();
+        if (violations.length > 0) {
+          throw new Error(`migration ${migration.id} left ${violations.length} foreign key violation(s); rolled back`);
+        }
+      }
       db.prepare('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)').run(
         migration.id,
         new Date().toISOString()
@@ -67,6 +79,8 @@ export function runMigrations(db: Db): void {
     } catch (err) {
       db.exec('ROLLBACK');
       throw err;
+    } finally {
+      if (migration.rebuildsReferencedTable && foreignKeysWere === 1) db.exec('PRAGMA foreign_keys = ON;');
     }
   }
 }

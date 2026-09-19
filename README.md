@@ -64,11 +64,13 @@ Run these from wherever `magarine` is on your PATH:
 
 2. **Create the project**, from inside that folder:
    ```sh
-   magarine project create --name "My First Project" --max-parallel 4 --brief "One paragraph describing what you want built."
+   magarine project create --name "My First Project" --brief "One paragraph describing what you want built."
    ```
-   `--max-parallel 4` lets this project run up to four tasks at once
-   (without it, one at a time); raise or lower it later with `magarine
-   project set --project <projectId> --max-parallel <n>`.
+   Without `--max-parallel`, the project has no cap of its own -- how many
+   tasks run at once is decided by the daemon's number (step 3). Give it
+   `--max-parallel <n>` only if you want THIS project held below that; change
+   it later with `magarine project set --project <projectId> --max-parallel
+   <n>`, or `--max-parallel none` to go back to no cap of its own.
 
    This prints the project's id (starts with `proj_`) -- you'll use it in
    every command below. **Lost it, or closed the terminal?** Every command
@@ -88,10 +90,11 @@ Run these from wherever `magarine` is on your PATH:
    ```sh
    magarine serve --adapter claude --max-parallel 4
    ```
-   Tasks only run in parallel when **both** numbers allow it -- the project's
-   (step 2) and this one, the most workers the daemon runs at once across
-   every project; the line `serve` prints ends "up to 4 workers at once" so
-   you can see the number you're running under. Each worker is a real
+   This is the one number that decides how many tasks run at once: the most
+   workers the daemon runs at once across every project (a project only runs
+   fewer if you gave it a smaller cap of its own in step 2). The line `serve`
+   prints ends "up to 4 workers at once" so you can see the number you're
+   running under; leave the flag off and it is 1. Each worker is a real
    session against your subscription's limits, so the number is your choice:
    start lower if you'd rather it spend more slowly.
 

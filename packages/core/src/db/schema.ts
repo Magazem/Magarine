@@ -16,6 +16,15 @@ export interface Migration {
   id: string;
   sql?: string;
   run?: (db: Db) => void;
+  /**
+   * True for a migration that REBUILDS a table other tables reference
+   * (SQLite cannot drop a NOT NULL constraint in place). `runMigrations`
+   * then follows SQLite's documented procedure: foreign key enforcement is
+   * switched OFF around the transaction (the pragma is a no-op inside one),
+   * `PRAGMA foreign_key_check` must come back empty before COMMIT, and
+   * enforcement is switched back ON afterwards whatever happened.
+   */
+  rebuildsReferencedTable?: boolean;
 }
 
 export const MIGRATIONS: Migration[] = [
@@ -309,5 +318,53 @@ export const MIGRATIONS: Migration[] = [
     // scheduler.ts for the DONE-time verification this column drives.
     id: '0013_ticket_expected_artifacts',
     sql: `ALTER TABLE tickets ADD COLUMN expected_artifacts_json TEXT;`,
+  },
+  {
+    // Batch 16 Role A item 4 (ruling 23 items 4-5): `projects.max_parallel_workers`
+    // becomes NULLABLE. NULL means "this project has no cap of its own; the
+    // daemon's machine-wide `serve --max-parallel` ceiling alone governs" --
+    // so one number, on serve, decides parallelism, instead of two caps both
+    // defaulting to 1 whose minimum was the answer (the owner expected four
+    // agents and got a queue).
+    //
+    // EXISTING ROWS KEEP THEIR VALUE, deliberately. Every row that exists
+    // now was created under the OLD meaning -- "this project runs at most N
+    // workers", where an unstated N was 1 -- and silently turning those into
+    // "no cap" would raise how many AI sessions a project spends the owner's
+    // subscription on without the owner having said so. A row created under
+    // the new meaning writes NULL; an old row's explicit number stays its own
+    // decision (`project set --max-parallel none` clears it).
+    //
+    // SQLite cannot drop a NOT NULL constraint in place, so the table is
+    // rebuilt from ITS OWN live DDL (never a hand-copied column list, which
+    // could drift from what earlier migrations added): same statement, the
+    // one column's constraint removed, rows copied across `SELECT *`.
+    // `tickets.project_id` references this table, so the runner follows
+    // SQLite's documented rebuild procedure (`rebuildsReferencedTable`):
+    // foreign keys OFF around the transaction, `foreign_key_check` empty
+    // before COMMIT. (Tried first: `defer_foreign_keys` instead -- DROP TABLE
+    // on the parent counts every dropped row as a violation that a RENAME
+    // never clears, so the commit fails. HARD, reproduced.) See
+    // db/maxParallelNullableMigration.test.ts, which runs this against a
+    // database built by the REAL migrations 0001-0013.
+    id: '0014_max_parallel_workers_nullable',
+    rebuildsReferencedTable: true,
+    run: (db) => {
+      const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'projects'").get() as
+        | { sql: string }
+        | undefined;
+      if (!row) throw new Error('0014: no projects table to rebuild');
+      const oldColumn = 'max_parallel_workers INTEGER NOT NULL DEFAULT 1';
+      if (!row.sql.includes(oldColumn)) {
+        throw new Error('0014: projects.max_parallel_workers is not declared as expected; refusing to rebuild blind');
+      }
+      const rebuilt = row.sql
+        .replace(/CREATE TABLE\s+projects(?=\s|\()/, 'CREATE TABLE projects_rebuilt')
+        .replace(oldColumn, 'max_parallel_workers INTEGER');
+      db.exec(rebuilt);
+      db.exec('INSERT INTO projects_rebuilt SELECT * FROM projects;');
+      db.exec('DROP TABLE projects;');
+      db.exec('ALTER TABLE projects_rebuilt RENAME TO projects;');
+    },
   },
 ];

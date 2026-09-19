@@ -226,6 +226,33 @@ test("serve's human-readable listening line names the machine-wide worker cap, a
   }
 });
 
+// Batch 16 Role A item 4: `serve --max-parallel 0` used to start a daemon whose
+// machine-wide ceiling was ZERO -- it ran, answered health checks, and
+// silently started nothing. An invalid value must never start it at all.
+test('serve refuses --max-parallel 0, abc, 1.5 and a bare flag, naming the flag, and NEVER starts: no listening line, no daemon.json', async () => {
+  for (const bad of ['0', 'abc', '1.5', '']) {
+    const stateDir = mkdtempSync(join(testRoot.root, 'bad-cap-'));
+    const args = ['--state-dir', stateDir, '--tick-interval', '0.1'];
+    if (bad === '') args.push('--max-parallel');
+    else args.push('--max-parallel', bad);
+    const handle = spawnServe(args);
+    try {
+      const exited = await Promise.race([
+        handle.waitForExit(),
+        new Promise<'still-running'>((resolve) => setTimeout(() => resolve('still-running'), 10_000)),
+      ]);
+      assert.notEqual(exited, 'still-running', `serve --max-parallel ${bad || '(bare)'} must refuse, not keep running`);
+      assert.notEqual((exited as { code: number | null }).code, 0);
+      assert.match(handle.stderr(), /--max-parallel/);
+      assert.ok(!handle.stdout().includes('daemon listening'), 'it must never announce itself');
+      assert.equal(existsSync(daemonFilePath(stateDir)), false, 'and never write daemon.json');
+    } finally {
+      await handle.kill();
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test('a second `serve` refuses to start while the first is live, without printing the token, and leaves the first daemon.json untouched', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'refuse-second-'));
   const first = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);

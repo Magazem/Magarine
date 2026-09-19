@@ -52,7 +52,7 @@ interface ProjectRow {
   name: string;
   description: string | null;
   default_adapter: string | null;
-  max_parallel_workers: number;
+  max_parallel_workers: number | null;
   max_budget_usd: number;
   max_spend_usd: number | null;
   default_model: string;
@@ -93,7 +93,8 @@ export function createProject(
     name: string;
     description?: string | null;
     defaultAdapter?: string | null;
-    maxParallelWorkers?: number;
+    /** Absent or null: no cap of its own (batch 16). */
+    maxParallelWorkers?: number | null;
     maxBudgetUsd?: number;
     maxSpendUsd?: number | null;
     defaultModel?: string;
@@ -108,7 +109,7 @@ export function createProject(
   if (input.maxSpendUsd != null) {
     assertAboveFloor(input.maxSpendUsd, 'a project\'s max_spend_usd');
   }
-  if (input.maxParallelWorkers !== undefined) assertValidMaxParallelWorkers(input.maxParallelWorkers);
+  if (input.maxParallelWorkers != null) assertValidMaxParallelWorkers(input.maxParallelWorkers);
   // Same default as db/schema.ts's 0006_model_pinning migration default for
   // existing rows -- kept explicit here (rather than relying on the column
   // DEFAULT and omitting it from the INSERT) so a caller reading `Project`
@@ -127,7 +128,7 @@ export function createProject(
     input.name,
     input.description ?? null,
     input.defaultAdapter ?? null,
-    input.maxParallelWorkers ?? 1,
+    input.maxParallelWorkers ?? null,
     maxBudgetUsd,
     input.maxSpendUsd ?? null,
     defaultModel,
@@ -177,8 +178,9 @@ export function setProjectDir(db: Db, projectId: string, dir: string): void {
   );
 }
 
-export function setProjectMaxParallelWorkers(db: Db, projectId: string, maxParallelWorkers: number): void {
-  assertValidMaxParallelWorkers(maxParallelWorkers);
+/** `null` clears the cap: the project has none of its own and the daemon's ceiling governs. */
+export function setProjectMaxParallelWorkers(db: Db, projectId: string, maxParallelWorkers: number | null): void {
+  if (maxParallelWorkers !== null) assertValidMaxParallelWorkers(maxParallelWorkers);
   db.prepare('UPDATE projects SET max_parallel_workers = ?, updated_at = ? WHERE id = ?').run(
     maxParallelWorkers,
     new Date().toISOString(),

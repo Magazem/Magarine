@@ -404,6 +404,42 @@ test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /
 // startDaemonLoop) is the same either way, but this is the first place that
 // mechanism's result is read back over HTTP rather than via a direct file
 // read.
+// Batch 16 item 4: Role B's page needs `slots` over the wire, with the cap
+// being what THIS daemon was started with, not a default.
+test('GET /board carries slots { used, cap }: cap is the daemon\'s own --max-parallel, used counts a live IN_PROGRESS ticket', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'slots-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+    const ticketRes = await runCli(['ticket', 'add', '--project', project.id, '--title', 'hangs', '--state-dir', stateDir, '--json']);
+    const ticket = JSON.parse(ticketRes.stdout);
+
+    const handle = spawnServe([
+      '--state-dir', stateDir, '--tick-interval', '30', '--max-parallel', '3', '--json',
+      '--fake-script', `${ticket.id}=hang`,
+    ]);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const deadline = Date.now() + 5000;
+      let slots: { used: number; cap: number | null } | undefined;
+      while (Date.now() < deadline) {
+        const board = (await api(info.port, fileInfo.token, 'GET', `/board?project=${project.id}`)).json as {
+          slots: { used: number; cap: number | null };
+        };
+        slots = board.slots;
+        if (slots?.used === 1) break;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      assert.deepEqual(slots, { used: 1, cap: 3 });
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('kill-and-restart, verified through the API: the second daemon\'s own GET /board and GET /activity show the orphaned run recovered and driven to completion', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'kill-restart-api-'));
   try {

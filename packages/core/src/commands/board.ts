@@ -1,6 +1,6 @@
 import type { Db } from '../db/index.ts';
 import { isKnownModel } from '../pricing.ts';
-import { getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
+import { countTicketsByStatus, getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
 import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
 import type { ActivityState } from './activity.ts';
 import { describeProjectPause, reasonFor } from './inbox.ts';
@@ -114,6 +114,8 @@ export interface BoardResult {
   pauseMessage: string | null;
   /** Batch 11 item 3 (the page): the same cause as `pauseMessage`, but structured, so a caller (the page) can decide WHICH fix to offer (a max-spend form vs a plain resume button) without parsing the message text. Null whenever pauseMessage is null. */
   pauseReason: 'spend_cap' | 'adapter_unavailable' | null;
+  /** Batch 16 item 4 (ruling 23): the machine-wide picture of parallelism. `used` is every IN_PROGRESS ticket across ALL projects (the ceiling is machine-wide, so only a machine-wide count is comparable with it); `cap` is the daemon's `--max-parallel`, or null when the caller has no daemon to ask (the offline `board` command reads the database alone and cannot know it). */
+  slots: { used: number; cap: number | null };
   tickets: BoardTicket[];
 }
 
@@ -193,7 +195,7 @@ export function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; i
   return { costUsd: total, isEstimate, usedFallbackRate };
 }
 
-export function buildBoard(db: Db, projectId: string): BoardResult {
+export function buildBoard(db: Db, projectId: string, machineCap: number | null = null): BoardResult {
   const tickets = listTickets(db, projectId)
     .slice()
     .sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status));
@@ -210,6 +212,7 @@ export function buildBoard(db: Db, projectId: string): BoardResult {
     projectMaxSpendUsd: project?.maxSpendUsd ?? null,
     pauseMessage,
     pauseReason: isPaused ? project.pauseReason : null,
+    slots: { used: countTicketsByStatus(db, 'IN_PROGRESS'), cap: machineCap },
     tickets: tickets.map((t) => {
       const c = ticketCostUsd(db, t.id);
       return {

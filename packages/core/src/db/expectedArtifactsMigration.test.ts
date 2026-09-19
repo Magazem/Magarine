@@ -101,6 +101,7 @@ test('0013 adds tickets.expected_artifacts_json, NULL for every pre-existing row
     '0011_ticket_model_reason',
     '0012_artifact_text_column',
     '0013_ticket_expected_artifacts',
+    '0014_max_parallel_workers_nullable',
   ]);
 
   assert.equal(

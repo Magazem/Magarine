@@ -134,6 +134,7 @@ test('0012 moves manager_reply/manager_assessment content from path_or_uri into 
     '0011_ticket_model_reason',
     '0012_artifact_text_column',
     '0013_ticket_expected_artifacts',
+    '0014_max_parallel_workers_nullable',
   ]);
 
   assert.equal(snapshot.managerReplyText, 'Done -- removed the export feature.', 'the reply text must move to the new column');

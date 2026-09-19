@@ -59,7 +59,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
   const startedAt = new Date().toISOString();
   const token = generateDaemonToken();
 
-  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt });
+  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt, machineCap: opts.maxParallelWorkers });
   const server: Server = createServer(requestHandler.handle);
 
   try {

@@ -24,7 +24,8 @@ export interface Project {
   name: string;
   description: string | null;
   defaultAdapter: string | null;
-  maxParallelWorkers: number;
+  /** Batch 16: this project's OWN worker cap, or null = none of its own, so the daemon's machine-wide `serve --max-parallel` ceiling alone governs (migration 0014). A number was created under the old meaning and stays the owner's decision. */
+  maxParallelWorkers: number | null;
   /** The ceiling for ONE RUN (the tool's --max-budget-usd flag). Deliberately distinct from `maxSpendUsd` below despite the one-word name difference -- see db/schema.ts's 0003/0005 migration comments. */
   maxBudgetUsd: number;
   /** Optional CUMULATIVE cap across every run the project will ever spend (batch 4). Null means no cap. Enforced at spawn time -- see scheduler.ts's `tick()`. NOT the same thing as `maxBudgetUsd` above. */

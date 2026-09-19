@@ -60,6 +60,8 @@ export interface DaemonApiDeps {
   token: string;
   pid: number;
   startedAt: string;
+  /** The daemon's machine-wide `--max-parallel`, reported on `GET /board` as `slots.cap`. Optional so a handler built without a scheduler in view (tests) reports null rather than a guess. */
+  machineCap?: number;
 }
 
 export class ApiError extends Error {
@@ -234,7 +236,7 @@ function handleAddDependency(db: Db, body: unknown): RouteResult {
 function handleSetProject(db: Db, projectId: string, body: unknown): RouteResult {
   const project = getProject(db, projectId);
   if (!project) throw new ApiError(404, `no such project: ${projectId}`);
-  const b = body as { maxSpend?: number | null; model?: string; managerModel?: string | null; dir?: string; maxParallel?: number };
+  const b = body as { maxSpend?: number | null; model?: string; managerModel?: string | null; dir?: string; maxParallel?: number | null };
   if (typeof b.maxParallel !== 'undefined') setProjectMaxParallelWorkers(db, projectId, b.maxParallel);
   if (typeof b.maxSpend !== 'undefined') setProjectMaxSpendUsd(db, projectId, b.maxSpend);
   if (typeof b.model === 'string') setProjectDefaultModel(db, projectId, b.model);
@@ -300,7 +302,7 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
   }
 
   if (method === 'GET' && path === '/board') {
-    return { status: 200, body: buildBoard(deps.db, requireQueryParam(url, 'project')) };
+    return { status: 200, body: buildBoard(deps.db, requireQueryParam(url, 'project'), deps.machineCap ?? null) };
   }
 
   if (method === 'GET' && path === '/inbox') {

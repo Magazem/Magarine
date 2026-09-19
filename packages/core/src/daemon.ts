@@ -189,7 +189,10 @@ export interface DaemonLoopDeps {
 // when `getProject` returns undefined.
 function computeProjectCap(db: Db, projectId: string, machineCap: number): number {
   const project = getProject(db, projectId);
-  const projectCap = project?.maxParallelWorkers ?? machineCap;
+  // Batch 16 (ruling 23 items 4-5): a null cap is "none of its own" -- the
+  // project side is unbounded and only the machine-wide ceiling below limits
+  // it (NOT 1, and not zero).
+  const projectCap = project?.maxParallelWorkers ?? Number.POSITIVE_INFINITY;
   const machineInProgress = countTicketsByStatus(db, 'IN_PROGRESS');
   const remaining = Math.max(0, machineCap - machineInProgress);
   const projectInProgress = listTicketsByStatus(db, projectId, 'IN_PROGRESS').length;

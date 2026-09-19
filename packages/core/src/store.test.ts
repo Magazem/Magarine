@@ -545,10 +545,13 @@ test('listEventsSince returns every event with sequence strictly greater than th
 test('setProjectMaxParallelWorkers persists the cap, and a project created with one keeps it', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });
-  assert.equal(project.maxParallelWorkers, 1, 'default is unchanged in batch 15');
+  assert.equal(project.maxParallelWorkers, null, 'batch 16: a project created without a cap has none of its own');
   setProjectMaxParallelWorkers(db, project.id, 4);
   assert.equal(getProject(db, project.id)!.maxParallelWorkers, 4);
   assert.equal(createProject(db, { name: 'q', maxParallelWorkers: 3 }).maxParallelWorkers, 3);
+  setProjectMaxParallelWorkers(db, project.id, null);
+  assert.equal(getProject(db, project.id)!.maxParallelWorkers, null, 'null clears the cap back to: the daemon ceiling alone governs');
+  assert.equal(createProject(db, { name: 'r', maxParallelWorkers: null }).maxParallelWorkers, null);
 });
 
 test('a max-parallel cap that is not a whole number of 1 or more is refused by BOTH createProject and setProjectMaxParallelWorkers, with the same message', () => {
@@ -570,5 +573,5 @@ test('a max-parallel cap that is not a whole number of 1 or more is refused by B
     assert.match(createMessage, /--max-parallel.*whole number of 1 or more/, `createProject must refuse ${bad}`);
     assert.equal(setMessage, createMessage, `set and create must say the same thing for ${bad}`);
   }
-  assert.equal(getProject(db, project.id)!.maxParallelWorkers, 1, 'a refused set must leave the cap untouched');
+  assert.equal(getProject(db, project.id)!.maxParallelWorkers, null, 'a refused set must leave the cap untouched');
 });

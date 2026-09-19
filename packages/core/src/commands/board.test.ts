@@ -33,6 +33,23 @@ test('formatBoard labels the header "Equivalent API cost" and names the subscrip
   assert.match(text, /session limits/);
 });
 
+// Batch 16 item 4 (ruling 23): `slots` is the machine-wide picture -- `used`
+// counts IN_PROGRESS tickets across EVERY project (the daemon's ceiling is
+// machine-wide, so a per-project count could never be compared with `cap`),
+// and `cap` is the ceiling the caller passes in, null when the caller has no
+// daemon to ask (the offline `board` command).
+test('buildBoard reports slots: used is machine-wide IN_PROGRESS, cap is the ceiling passed in, null when none was', () => {
+  const db = openDb(':memory:');
+  const a = createProject(db, { name: 'a' });
+  const b = createProject(db, { name: 'b' });
+  moveToInProgress(db, createTicket(db, { projectId: a.id, title: 'a1' }).id);
+  moveToInProgress(db, createTicket(db, { projectId: b.id, title: 'b1' }).id);
+  createTicket(db, { projectId: a.id, title: 'still open' });
+
+  assert.deepEqual(buildBoard(db, a.id, 3).slots, { used: 2, cap: 3 });
+  assert.deepEqual(buildBoard(db, a.id).slots, { used: 2, cap: null });
+});
+
 test('buildBoard carries kind for both a work ticket and a manager ticket', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });

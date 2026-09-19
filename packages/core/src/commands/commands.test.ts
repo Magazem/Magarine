@@ -608,7 +608,7 @@ test('project set --max-parallel persists the cap, visible on the project row', 
     const project = JSON.parse(
       (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
     ) as { id: string; maxParallelWorkers: number };
-    assert.equal(project.maxParallelWorkers, 1, 'the default is unchanged');
+    assert.equal(project.maxParallelWorkers, null, 'batch 16: no cap of its own unless one was asked for');
 
     const res = await run(['project', 'set', '--project', project.id, '--max-parallel', '4', '--json', '--db', dbFile]);
     assert.equal(res.code, 0, res.stderr);
@@ -635,8 +635,8 @@ test('project set --max-parallel and project create --max-parallel refuse 0, -1,
     }
     const after = JSON.parse(
       (await run(['project', 'set', '--project', project.id, '--max-spend', '5', '--json', '--db', dbFile])).stdout
-    ) as { maxParallelWorkers: number };
-    assert.equal(after.maxParallelWorkers, 1, 'refused sets must leave the cap untouched');
+    ) as { maxParallelWorkers: number | null };
+    assert.equal(after.maxParallelWorkers, null, 'refused sets must leave the cap untouched');
   });
 });
 
@@ -724,6 +724,57 @@ test('--fake-script <id>=progress:<message>, repeated, scripts an ordered burst;
     assert.match(badKind.stderr, /\breview\b/);
     assert.match(badKind.stderr, /\bprogress\b/);
     assert.match(badKind.stderr, /\bsucceed\b/);
+  });
+});
+
+// Batch 16 Role A item 4: a project has no cap of its own unless asked;
+// `project set --max-parallel none` clears one again; `--max-parallel` is
+// refused with the flag named on EVERY command that accepts it.
+test('project create writes no cap by default, --max-parallel N writes N, and project set --max-parallel none clears it back to no cap', async () => {
+  await withTempDb('magarine-maxparallel-none-', async (dbFile) => {
+    const plain = JSON.parse(
+      (await run(['project', 'create', '--name', 'plain', '--json', '--db', dbFile])).stdout
+    ) as { id: string; maxParallelWorkers: number | null };
+    assert.equal(plain.maxParallelWorkers, null);
+
+    const capped = JSON.parse(
+      (await run(['project', 'create', '--name', 'capped', '--max-parallel', '2', '--json', '--db', dbFile])).stdout
+    ) as { id: string; maxParallelWorkers: number | null };
+    assert.equal(capped.maxParallelWorkers, 2);
+
+    const cleared = await run(['project', 'set', '--project', capped.id, '--max-parallel', 'none', '--json', '--db', dbFile]);
+    assert.equal(cleared.code, 0, cleared.stderr);
+    assert.equal((JSON.parse(cleared.stdout) as { maxParallelWorkers: number | null }).maxParallelWorkers, null);
+
+    const raised = JSON.parse(
+      (await run(['project', 'set', '--project', plain.id, '--max-parallel', '3', '--json', '--db', dbFile])).stdout
+    ) as { maxParallelWorkers: number | null };
+    assert.equal(raised.maxParallelWorkers, 3);
+  });
+});
+
+test('--max-parallel 0, abc, 1.5 and a bare flag are refused with the flag named on project create, tick and run --until-idle', async () => {
+  await withTempDb('magarine-maxparallel-everywhere-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    ) as { id: string };
+    const commands: Array<[string, string[]]> = [
+      ['project create', ['project', 'create', '--name', 'Q']],
+      ['tick', ['tick', '--project', project.id]],
+      ['run --until-idle', ['run', '--until-idle', '--project', project.id]],
+    ];
+    for (const [label, base] of commands) {
+      for (const bad of ['0', 'abc', '1.5', '-1']) {
+        const res = await run([...base, '--max-parallel', bad, '--db', dbFile]);
+        assert.notEqual(res.code, 0, `${label} --max-parallel ${bad} must be refused`);
+        assert.match(res.stderr, /--max-parallel/, `${label} --max-parallel ${bad} must name the flag`);
+      }
+      const bare = await run([...base, '--max-parallel', '--db', dbFile]);
+      assert.notEqual(bare.code, 0, `${label}: a bare --max-parallel has no value and must be refused`);
+      assert.match(bare.stderr, /--max-parallel/);
+    }
+    const ok = await run(['tick', '--project', project.id, '--max-parallel', '2', '--db', dbFile]);
+    assert.equal(ok.code, 0, ok.stderr);
   });
 });
 

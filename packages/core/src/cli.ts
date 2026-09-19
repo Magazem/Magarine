@@ -151,6 +151,23 @@ function flagList(flags: Flags, key: string): string[] {
   return Array.isArray(value) ? value : [value];
 }
 
+// Batch 16 Role A item 4 (ruling 23): ONE parse and ONE validator
+// (store.ts's assertValidMaxParallelWorkers) for every command that accepts
+// `--max-parallel` -- `project create`, `project set`, `tick`, `run` and
+// `serve`. Before this, `flags['max-parallel'] ? Number(...) : 1` let `0`
+// through (the string "0" is truthy: `serve --max-parallel 0` ran a daemon
+// whose machine-wide ceiling was zero and silently started nothing) and `abc`
+// (NaN). A bare `--max-parallel` with no value is refused too, not ignored.
+// Returns undefined when the flag is absent so each caller applies its own
+// default.
+function parseMaxParallelFlag(flags: Flags): number | undefined {
+  if (!('max-parallel' in flags)) return undefined;
+  const raw = flags['max-parallel'];
+  const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+  assertValidMaxParallelWorkers(value);
+  return value;
+}
+
 function stateDir(flags: Flags): string {
   return resolveStateDir({
     stateDirFlag: typeof flags['state-dir'] === 'string' ? flags['state-dir'] : undefined,
@@ -590,7 +607,9 @@ async function main(): Promise<void> {
     const project = createProject(db, {
       name: String(flags.name ?? positionals[1] ?? ''),
       description: typeof flags.description === 'string' ? flags.description : null,
-      maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+      // Batch 16: absent means no cap of its own (null); the validator runs in
+      // createProject and, for a bare/garbled flag, in parseMaxParallelFlag.
+      maxParallelWorkers: parseMaxParallelFlag(flags),
       maxSpendUsd: typeof flags['max-spend'] === 'string' ? Number(flags['max-spend']) : null,
       defaultModel: typeof flags.model === 'string' ? flags.model : undefined,
       brief: typeof flags.brief === 'string' ? flags.brief : null,
@@ -630,15 +649,15 @@ async function main(): Promise<void> {
     // fork -- store.ts's one validator, the same one `project create` runs
     // (via createProject). Checked before routing because NaN would
     // serialise to JSON `null` and reach the daemon as "not given".
-    let maxParallel: number | undefined;
-    if (typeof flags['max-parallel'] === 'string') {
-      maxParallel = Number(flags['max-parallel']);
-      assertValidMaxParallelWorkers(maxParallel);
-    }
+    // `none` clears the project's own cap back to null (the daemon's ceiling
+    // alone governs); the body then carries a real JSON null, not "not given".
+    let maxParallel: number | null | undefined;
+    if (flags['max-parallel'] === 'none') maxParallel = null;
+    else maxParallel = parseMaxParallelFlag(flags);
 
     const live = await liveDaemonFor(flags);
     if (live) {
-      const body: { maxSpend?: number; model?: string; managerModel?: string; dir?: string; maxParallel?: number } = {};
+      const body: { maxSpend?: number; model?: string; managerModel?: string; dir?: string; maxParallel?: number | null } = {};
       if (maxParallel !== undefined) body.maxParallel = maxParallel;
       if (typeof flags['max-spend'] === 'string') body.maxSpend = Number(flags['max-spend']);
       if (typeof flags.model === 'string') body.model = flags.model;
@@ -953,7 +972,7 @@ async function main(): Promise<void> {
       db,
       adapter,
       projectId,
-      maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+      maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
     });
@@ -992,7 +1011,7 @@ async function main(): Promise<void> {
       db,
       adapter,
       projectId,
-      maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+      maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
     });
@@ -1001,15 +1020,17 @@ async function main(): Promise<void> {
   }
 
   if (command === 'serve') {
+    // Ruling 23: validated FIRST, before the database is opened or anything
+    // is bound -- an invalid --max-parallel must never start a daemon.
+    const machineCap = parseMaxParallelFlag(flags) ?? 1;
     const resolvedDbPath = dbPath(flags);
     const db = openDb(resolvedDbPath);
     // No `--project` on `serve` -- it ticks every project in the database
     // (daemon.ts's startDaemonLoop), so there is no single id to resolve.
     const adapter = buildAdapter(db, flags, '');
     const resolvedStateDir = stateDir(flags);
-    // Ruling 23: one number, named on the listening line the owner reads, so
-    // the cap they are running under is never a guess.
-    const machineCap = flags['max-parallel'] ? Number(flags['max-parallel']) : 1;
+    // (`machineCap`, validated above, is named on the listening line the owner
+    // reads, so the cap they are running under is never a guess.)
     try {
       await serve({
         db,
