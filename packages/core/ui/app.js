@@ -121,6 +121,29 @@
       'Resume the project once the adapter is reachable again.'
   };
 
+  // WHY A PROJECT IS PAUSED, as a heading. Keyed on BoardResult.pauseReason,
+  // which is structured precisely so this page never parses the message text.
+  // A reason with no entry here gets the plain "Paused" and the daemon's own
+  // message, which is rule 9's shape: a cause this page does not recognise is
+  // not a cause it hides.
+  //
+  // RULING 24 (batch 16) adds the readiness causes. THE THREE RULE NAMES ARE
+  // THE DAEMON'S, and Role A's item 5 is what will emit them; `project_not_ready`
+  // is carried too, for a daemon that names the family rather than the rule.
+  var PAUSE_HEADS = {
+    spend_cap: 'Paused — spend cap reached',
+    adapter_unavailable: 'Paused — adapter unavailable',
+    missing_workspace_root: 'Paused — this project has no folder',
+    unsafe_workspace_root: 'Paused — this project’s folder is not safe to work in',
+    missing_scope_path: 'Paused — this project has no scope file',
+    project_not_ready: 'Paused — this project is not ready to run'
+  };
+
+  // The causes whose fix is one command rather than a button on this page.
+  var READINESS_REASONS = [
+    'missing_workspace_root', 'unsafe_workspace_root', 'missing_scope_path', 'project_not_ready'
+  ];
+
   // The actions an item offers, keyed on the same field. An event type with no
   // entry offers none — rule 7's converse: if the daemon cannot name a next
   // command for it, the page does not draw a button pretending it can.
@@ -159,6 +182,8 @@
     convFilter: 'all',
     live: false,            // true only while a stream is genuinely open
     lastSequence: 0,
+    // The project list as a key, so the selector is rebuilt only when it changed.
+    projectsKey: null,
     // RULING 18. THE PER-TICKET ANIMATION MARKER: the highest
     // latestActivity.sequence this page has already animated for each ticket,
     // with the state it animated and when. The organism ticks when — and only
@@ -738,9 +763,7 @@
     var b = state.board;
     if (!b || !b.pauseMessage) { banner.hidden = true; return; }
     banner.hidden = false;
-    $('pauseHead').textContent = b.pauseReason === 'spend_cap'
-      ? 'Paused \u2014 spend cap reached'
-      : (b.pauseReason === 'adapter_unavailable' ? 'Paused \u2014 adapter unavailable' : 'Paused');
+    $('pauseHead').textContent = PAUSE_HEADS[b.pauseReason] || 'Paused';
     $('pauseBody').textContent = b.pauseMessage;
 
     var acts = $('pauseActs');
@@ -764,6 +787,20 @@
       acts.appendChild(input);
       acts.appendChild(go);
     }
+
+    // RULING 24 (batch 16). A project that is not ready to run is paused
+    // through this same mechanism, and its fix is a command the owner runs in
+    // a terminal — this page cannot choose a folder for them. So the banner
+    // offers the exact command, with the project id already in it, and
+    // NOTHING ELSE: no Resume, because resuming without a folder would fail
+    // the same check and pause again, which is a button that cannot work.
+    // Un-pausing IS `project set --dir`; the ruling says so.
+    if (READINESS_REASONS.indexOf(b.pauseReason) >= 0) {
+      acts.appendChild(el('span', 'mono', 'magarine project set --project ' +
+        (state.projectId || '') + ' --dir <folder>'));
+      return;
+    }
+
     var resume = el('button', 'btn', 'Resume');
     resume.type = 'button';
     resume.addEventListener('click', function () {
@@ -975,7 +1012,16 @@
   }
 
   function refresh() {
-    if (!state.projectId) return Promise.resolve();
+    if (!state.token) return Promise.resolve();
+    // The list first, and on every pass: it decides which project the rest of
+    // this read is even about.
+    return api('/projects').then(function (list) {
+      syncProjects(list);
+      return state.projectId ? refreshProject() : undefined;
+    }, fail);
+  }
+
+  function refreshProject() {
     var p = encodeURIComponent(state.projectId);
     return Promise.all([
       api('/board?project=' + p),
@@ -1000,25 +1046,48 @@
     }, fail);
   }
 
-  function loadProjects() {
-    return api('/projects').then(function (list) {
-      state.projects = list || [];
-      var sel = $('projectSelect');
-      clear(sel);
-      state.projects.forEach(function (p) {
-        var o = el('option', null, p.name || p.id);
-        o.value = p.id;
-        sel.appendChild(o);
-      });
-      if (!state.projectId && state.projects.length) state.projectId = state.projects[0].id;
-      // An empty <select> renders as a small blank box that looks like a
-      // broken control. There is nothing to choose between until the daemon
-      // has answered, so there is nothing to show.
-      sel.hidden = state.projects.length === 0;
-      sel.value = state.projectId || '';
-      $('projectId').textContent = state.projectId || '';
-      return refresh();
-    }, fail);
+  // BATCH 16 ITEM 1. The project list is re-read on the board's own cadence,
+  // so a project created while this page is open appears without a reload —
+  // the owner hit exactly that during their demo run.
+  //
+  // THE SELECTOR IS REBUILT ONLY WHEN THE LIST ACTUALLY CHANGED. Rebuilding it
+  // every four seconds would fight the owner for their own control: it resets
+  // the value, and it destroys and recreates the very <option> elements they
+  // may have open. So the list is reduced to a key — every id and name, in
+  // order — and an unchanged key touches nothing at all.
+  function projectsKey(list) {
+    return (list || []).map(function (p) { return p.id + '␟' + (p.name || ''); }).join('␞');
+  }
+
+  function syncProjects(list) {
+    var next = list || [];
+    state.projects = next;
+    var key = projectsKey(next);
+    if (key === state.projectsKey) return false;
+
+    // The chosen project can disappear — deleted, or the daemon restarted on
+    // another state directory. Falling back to the first one keeps the page
+    // pointed at something the daemon actually has, rather than asking for a
+    // project that is gone.
+    var found = false;
+    for (var i = 0; i < next.length; i++) if (next[i].id === state.projectId) found = true;
+    if (!found) state.projectId = next.length ? next[0].id : null;
+
+    state.projectsKey = key;
+    var sel = $('projectSelect');
+    clear(sel);
+    next.forEach(function (p) {
+      var o = el('option', null, p.name || p.id);
+      o.value = p.id;
+      sel.appendChild(o);
+    });
+    // An empty <select> renders as a small blank box that looks like a
+    // broken control. There is nothing to choose between until the daemon
+    // has answered, so there is nothing to show.
+    sel.hidden = next.length === 0;
+    sel.value = state.projectId || '';
+    $('projectId').textContent = state.projectId || '';
+    return true;
   }
 
   function post(ticketId, route, body) {
@@ -1115,7 +1184,7 @@
       try { window.sessionStorage.setItem('magarine.token', v); } catch (e) { /* private mode */ }
       $('token').value = '';
       hideGate();
-      loadProjects().then(function () { if (state.token) openStream(); });
+      refresh().then(function () { if (state.token) openStream(); });
     });
     $('token').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('saveToken').click(); });
 
@@ -1164,7 +1233,7 @@
     if (!saved) { showGate(); return; }
     state.token = saved;
     hideGate();
-    loadProjects().then(function () { if (state.token) openStream(); });
+    refresh().then(function () { if (state.token) openStream(); });
   }
 
   // THE POLL. Runs whether or not a stream is open, because the stream carries

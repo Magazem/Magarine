@@ -106,7 +106,9 @@ terminal lane with `DONE`, struck through, rather than being dropped.
 | heading | derived | from `BoardResult.pauseReason`; "Paused" when the reason is unrecognised |
 | body | field | `BoardResult.pauseMessage`, verbatim |
 | "Raise cap" form | field | offered only when `pauseReason === 'spend_cap'` — the reason is structured so the page picks the right fix without parsing the message |
-| "Resume" button | copy | always offered while paused |
+| "Resume" button | copy | offered while paused, EXCEPT for a readiness cause — see below |
+| readiness fix command | derived | offered only when `pauseReason` is a readiness cause (`missing_workspace_root`, `unsafe_workspace_root`, `missing_scope_path`, `project_not_ready`): the exact command `magarine project set --project <id> --dir <folder>`, with `<id>` from the selected project. Ruling 24 (batch 16) |
+| Resume, for a readiness cause | — | DELIBERATELY ABSENT. Ruling 24 makes `project set --dir` the un-pause; resuming without a folder would fail the same check and pause again, so the button would be one that cannot work |
 
 ## 4. Needs you
 
