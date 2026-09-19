@@ -1,7 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rmSyncResilient } from '../db/testSupport.ts';
 import { spawnManaged } from '../process.ts';
@@ -24,6 +24,25 @@ after(testRoot.cleanup);
 
 async function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+  let stdout = '';
+  let stderr = '';
+  proc.onStdout((c) => (stdout += c));
+  proc.onStderr((c) => (stderr += c));
+  const result = await proc.wait();
+  return { code: result.code, stdout, stderr };
+}
+
+// Ruling 22: the ONLY test here that overrides the spawned subprocess's own
+// environment -- used exactly once, to prove the home-directory refusal
+// against a FAKE home without ever touching the real one. `os.homedir()` on
+// this Windows machine reads `USERPROFILE` (HARD-verified directly); `HOME`
+// is set alongside it for a POSIX runner, never read on this platform but
+// harmless to set.
+async function runWithEnv(
+  args: string[],
+  env: NodeJS.ProcessEnv
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args), env });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));
@@ -484,7 +503,13 @@ test('project set --dir moves the project to a new directory, deriving both work
     const project = JSON.parse(
       (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
     ) as { id: string; workspaceRoot: string | null };
-    assert.equal(project.workspaceRoot, dir, 'sanity: created with the default directory first');
+    // testSupport.ts's deriveTestCliCwd gives the spawned CLI a `workspace`
+    // child of `dir`, not `dir` itself (ruling 22: `dir` alone would be
+    // equal to the state dir for a `--state-dir`-only invocation elsewhere
+    // in this file -- this test's own `--db`-only invocation isn't that
+    // shape, but the helper applies the same rule to both branches so no
+    // test call site has to know which one it's using).
+    assert.equal(project.workspaceRoot, join(dir, 'workspace'), 'sanity: created with the default directory first');
 
     const newDir = join(dir, 'moved-here');
     const res = await run(['project', 'set', '--project', project.id, '--dir', newDir, '--json', '--db', dbFile]);
@@ -492,6 +517,86 @@ test('project set --dir moves the project to a new directory, deriving both work
     const updated = JSON.parse(res.stdout) as { workspaceRoot: string | null; scopePath: string | null };
     assert.equal(updated.workspaceRoot, newDir);
     assert.equal(updated.scopePath, join(newDir, 'SCOPE.md'));
+  });
+});
+
+// Ruling 22 (batch 15 addendum 10): `project create`/`project set --dir`
+// refuse an unsafe workspace root. The pure rule itself is unit-tested
+// directly against fake values in paths.test.ts (including the
+// home-directory rule, safely); these prove the real CLI wiring actually
+// calls it. TEST SAFETY: every one of these passes an explicit
+// `--state-dir` under this file's own temp root -- never the real
+// `~/.magarine` -- and the home-directory case below overrides `USERPROFILE`
+// for the spawned subprocess only (HARD-verified: `os.homedir()` on Windows
+// reads `USERPROFILE`), so it proves the real `homedir()` call site without
+// ever resolving to the real home directory.
+
+test('project create refuses a filesystem root as --dir, naming the fix, and touches nothing on disk', async () => {
+  await withTempDb('magarine-unsafe-root-', async (dbFile, dir) => {
+    const stateDir = join(dir, 'state');
+    const driveRoot = parse(dir).root;
+    const res = await run(['project', 'create', '--name', 'P', '--dir', driveRoot, '--state-dir', stateDir, '--db', dbFile]);
+    assert.notEqual(res.code, 0, 'a filesystem root must be refused');
+    assert.match(res.stderr, /filesystem root/);
+    assert.match(res.stderr, /make a folder for the project and run this from inside it/);
+  });
+});
+
+test('project create refuses a --dir that IS the state directory, naming --state-dir as the fix', async () => {
+  await withTempDb('magarine-unsafe-statedir-', async (dbFile, dir) => {
+    const stateDir = join(dir, 'state');
+    const res = await run(['project', 'create', '--name', 'P', '--dir', stateDir, '--state-dir', stateDir, '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /state directory/);
+    assert.match(res.stderr, /--state-dir/);
+  });
+});
+
+test('project set --dir refuses a directory that CONTAINS the state directory, the same check project create applies', async () => {
+  await withTempDb('magarine-unsafe-set-statedir-', async (dbFile, dir) => {
+    const stateDir = join(dir, 'ancestor', 'state');
+    const ancestor = join(dir, 'ancestor');
+    // The initial create must land somewhere unrelated to `ancestor`/`stateDir`
+    // -- otherwise this setup call itself (cwd defaults to `--dir`) trips the
+    // very rule this test means to exercise on the LATER `project set --dir`.
+    const project = JSON.parse(
+      (
+        await run([
+          'project', 'create', '--name', 'P', '--dir', join(dir, 'initial-project'),
+          '--state-dir', join(dir, 'other-state'), '--json', '--db', dbFile,
+        ])
+      ).stdout
+    ) as { id: string };
+    const res = await run([
+      'project', 'set', '--project', project.id, '--dir', ancestor, '--state-dir', stateDir, '--db', dbFile,
+    ]);
+    assert.notEqual(res.code, 0, 'a --dir that contains the state directory must be refused');
+    assert.match(res.stderr, /state directory/);
+    assert.match(res.stderr, /--state-dir/);
+  });
+});
+
+test('project create refuses the home directory as --dir, without touching the real one -- USERPROFILE is overridden for the subprocess only', async () => {
+  await withTempDb('magarine-unsafe-home-', async (dbFile, dir) => {
+    const fakeHome = join(dir, 'fake-home');
+    const stateDir = join(dir, 'state');
+    const res = await runWithEnv(
+      ['project', 'create', '--name', 'P', '--dir', fakeHome, '--state-dir', stateDir, '--db', dbFile],
+      { ...process.env, USERPROFILE: fakeHome, HOME: fakeHome }
+    );
+    assert.notEqual(res.code, 0, 'the (fake, overridden) home directory must be refused');
+    assert.match(res.stderr, /home directory/);
+    assert.match(res.stderr, /make a folder for the project and run this from inside it/);
+  });
+});
+
+test('project create with a plain project subdirectory (none of the three unsafe shapes) is accepted', async () => {
+  await withTempDb('magarine-safe-dir-', async (dbFile, dir) => {
+    const stateDir = join(dir, 'state');
+    const projectDir = join(dir, 'my-project');
+    const res = await run(['project', 'create', '--name', 'P', '--dir', projectDir, '--state-dir', stateDir, '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    assert.equal(JSON.parse(res.stdout).workspaceRoot, projectDir);
   });
 });
 
@@ -1256,7 +1361,10 @@ test('project create without --brief/--dir leaves brief null, but workspaceRoot 
     assert.equal(res.code, 0, res.stderr);
     const project = JSON.parse(res.stdout) as { brief: string | null; workspaceRoot: string | null };
     assert.equal(project.brief, null);
-    assert.equal(project.workspaceRoot, dir);
+    // See the `workspace` child comment on the "project set --dir" test
+    // above -- the invocation's own directory, per testSupport.ts's
+    // deriveTestCliCwd, not `dir` itself.
+    assert.equal(project.workspaceRoot, join(dir, 'workspace'));
   });
 });
 
@@ -1269,8 +1377,10 @@ test('project create with no --dir still gets a scope path, inside the directory
     const res = await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);
     assert.equal(res.code, 0, res.stderr);
     const project = JSON.parse(res.stdout) as { id: string; workspaceRoot: string | null; scopePath: string | null };
-    assert.equal(project.workspaceRoot, dir);
-    assert.equal(project.scopePath, join(dir, 'SCOPE.md'));
+    // See the `workspace` child comment above.
+    const expectedWorkspaceRoot = join(dir, 'workspace');
+    assert.equal(project.workspaceRoot, expectedWorkspaceRoot);
+    assert.equal(project.scopePath, join(expectedWorkspaceRoot, 'SCOPE.md'));
   });
 });
 
@@ -1299,7 +1409,9 @@ test('project create with no directory flag at all still carries a DIRECTORY tic
     ) as { id: string; workspaceRoot: string | null };
     // The mechanism this test is actually proving: no --dir was given, and
     // workspaceRoot is not null (batch 11's trap was exactly a null root).
-    assert.equal(project.workspaceRoot, dir);
+    // See the `workspace` child comment above for why it's `join(dir,
+    // 'workspace')`, not `dir` itself.
+    assert.equal(project.workspaceRoot, join(dir, 'workspace'));
 
     const ticket = JSON.parse(
       (

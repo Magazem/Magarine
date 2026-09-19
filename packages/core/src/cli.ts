@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
@@ -38,7 +39,12 @@ import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { serve, ServeError } from './commands/serve.ts';
 import { runToken, TokenError } from './commands/token.ts';
-import { artifactsDir as resolveArtifactsDir, dbPath as resolveDbPath, resolveStateDir } from './paths.ts';
+import {
+  artifactsDir as resolveArtifactsDir,
+  dbPath as resolveDbPath,
+  resolveStateDir,
+  validateWorkspaceRoot,
+} from './paths.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
@@ -542,6 +548,12 @@ async function main(): Promise<void> {
     // batch 11's own README walk hit (a DIRECTORY ticket with no
     // workspace_root configured) cannot be reproduced.
     const dir = resolve(typeof flags.dir === 'string' ? flags.dir : process.cwd());
+    const unsafeDir = validateWorkspaceRoot(dir, homedir(), stateDir(flags));
+    if (unsafeDir) {
+      process.stderr.write(`${unsafeDir}\n`);
+      process.exitCode = 1;
+      return;
+    }
     const project = createProject(db, {
       name: String(flags.name ?? positionals[1] ?? ''),
       description: typeof flags.description === 'string' ? flags.description : null,
@@ -567,13 +579,27 @@ async function main(): Promise<void> {
       throw err;
     }
 
+    // Ruling 22: checked once, here, ahead of the live-daemon/direct-write
+    // fork below, so an unsafe `--dir` is refused identically either way --
+    // a running daemon must not become the way this refusal is bypassed.
+    let resolvedDir: string | undefined;
+    if (typeof flags.dir === 'string') {
+      resolvedDir = resolve(flags.dir);
+      const unsafeDir = validateWorkspaceRoot(resolvedDir, homedir(), stateDir(flags));
+      if (unsafeDir) {
+        process.stderr.write(`${unsafeDir}\n`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+
     const live = await liveDaemonFor(flags);
     if (live) {
       const body: { maxSpend?: number; model?: string; managerModel?: string; dir?: string } = {};
       if (typeof flags['max-spend'] === 'string') body.maxSpend = Number(flags['max-spend']);
       if (typeof flags.model === 'string') body.model = flags.model;
       if (typeof flags['manager-model'] === 'string') body.managerModel = flags['manager-model'];
-      if (typeof flags.dir === 'string') body.dir = resolve(flags.dir);
+      if (resolvedDir !== undefined) body.dir = resolvedDir;
       await routeMutation(flags, live, 'POST', `/projects/${projectId}/set`, body, () => `Updated project ${projectId}`);
       return;
     }
@@ -587,8 +613,8 @@ async function main(): Promise<void> {
     if (typeof flags['manager-model'] === 'string') {
       setProjectManagerModel(db, projectId, flags['manager-model']);
     }
-    if (typeof flags.dir === 'string') {
-      setProjectDir(db, projectId, resolve(flags.dir));
+    if (resolvedDir !== undefined) {
+      setProjectDir(db, projectId, resolvedDir);
     }
     output(flags, getProject(db, projectId), `Updated project ${projectId}`);
     return;

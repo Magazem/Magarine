@@ -51,10 +51,13 @@ Run these from wherever `magarine` is on your PATH:
 
 1. **Make a folder for the project, and stand inside it.** This folder
    becomes the project's one home: its scope document lives here, and so
-   does anything a task writes when it needs a shared workspace. If you
-   already have a scope document written, save it here now as `SCOPE.md` --
-   Magarine will pick it up automatically once the project exists. If you
-   don't, that's fine too; the interview (step 4) builds one with you.
+   does anything a task writes when it needs a shared workspace. It is also
+   the boundary a task's own AI assistant may write inside -- never anything
+   outside it -- so it must be a folder made for this, not a folder you
+   already keep other things in. If you already have a scope document
+   written, save it here now as `SCOPE.md` -- Magarine will pick it up
+   automatically once the project exists. If you don't, that's fine too; the
+   interview (step 4) builds one with you.
    ```sh
    mkdir my-first-project && cd my-first-project
    ```
