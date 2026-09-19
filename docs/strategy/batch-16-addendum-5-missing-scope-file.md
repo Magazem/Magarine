@@ -1,6 +1,6 @@
-# Magarine — Batch 16 addendum 4: a missing scope document is a legibility gap, an unreadable one is a readiness failure
+# Magarine — Batch 16 addendum 5: a missing scope document is a legibility gap, an unreadable one is a readiness failure
 
-Author: Strategist. Date: 2026-09-19. Raised by the stranger's walk, reproduced by the Orchestrator. Batch 16, ruled before close per rule 20.
+Author: Strategist. Date: 2026-09-19. Raised by the stranger's walk, reproduced by the Orchestrator. Batch 16, ruled before close per rule 20. (Renumbered 4 -> 5 by the Orchestrator: addendum 4 was already taken by `batch-16-addendum-4-readiness-cannot-be-skipped-silently.md`, which commit 1e6773d cites by path. Two files sharing a number makes every later citation ambiguous -- rule 19.)
 Evidence labels: HARD = I read or ran it. SOFT = inferred. UNKNOWN = guessing.
 
 ## 0. The premise, corrected
