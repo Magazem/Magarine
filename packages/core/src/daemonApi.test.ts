@@ -623,6 +623,42 @@ test('GET /tickets/{id}/progress returns one entry per run, and GET /board repor
 // actually calls `closeAllStreams()`) could ever run -- an external kill on
 // this machine can only ever produce ECONNRESET, which is not evidence
 // about `closeAllStreams()` either way.
+// Ruling 23: the route validates `maxParallel` with the same store validator
+// the CLI uses, so the message is identical whichever surface refused it.
+test('POST /projects/{id}/set maxParallel: a valid value persists; 0, -1, 1.5 are a 400 carrying the same message the CLI prints, and leave the cap untouched', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'set-maxparallel-'));
+  try {
+    const project = JSON.parse(
+      (await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json'])).stdout
+    ) as { id: string };
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const call = (body: unknown) => api(info.port, fileInfo.token, 'POST', `/projects/${project.id}/set`, body);
+
+      const ok = await call({ maxParallel: 3 });
+      assert.equal(ok.status, 200, ok.text);
+      assert.equal((ok.json as { maxParallelWorkers: number }).maxParallelWorkers, 3);
+
+      for (const bad of [0, -1, 1.5]) {
+        const refused = await call({ maxParallel: bad });
+        assert.equal(refused.status, 400, `maxParallel ${bad} must be a 400`);
+        const message = (refused.json as { error: string }).error;
+        assert.match(message, /--max-parallel/);
+        assert.match(message, /whole number of 1 or more/);
+        assert.match(message, new RegExp(`got: ${bad}`));
+      }
+      const after = await call({});
+      assert.equal((after.json as { maxParallelWorkers: number }).maxParallelWorkers, 3, 'refused values changed nothing');
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('GET /events replays existing rows after since, then pushes a live fake-adapter worker_progress event with id === sequence and event === event_type, and is refused without the token even when the query string carries no secret of its own', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'events-'));
   try {
