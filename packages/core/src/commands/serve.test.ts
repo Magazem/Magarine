@@ -195,6 +195,37 @@ test("serve's human-readable listening line names the page address and `magarine
   }
 });
 
+// Ruling 23: the human line also names the machine-wide cap the owner is
+// running under; --json is unchanged (asserted by the json test above: no
+// extra field is read from it, and none is added here).
+test("serve's human-readable listening line names the machine-wide worker cap, and --json carries no such text", async () => {
+  const withFlag = mkdtempSync(join(testRoot.root, 'cap-line-'));
+  const withDefault = mkdtempSync(join(testRoot.root, 'cap-default-'));
+  const jsonDir = mkdtempSync(join(testRoot.root, 'cap-json-'));
+  const a = spawnServe(['--state-dir', withFlag, '--tick-interval', '0.1', '--max-parallel', '4']);
+  const b = spawnServe(['--state-dir', withDefault, '--tick-interval', '0.1']);
+  const c = spawnServe(['--state-dir', jsonDir, '--tick-interval', '0.1', '--max-parallel', '4', '--json']);
+  try {
+    const lineOf = async (h: ServeHandle): Promise<string> => {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const l = h.stdout().split('\n').find((x) => x.includes('magarine daemon listening'));
+        if (l) return l;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error(`no listening line. stdout=${h.stdout()}`);
+    };
+    assert.match(await lineOf(a), /-- up to 4 workers at once \(--max-parallel\)/);
+    assert.match(await lineOf(b), /-- up to 1 workers at once \(--max-parallel\)/);
+    const info = await c.waitForListening();
+    assert.deepEqual(Object.keys(info).sort(), ['pid', 'port', 'stateDir']);
+    assert.ok(!c.stdout().includes('workers at once'));
+  } finally {
+    await Promise.all([a.kill(), b.kill(), c.kill()]);
+    for (const d of [withFlag, withDefault, jsonDir]) rmSync(d, { recursive: true, force: true });
+  }
+});
+
 test('a second `serve` refuses to start while the first is live, without printing the token, and leaves the first daemon.json untouched', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'refuse-second-'));
   const first = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json']);

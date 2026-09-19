@@ -430,6 +430,42 @@ test('token: an unrelated flag is refused as unknown, and --state-dir/--json alo
   }
 });
 
+// Ruling 23: `--max-parallel` is a known `project set` flag, and against a
+// live matching daemon it routes the same way `--max-spend` does
+// (POST /projects/{id}/set), where the SAME store validator refuses a bad
+// value -- checked here for a non-number too, since NaN would otherwise
+// serialise to JSON null and arrive at the daemon as "not given".
+test('project set --max-parallel is a known flag and routes through a live daemon like --max-spend, refusing bad values before any request', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'set-maxparallel-'));
+  try {
+    const project = JSON.parse(
+      (await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json'])).stdout
+    ) as { id: string };
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      await handle.waitForListening();
+
+      const ok = await runCli(['project', 'set', '--project', project.id, '--max-parallel', '3', '--state-dir', stateDir, '--json']);
+      assert.equal(ok.code, 0, ok.stderr);
+      assert.doesNotMatch(ok.stderr, /Unknown flag/);
+      assert.equal((JSON.parse(ok.stdout) as { maxParallelWorkers: number }).maxParallelWorkers, 3);
+
+      for (const bad of ['0', 'abc']) {
+        const refused = await runCli(['project', 'set', '--project', project.id, '--max-parallel', bad, '--state-dir', stateDir]);
+        assert.notEqual(refused.code, 0, `--max-parallel ${bad} must be refused, live daemon or not`);
+        assert.match(refused.stderr, /whole number of 1 or more/);
+      }
+      // A no-op set that echoes the row back: the refused values changed nothing.
+      const echoed = await runCli(['project', 'set', '--project', project.id, '--max-spend', '5', '--state-dir', stateDir, '--json']);
+      assert.equal((JSON.parse(echoed.stdout) as { maxParallelWorkers: number }).maxParallelWorkers, 3);
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('ticket add and decide route through a live matching daemon end to end (request body mapping and response formatting)', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'happy-path-'));
   try {

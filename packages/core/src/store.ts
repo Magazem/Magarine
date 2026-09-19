@@ -35,6 +35,18 @@ function assertAboveFloor(value: number, label: string): void {
   }
 }
 
+// Ruling 23 (batch 15 addendum 10): one validator for a project's own
+// worker cap, shared by createProject and setProjectMaxParallelWorkers so
+// `project create --max-parallel`, `project set --max-parallel` and the
+// daemon's POST /projects/{id}/set can never disagree about what a valid cap
+// is or how a bad one is worded. Before this nothing checked it: `0` or
+// `abc` (NaN) was written straight into the column.
+export function assertValidMaxParallelWorkers(value: number): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`--max-parallel (a project's max parallel workers) must be a whole number of 1 or more, got: ${value}`);
+  }
+}
+
 interface ProjectRow {
   id: string;
   name: string;
@@ -96,6 +108,7 @@ export function createProject(
   if (input.maxSpendUsd != null) {
     assertAboveFloor(input.maxSpendUsd, 'a project\'s max_spend_usd');
   }
+  if (input.maxParallelWorkers !== undefined) assertValidMaxParallelWorkers(input.maxParallelWorkers);
   // Same default as db/schema.ts's 0006_model_pinning migration default for
   // existing rows -- kept explicit here (rather than relying on the column
   // DEFAULT and omitting it from the INSERT) so a caller reading `Project`
@@ -159,6 +172,15 @@ export function setProjectDir(db: Db, projectId: string, dir: string): void {
   db.prepare('UPDATE projects SET workspace_root = ?, scope_path = ?, updated_at = ? WHERE id = ?').run(
     dir,
     join(dir, 'SCOPE.md'),
+    new Date().toISOString(),
+    projectId
+  );
+}
+
+export function setProjectMaxParallelWorkers(db: Db, projectId: string, maxParallelWorkers: number): void {
+  assertValidMaxParallelWorkers(maxParallelWorkers);
+  db.prepare('UPDATE projects SET max_parallel_workers = ?, updated_at = ? WHERE id = ?').run(
+    maxParallelWorkers,
     new Date().toISOString(),
     projectId
   );

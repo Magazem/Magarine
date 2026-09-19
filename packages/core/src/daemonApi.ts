@@ -28,6 +28,7 @@ import {
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
+  setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
 } from './store.ts';
@@ -233,7 +234,8 @@ function handleAddDependency(db: Db, body: unknown): RouteResult {
 function handleSetProject(db: Db, projectId: string, body: unknown): RouteResult {
   const project = getProject(db, projectId);
   if (!project) throw new ApiError(404, `no such project: ${projectId}`);
-  const b = body as { maxSpend?: number | null; model?: string; managerModel?: string | null; dir?: string };
+  const b = body as { maxSpend?: number | null; model?: string; managerModel?: string | null; dir?: string; maxParallel?: number };
+  if (typeof b.maxParallel !== 'undefined') setProjectMaxParallelWorkers(db, projectId, b.maxParallel);
   if (typeof b.maxSpend !== 'undefined') setProjectMaxSpendUsd(db, projectId, b.maxSpend);
   if (typeof b.model === 'string') setProjectDefaultModel(db, projectId, b.model);
   if (typeof b.managerModel !== 'undefined') setProjectManagerModel(db, projectId, b.managerModel);

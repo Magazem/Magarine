@@ -600,6 +600,46 @@ test('project create with a plain project subdirectory (none of the three unsafe
   });
 });
 
+// Ruling 23 (batch 15 addendum 10): an existing project's worker cap can now
+// be raised after creation, and `project create`/`project set` refuse a bad
+// one with the same message (one validator, store.ts).
+test('project set --max-parallel persists the cap, visible on the project row', async () => {
+  await withTempDb('magarine-projectset-maxparallel-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    ) as { id: string; maxParallelWorkers: number };
+    assert.equal(project.maxParallelWorkers, 1, 'the default is unchanged');
+
+    const res = await run(['project', 'set', '--project', project.id, '--max-parallel', '4', '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    assert.equal((JSON.parse(res.stdout) as { maxParallelWorkers: number }).maxParallelWorkers, 4);
+
+    const listed = JSON.parse((await run(['project', 'list', '--json', '--db', dbFile])).stdout) as Array<{ id: string }>;
+    assert.ok(listed.some((p) => p.id === project.id));
+  });
+});
+
+test('project set --max-parallel and project create --max-parallel refuse 0, -1, 1.5 and a non-number, with the same message', async () => {
+  await withTempDb('magarine-maxparallel-invalid-', async (dbFile) => {
+    const project = JSON.parse(
+      (await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout
+    ) as { id: string };
+    for (const bad of ['0', '-1', '1.5', 'abc']) {
+      const set = await run(['project', 'set', '--project', project.id, '--max-parallel', bad, '--db', dbFile]);
+      assert.notEqual(set.code, 0, `set --max-parallel ${bad} must be refused`);
+      assert.match(set.stderr, /--max-parallel/);
+      assert.match(set.stderr, /whole number of 1 or more/);
+      const create = await run(['project', 'create', '--name', 'Q', '--max-parallel', bad, '--db', dbFile]);
+      assert.notEqual(create.code, 0, `create --max-parallel ${bad} must be refused`);
+      assert.equal(create.stderr, set.stderr, `same message for ${bad}`);
+    }
+    const after = JSON.parse(
+      (await run(['project', 'set', '--project', project.id, '--max-spend', '5', '--json', '--db', dbFile])).stdout
+    ) as { maxParallelWorkers: number };
+    assert.equal(after.maxParallelWorkers, 1, 'refused sets must leave the cap untouched');
+  });
+});
+
 test('project set on an unknown project id fails by name, not with a silent no-op or a DB error', async () => {
   await withTempDb('magarine-projectset-unknown-', async (dbFile) => {
     await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);

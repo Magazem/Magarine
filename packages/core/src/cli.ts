@@ -12,6 +12,7 @@ import { recoverOrphanedRuns } from './recovery.ts';
 import { runUntilIdle, tick } from './scheduler.ts';
 import {
   addDependency,
+  assertValidMaxParallelWorkers,
   createProject,
   createTicket,
   getProject,
@@ -21,6 +22,7 @@ import {
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
+  setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
 } from './store.ts';
@@ -266,7 +268,7 @@ const FLAG_SPECS: Record<string, string[]> = {
   // to the current working directory; see the handler below for why that
   // default, not the state dir.
   'project create': ['name', 'description', 'max-parallel', 'brief', 'dir', 'max-spend', 'model', 'manager-model'],
-  'project set': ['project', 'max-spend', 'model', 'manager-model', 'dir'],
+  'project set': ['project', 'max-spend', 'model', 'manager-model', 'dir', 'max-parallel'],
   // Batch 10 (Role Q), item 2: no flags of its own -- lists every project in
   // this state directory's database. See commands/projectList.ts.
   'project list': [],
@@ -593,9 +595,20 @@ async function main(): Promise<void> {
       }
     }
 
+    // Ruling 23: validated once, here, ahead of the live-daemon/direct-write
+    // fork -- store.ts's one validator, the same one `project create` runs
+    // (via createProject). Checked before routing because NaN would
+    // serialise to JSON `null` and reach the daemon as "not given".
+    let maxParallel: number | undefined;
+    if (typeof flags['max-parallel'] === 'string') {
+      maxParallel = Number(flags['max-parallel']);
+      assertValidMaxParallelWorkers(maxParallel);
+    }
+
     const live = await liveDaemonFor(flags);
     if (live) {
-      const body: { maxSpend?: number; model?: string; managerModel?: string; dir?: string } = {};
+      const body: { maxSpend?: number; model?: string; managerModel?: string; dir?: string; maxParallel?: number } = {};
+      if (maxParallel !== undefined) body.maxParallel = maxParallel;
       if (typeof flags['max-spend'] === 'string') body.maxSpend = Number(flags['max-spend']);
       if (typeof flags.model === 'string') body.model = flags.model;
       if (typeof flags['manager-model'] === 'string') body.managerModel = flags['manager-model'];
@@ -604,6 +617,9 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (maxParallel !== undefined) {
+      setProjectMaxParallelWorkers(db, projectId, maxParallel);
+    }
     if (typeof flags['max-spend'] === 'string') {
       setProjectMaxSpendUsd(db, projectId, Number(flags['max-spend']));
     }
@@ -960,13 +976,16 @@ async function main(): Promise<void> {
     // (daemon.ts's startDaemonLoop), so there is no single id to resolve.
     const adapter = buildAdapter(db, flags, '');
     const resolvedStateDir = stateDir(flags);
+    // Ruling 23: one number, named on the listening line the owner reads, so
+    // the cap they are running under is never a guess.
+    const machineCap = flags['max-parallel'] ? Number(flags['max-parallel']) : 1;
     try {
       await serve({
         db,
         dbPath: resolvedDbPath,
         stateDir: resolvedStateDir,
         adapter,
-        maxParallelWorkers: flags['max-parallel'] ? Number(flags['max-parallel']) : 1,
+        maxParallelWorkers: machineCap,
         runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
         artifactsDir: artifactsDir(flags),
         tickIntervalMs: typeof flags['tick-interval'] === 'string' ? Number(flags['tick-interval']) * 1000 : undefined,
@@ -980,7 +999,7 @@ async function main(): Promise<void> {
           output(
             flags,
             info,
-            `magarine daemon listening on 127.0.0.1:${info.port} (pid ${info.pid}) -- page: http://127.0.0.1:${info.port}/ -- token: run \`magarine token\``
+            `magarine daemon listening on 127.0.0.1:${info.port} (pid ${info.pid}) -- page: http://127.0.0.1:${info.port}/ -- token: run \`magarine token\` -- up to ${machineCap} workers at once (--max-parallel)`
           );
         },
       });

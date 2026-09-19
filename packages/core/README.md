@@ -108,6 +108,14 @@ Both default to `null`/unset if omitted.
 `project set` also refuses (clean message, no stack trace) if the project id
 doesn't exist.
 
+`project create --max-parallel <n>` and `project set --project <id>
+--max-parallel <n>` set the project's own worker cap (ruling 23, batch 15
+addendum 10): a whole number of 1 or more, refused with the same message by
+both (one validator in `store.ts`, also behind the daemon's `POST
+/projects/{id}/set`); the default stays 1. The effective cap under `serve` is
+the smaller of this and `serve --max-parallel` (see "Running it"), which
+is why `serve`'s human listening line names "up to <n> workers at once".
+
 `project list` (Batch 10, Role Q) prints every project in this state
 directory's database -- id, name, default model, spend against its cap, and
 ticket counts by status -- the read path back to a project's id if it's been
@@ -591,7 +599,7 @@ that requests them. Every other route, including `/events`, stays behind
 | `POST` | `/tickets/{id}/reject` | `{reason}`. |
 | `POST` | `/tickets/{id}/cancel` | No body. `409` if this daemon holds no live run for that ticket. |
 | `POST` | `/projects/{id}/resume` | No body. |
-| `POST` | `/projects/{id}/set` | `{maxSpend?, model?, managerModel?}`. |
+| `POST` | `/projects/{id}/set` | `{maxSpend?, model?, managerModel?, dir?, maxParallel?}`. `maxParallel` must be a whole number of 1 or more, else `400`. |
 | `POST` | `/projects/{id}/plan` | `{mission}` — creates a manager ticket. See "Planning a project" below. |
 | `POST` | `/tick` | `{project}` — forces one scheduling pass for that project right now, outside the regular interval. |
 

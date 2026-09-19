@@ -64,8 +64,12 @@ Run these from wherever `magarine` is on your PATH:
 
 2. **Create the project**, from inside that folder:
    ```sh
-   magarine project create --name "My First Project" --brief "One paragraph describing what you want built."
+   magarine project create --name "My First Project" --max-parallel 4 --brief "One paragraph describing what you want built."
    ```
+   `--max-parallel 4` lets this project run up to four tasks at once
+   (without it, one at a time); raise or lower it later with `magarine
+   project set --project <projectId> --max-parallel <n>`.
+
    This prints the project's id (starts with `proj_`) -- you'll use it in
    every command below. **Lost it, or closed the terminal?** Every command
    below also accepts the project's exact name instead of its id, and
@@ -82,8 +86,14 @@ Run these from wherever `magarine` is on your PATH:
    board as it happens. Leave this terminal open -- it prints the port it's
    listening on and the page's address, and keeps running until you stop it.
    ```sh
-   magarine serve --adapter claude
+   magarine serve --adapter claude --max-parallel 4
    ```
+   Tasks only run in parallel when **both** numbers allow it -- the project's
+   (step 2) and this one, the most workers the daemon runs at once across
+   every project; the line `serve` prints ends "up to 4 workers at once" so
+   you can see the number you're running under. Each worker is a real
+   session against your subscription's limits, so the number is your choice:
+   start lower if you'd rather it spend more slowly.
 
 4. **Let it interview you.** If you already saved a `SCOPE.md` in the
    project's folder (step 1), just plan from it directly:

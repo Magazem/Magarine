@@ -16,7 +16,15 @@ import {
   type DaemonFileInfo,
 } from './daemon.ts';
 import { openDb } from './db/index.ts';
-import { createProject, createRun, createTicket, getRun, getTicket, listTicketsByStatus } from './store.ts';
+import {
+  createProject,
+  createRun,
+  createTicket,
+  getRun,
+  getTicket,
+  listTicketsByStatus,
+  setProjectMaxParallelWorkers,
+} from './store.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { testTempRoot } from './testSupport.ts';
@@ -402,6 +410,38 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
     'the run forceTick started must be registered in the shared live map'
   );
   assert.equal(getTicket(db, ticketB.id)!.status, 'IN_PROGRESS', "project B must be untouched by project A's forceTick");
+});
+
+// Ruling 23 (batch 15 addendum 10): a project's own cap, raised AFTER
+// creation by `project set --max-parallel`, is what the very next tick
+// schedules under -- the whole reason the flag exists (the owner expected
+// four at once and got one, and could not raise an existing project).
+test('a project whose cap is raised after creation runs that many workers on the next ticks, under a higher machine-wide ceiling', async (t) => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const tickets = [1, 2, 3].map((n) => createTicket(db, { projectId: project.id, title: `t${n}`, workspaceType: 'NONE' }));
+  const adapter = new FakeAdapter();
+  for (const tk of tickets) adapter.setScript(tk.id, { kind: 'hang' });
+
+  const loop = startDaemonLoop({
+    db,
+    adapter,
+    maxParallelWorkers: 4,
+    artifactsDir: join(testRoot.root, 'artifacts-raised-cap'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const deadline1 = Date.now() + 2000;
+  while (loop.live.size < 1 && Date.now() < deadline1) await new Promise((resolve) => setTimeout(resolve, 20));
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(loop.live.size, 1, 'a default-created project (cap 1) runs one at a time even under a machine ceiling of 4');
+
+  setProjectMaxParallelWorkers(db, project.id, 3);
+
+  const deadline2 = Date.now() + 2000;
+  while (loop.live.size < 3 && Date.now() < deadline2) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(loop.live.size, 3, 'after `project set --max-parallel 3` the next ticks run all three');
 });
 
 // Batch 9 housekeeping item 1 ruling 1: `serve --max-parallel` is now the

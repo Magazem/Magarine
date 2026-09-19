@@ -29,6 +29,7 @@ import {
   setProjectDir,
   setProjectManagerModel,
   setProjectMaxBudgetUsd,
+  setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setProjectScopePath,
   setRunUsage,
@@ -535,4 +536,39 @@ test('listEventsSince returns every event with sequence strictly greater than th
   assert.deepEqual(listEventsSince(db, 0).map((e) => e.sequence), [e1.sequence, e2.sequence, e3.sequence]);
   assert.deepEqual(listEventsSince(db, e1.sequence!).map((e) => e.sequence), [e2.sequence, e3.sequence]);
   assert.deepEqual(listEventsSince(db, e3.sequence!), []);
+});
+
+// Ruling 23 (batch 15 addendum 10): one validator, shared by createProject
+// and setProjectMaxParallelWorkers, so `project create` and `project set`
+// (and the daemon's POST /projects/{id}/set) refuse a bad cap with the SAME
+// message. Before this ruling nothing validated it at all.
+test('setProjectMaxParallelWorkers persists the cap, and a project created with one keeps it', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  assert.equal(project.maxParallelWorkers, 1, 'default is unchanged in batch 15');
+  setProjectMaxParallelWorkers(db, project.id, 4);
+  assert.equal(getProject(db, project.id)!.maxParallelWorkers, 4);
+  assert.equal(createProject(db, { name: 'q', maxParallelWorkers: 3 }).maxParallelWorkers, 3);
+});
+
+test('a max-parallel cap that is not a whole number of 1 or more is refused by BOTH createProject and setProjectMaxParallelWorkers, with the same message', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  for (const bad of [0, -1, 1.5, Number.NaN]) {
+    let createMessage = '';
+    let setMessage = '';
+    try {
+      createProject(db, { name: 'bad', maxParallelWorkers: bad });
+    } catch (err) {
+      createMessage = (err as Error).message;
+    }
+    try {
+      setProjectMaxParallelWorkers(db, project.id, bad);
+    } catch (err) {
+      setMessage = (err as Error).message;
+    }
+    assert.match(createMessage, /--max-parallel.*whole number of 1 or more/, `createProject must refuse ${bad}`);
+    assert.equal(setMessage, createMessage, `set and create must say the same thing for ${bad}`);
+  }
+  assert.equal(getProject(db, project.id)!.maxParallelWorkers, 1, 'a refused set must leave the cap untouched');
 });
