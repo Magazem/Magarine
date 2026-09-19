@@ -144,7 +144,7 @@ lost or the terminal that created it is gone. Every command taking
 `--project` (this includes `board`/`inbox`/`status`, which now also refuse
 an unknown project instead of silently returning an empty result -- see
 `cli.ts`'s `resolveProjectRef`/`NoSuchProjectError`) accepts either the
-project's id or its exact name; an ambiguous name (`projects.name` has no
+project's id or its exact name. `status` with NO `--project` (Batch 16) reports the daemon instead: pid, port, the page address and `N of M slots in use` (from `/health`), or `no daemon running -- start one with `magarine serve`` (`--json`: `{daemon: null | {pid, port, page, slots}}`); an ambiguous name (`projects.name` has no
 uniqueness constraint) refuses and lists every matching id rather than
 silently picking one.
 
@@ -608,7 +608,7 @@ that requests them. Every other route, including `/events`, stays behind
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/` | The browser page. No auth (see above). |
-| `GET` | `/health` | `{pid, startedAt, uptimeMs}` — never the token. |
+| `GET` | `/health` | `{pid, startedAt, uptimeMs, slots: {used, cap}}` — never the token. |
 | `GET` | `/board?project=<id>` | Same shape as `board --json`, plus `slots: { used, cap }` — `used` is every IN_PROGRESS ticket across all projects, `cap` is this daemon's `--max-parallel` (the offline `board --json` reports `cap: null`, it cannot know). |
 | `GET` | `/inbox?project=<id>` | Same shape as `inbox --json`. |
 | `GET` | `/activity?project=<id>\|ticket=<id>&all=true` | Same shape as `activity --json`. |

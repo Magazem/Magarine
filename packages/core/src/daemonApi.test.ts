@@ -404,6 +404,34 @@ test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /
 // startDaemonLoop) is the same either way, but this is the first place that
 // mechanism's result is read back over HTTP rather than via a direct file
 // read.
+// Batch 16 item 6: the route's own field is camelCase (`expectedArtifacts`),
+// so that is the name its error must use -- not the Manager's snake_case
+// `expected_artifacts`, which a caller of THIS route never wrote.
+test('POST /tickets: an unknown expectedArtifacts kind is refused naming the route\'s own camelCase field, never the Manager\'s snake_case one', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'kind-name-'));
+  try {
+    const project = JSON.parse((await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json'])).stdout);
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const res = await api(info.port, fileInfo.token, 'POST', '/tickets', {
+        project: project.id,
+        title: 't',
+        expectedArtifacts: [{ kind: 'file', path: 'a.md' }, { kind: 'nonsense' }],
+      });
+      assert.equal(res.status, 400);
+      const message = (res.json as { error: string }).error;
+      assert.match(message, /expectedArtifacts\[1\]\.kind "nonsense"/);
+      assert.ok(!message.includes('expected_artifacts'), message);
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 // Batch 16 item 4: Role B's page needs `slots` over the wire, with the cap
 // being what THIS daemon was started with, not a default.
 test('GET /board carries slots { used, cap }: cap is the daemon\'s own --max-parallel, used counts a live IN_PROGRESS ticket', async () => {

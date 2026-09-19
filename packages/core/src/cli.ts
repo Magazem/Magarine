@@ -1071,6 +1071,66 @@ async function main(): Promise<void> {
   }
 
   if (command === 'status') {
+    // Batch 16 item 6: no --project asks about the daemon, not a project.
+    // Read-only, like the rest of status: it reads daemon.json and asks the
+    // live daemon's /health for its slots; it never prints the token.
+    if (flags.project === undefined) {
+      const check = await checkDaemonFile(stateDir(flags), probeDaemonHealth);
+      if (check.status !== 'live') {
+        output(flags, { daemon: null }, 'no daemon running -- start one with `magarine serve`');
+        return;
+      }
+      const info = check.info!;
+      // What `slots` says is only ever what the daemon MEASURED and reported.
+      // No default stands in for it: a daemon started from a build older than
+      // this CLI answers /health without `slots`, and a fabricated
+      // `{used: 0}` would tell the owner nothing is running while their
+      // workers are. Absent is `null` ("not reported"), never zeros, and a
+      // failed or unreachable /health is an error, not an empty answer.
+      // The catch below is an EQUIVALENT MUTANT of `main().catch` at the
+      // bottom of this file: removing it fails nothing, because the
+      // top-level handler prints the same message and sets the same exit
+      // code (proven -- statusDaemon.test.ts's hang-up case asserts exactly
+      // that text and exit code, and still passes without this catch). It is
+      // kept deliberately, not left by accident: this is a known failure
+      // boundary -- the daemon can die between the liveness probe and this
+      // request -- and handling it here keeps that answer local if the
+      // top-level net is ever narrowed. Do not delete it as dead code.
+      let health;
+      try {
+        health = await daemonRequest<{ slots?: unknown }>(info, 'GET', '/health');
+      } catch (err) {
+        process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      if (health.status >= 400) {
+        process.stderr.write(`the daemon on 127.0.0.1:${info.port} answered /health with status ${health.status}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      const reported = health.body?.slots;
+      const slots =
+        typeof reported === 'object' && reported !== null && typeof (reported as { used?: unknown }).used === 'number'
+          ? {
+              used: (reported as { used: number }).used,
+              cap: typeof (reported as { cap?: unknown }).cap === 'number' ? (reported as { cap: number }).cap : null,
+            }
+          : null;
+      const page = `http://127.0.0.1:${info.port}/`;
+      const slotsClause =
+        slots === null
+          ? 'slots not reported (this daemon predates this CLI; restart it to see them)'
+          : slots.cap === null
+            ? `${slots.used} slots in use (ceiling not reported)`
+            : `${slots.used} of ${slots.cap} slots in use`;
+      output(
+        flags,
+        { daemon: { pid: info.pid, port: info.port, page, slots } },
+        `daemon running: pid ${info.pid} on 127.0.0.1:${info.port} -- page: ${page} -- ${slotsClause}`
+      );
+      return;
+    }
     const db = openDb(dbPath(flags));
     let projectId: string;
     try {

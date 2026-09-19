@@ -225,13 +225,17 @@ function isStringArray(value: unknown): value is string[] {
 // there is nothing for a non-file kind's path to mean, and accepting one
 // silently would just be ignored later, which this project's own standing
 // rule treats as a defect to prevent rather than tolerate quietly.
-export function validateExpectedArtifacts(value: unknown, prefix: string): string[] {
+// `fieldLabel` is what the CALLER wrote: the Manager's proposals say
+// `<command>.expected_artifacts`, but `POST /tickets` takes camelCase
+// `expectedArtifacts`, and an error naming a field the caller never wrote
+// sends them looking for it (batch 16 item 6).
+export function validateExpectedArtifacts(value: unknown, prefix: string, fieldLabel: string = `${prefix}.expected_artifacts`): string[] {
   if (!Array.isArray(value)) {
-    return [`${prefix}.expected_artifacts must be an array when present`];
+    return [`${fieldLabel} must be an array when present`];
   }
   const errors: string[] = [];
   value.forEach((entry, i) => {
-    const entryPrefix = `${prefix}.expected_artifacts[${i}]`;
+    const entryPrefix = `${fieldLabel}[${i}]`;
     if (!isPlainObject(entry) || typeof entry.kind !== 'string') {
       errors.push(`${entryPrefix} must be an object with a string "kind"`);
       return;

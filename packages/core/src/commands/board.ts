@@ -195,6 +195,12 @@ export function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; i
   return { costUsd: total, isEstimate, usedFallbackRate };
 }
 
+// One place for the machine-wide slots picture, shared by `GET /board` and
+// `GET /health` (which `status` reads) so the two can never disagree.
+export function buildSlots(db: Db, machineCap: number | null): { used: number; cap: number | null } {
+  return { used: countTicketsByStatus(db, 'IN_PROGRESS'), cap: machineCap };
+}
+
 export function buildBoard(db: Db, projectId: string, machineCap: number | null = null): BoardResult {
   const tickets = listTickets(db, projectId)
     .slice()
@@ -212,7 +218,7 @@ export function buildBoard(db: Db, projectId: string, machineCap: number | null 
     projectMaxSpendUsd: project?.maxSpendUsd ?? null,
     pauseMessage,
     pauseReason: isPaused ? project.pauseReason : null,
-    slots: { used: countTicketsByStatus(db, 'IN_PROGRESS'), cap: machineCap },
+    slots: buildSlots(db, machineCap),
     tickets: tickets.map((t) => {
       const c = ticketCostUsd(db, t.id);
       return {

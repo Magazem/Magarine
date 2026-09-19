@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Db } from './db/index.ts';
 import { buildActivity, buildTicketProgress } from './commands/activity.ts';
 import { approve, ApproveError } from './commands/approve.ts';
-import { buildBoard } from './commands/board.ts';
+import { buildBoard, buildSlots } from './commands/board.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { buildInbox } from './commands/inbox.ts';
 import { buildProjectList } from './commands/projectList.ts';
@@ -60,7 +60,14 @@ export interface DaemonApiDeps {
   token: string;
   pid: number;
   startedAt: string;
-  /** The daemon's machine-wide `--max-parallel`, reported on `GET /board` as `slots.cap`. Optional so a handler built without a scheduler in view (tests) reports null rather than a guess. */
+  // A `?? null` on this field (in `/health` and `/board`) is a default that
+  // CARRIES THE UNKNOWN FORWARD: absent here means "this handler was built
+  // without a scheduler in view", and the consumer receives `cap: null`
+  // -- never a number nobody measured. That is the opposite of a default
+  // that INVENTS a measurement (`?? { used: 0 }` would report "nothing running"
+  // where nothing was measured), which is what `status` must never do with a
+  // `/health` that lacks `slots` (see its comment in cli.ts).
+  /** The daemon's machine-wide `--max-parallel`, reported on `GET /health` and `GET /board` as `slots.cap`. Optional so a handler built without a scheduler in view (tests) reports null rather than a guess. */
   machineCap?: number;
   /** Magarine's state directory: `GET /projects` needs it for the readiness rules (batch 16 ruling 24). */
   stateDir: string;
@@ -182,7 +189,7 @@ async function handleCreateTicket(db: Db, body: unknown): Promise<RouteResult> {
     if (Array.isArray(b.expectedArtifacts) && b.expectedArtifacts.length === 0) {
       throw new ApiError(400, 'expectedArtifacts must be omitted or non-empty');
     }
-    const errors = validateExpectedArtifacts(b.expectedArtifacts, 'ticket');
+    const errors = validateExpectedArtifacts(b.expectedArtifacts, 'ticket', 'expectedArtifacts');
     if (errors.length > 0) throw new ApiError(400, errors.join('; '));
     expectedArtifacts = b.expectedArtifacts;
   }
@@ -299,7 +306,12 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
   if (method === 'GET' && path === '/health') {
     return {
       status: 200,
-      body: { pid: deps.pid, startedAt: deps.startedAt, uptimeMs: Date.now() - Date.parse(deps.startedAt) },
+      body: {
+        pid: deps.pid,
+        startedAt: deps.startedAt,
+        uptimeMs: Date.now() - Date.parse(deps.startedAt),
+        slots: buildSlots(deps.db, deps.machineCap ?? null),
+      },
     };
   }
 
