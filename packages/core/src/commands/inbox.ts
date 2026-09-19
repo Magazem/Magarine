@@ -211,7 +211,7 @@ export function describeProjectPause(
   if (isReadinessRule(pauseReason)) {
     return {
       eventType: 'project_not_ready',
-      message: describeReadinessRule(pauseReason, project.id, getProject(db, project.id)?.workspaceRoot ?? null),
+      message: describeReadinessRule(pauseReason, project.id, getProject(db, project.id)?.workspaceRoot ?? null, getProject(db, project.id)?.scopePath ?? null),
       createdAt: project.updatedAt,
     };
   }

@@ -362,7 +362,7 @@ test('SYNTHETIC: an update_scope command, driven through the real spawned pipeli
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
-  assert.equal(readScopeText(getProject(db, project.id)!), 'Assessed scope, written by the real spawned pipeline.');
+  assert.equal(readScopeText(getProject(db, project.id)!).text, 'Assessed scope, written by the real spawned pipeline.');
 });
 
 test('SYNTHETIC: a cancel_ticket + update_ticket proposal, driven through the real spawned pipeline, applies both under the same transaction', async () => {

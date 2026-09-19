@@ -4,6 +4,7 @@ import type { Db } from '../db/index.ts';
 import { checkDaemonFile, detectShutdownMode, removeDaemonFile, startDaemonLoop, writeDaemonFile, generateDaemonToken } from '../daemon.ts';
 import { createRequestHandler } from '../daemonApi.ts';
 import { probeDaemonHealth } from '../daemonClient.ts';
+import { probeScopeFile } from '../scopeProbe.ts';
 import type { AgentAdapter } from '../types.ts';
 
 // `serve`: runs the daemon until stopped (SIGINT/SIGTERM), per
@@ -52,7 +53,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
     maxParallelWorkers: opts.maxParallelWorkers,
     runTimeoutMs: opts.runTimeoutMs,
     artifactsDir: opts.artifactsDir,
-    readiness: { stateDir: opts.stateDir },
+    readiness: { stateDir: opts.stateDir, scopeProbe: probeScopeFile },
     tickIntervalMs: opts.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS,
   });
 

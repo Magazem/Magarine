@@ -894,7 +894,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
   // question, `'skip'` is the one greppable declaration that a caller does not.
   if (deps.readiness !== 'skip') {
     const projectRow = getProject(deps.db, deps.projectId);
-    const readiness = projectRow ? projectReadiness(projectRow, deps.readiness.stateDir) : null;
+    const readiness = projectRow ? projectReadiness(projectRow, deps.readiness.stateDir, deps.readiness.scopeProbe) : null;
     if (readiness) {
       pauseProjectAdapter(deps.db, deps.projectId, readiness.rule);
       return { started: [] };

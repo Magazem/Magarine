@@ -57,7 +57,9 @@ Run these from wherever `magarine` is on your PATH:
    already keep other things in. If you already have a scope document
    written, save it here now as `SCOPE.md` -- Magarine will pick it up
    automatically once the project exists. If you don't, that's fine too; the
-   interview (step 4) builds one with you.
+   interview (step 4) builds one with you. Either way, `project create` (next
+   step) tells you when it did not find a `SCOPE.md`, so you are never left
+   guessing what the Manager will read.
    ```sh
    mkdir my-first-project && cd my-first-project
    ```
@@ -98,8 +100,12 @@ Run these from wherever `magarine` is on your PATH:
    session against your subscription's limits, so the number is your choice:
    start lower if you'd rather it spend more slowly.
 
-4. **Let it interview you.** If you already saved a `SCOPE.md` in the
-   project's folder (step 1), just plan from it directly:
+4. **Let it interview you.** Write `SCOPE.md` in the project's folder BEFORE
+   you run `plan` if you have a scope to hand over -- or run `plan` without
+   one and answer the interview in Needs You; both are fine, and `plan` says
+   `scope document: <path> (not found; ...)` when it is starting from nothing.
+   If you already saved a `SCOPE.md` in the project's folder (step 1), just
+   plan from it directly:
    ```sh
    magarine plan --project <projectId>
    ```

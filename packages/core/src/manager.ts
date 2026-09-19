@@ -37,15 +37,22 @@ export class ManagerError extends Error {}
 // carried across invocations, the same "rebuild from the database (and, now,
 // its referenced files) on every call" discipline batch 0's cost ruling
 // established for the rest of the Manager's envelope (managerEnvelope.ts).
-// A project with no scope_path, or whose file cannot be read for any reason
-// (deleted by hand, permissions), reads as empty text rather than throwing --
-// an empty scope is itself a valid, expected state (interview mode).
-export function readScopeText(project: Project): string {
-  if (!project.scopePath) return '';
+// Ruling 29 (batch 16 addendum 5): a project with no scope_path, or whose
+// file does not exist (ENOENT), is `{ text: '', status: 'absent' }` -- an
+// empty scope is a valid, expected state (interview mode), and callers can
+// now TELL "absent" from "present but empty". ANY OTHER read error (a
+// permissions problem, a directory at that path, ...) THROWS: it used to be
+// swallowed into `''`, which made an unreadable document indistinguishable
+// from an empty one and had the Manager interview the owner about a scope
+// they had already written (rule 9). Nothing downstream may turn an error
+// into an empty string.
+export function readScopeText(project: Project): { text: string; status: 'present' | 'absent' } {
+  if (!project.scopePath) return { text: '', status: 'absent' };
   try {
-    return readFileSync(project.scopePath, 'utf8');
-  } catch {
-    return '';
+    return { text: readFileSync(project.scopePath, 'utf8'), status: 'present' };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { text: '', status: 'absent' };
+    throw err;
   }
 }
 
@@ -64,9 +71,9 @@ export function writeScopeText(project: Project, content: string): void {
 // "created empty when absent" (batch-11-spec.md section 2, Role R item 1):
 // called once per Manager invocation, before the envelope is built, so a
 // scope_path pointing at a file that was never actually written yet gets
-// one. Distinct from readScopeText's own try/catch, which papers over EVERY
-// read failure as empty text forever -- this is what actually creates the
-// file the owner can then find and hand-edit.
+// one. Distinct from readScopeText, which only reports an ENOENT as `absent`
+// -- this is what actually creates the file the owner can then find and
+// hand-edit.
 export function ensureScopeFile(project: Project): void {
   if (!project.scopePath) return;
   if (existsSync(project.scopePath)) return;

@@ -269,7 +269,7 @@ test('update_scope writes the scope file whole and records a scope_updated event
   const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', proposal);
 
   assert.equal(result.outcome, 'applied');
-  assert.equal(readScopeText(getProject(db, project.id)!), 'Line one.\nLine two.');
+  assert.equal(readScopeText(getProject(db, project.id)!).text, 'Line one.\nLine two.');
 
   const scopeEvent = listEventsForProject(db, project.id).find((e) => e.eventType === 'scope_updated');
   assert.ok(scopeEvent, 'expected a scope_updated event');
@@ -294,7 +294,7 @@ test('update_scope replaces the WHOLE file, not an append -- a second update_sco
     commands: [{ type: 'update_scope', content: 'Second version.' }],
   });
 
-  assert.equal(readScopeText(getProject(db, project.id)!), 'Second version.', 'the file must be fully replaced, not appended to');
+  assert.equal(readScopeText(getProject(db, project.id)!).text, 'Second version.', 'the file must be fully replaced, not appended to');
 });
 
 // --- Batch 11 item 4: cancel_ticket / update_ticket ---

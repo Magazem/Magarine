@@ -1,6 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
@@ -119,6 +119,108 @@ test('a real `serve` pauses a legacy project before any run starts, and GET /pro
 
     const projects = (await get('/projects')) as Array<{ id: string; readiness: { rule: string } | null }>;
     assert.equal(projects.find((p) => p.id === id)!.readiness?.rule, 'missing_workspace_root');
+  } finally {
+    await proc.stop(200);
+    await proc.wait();
+  }
+});
+
+// Ruling 29 (batch 16 addendum 5), through the real CLI: a missing scope
+// document is announced by `project create` and `plan` -- never silent -- and
+// only when it is absent; an unreadable one is refused / paused, not read as
+// empty.
+const NOT_FOUND = (path: string) => `scope document: ${path} (not found; write it before plan, or the Manager will start by interviewing you)`;
+
+test('project create announces a scope document that is not there yet, once, and says nothing when SCOPE.md already exists', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'announce-'));
+  const fresh = join(stateDir, 'fresh-project');
+  mkdirSync(fresh);
+  const created = await run(['project', 'create', '--name', 'fresh', '--dir', fresh, '--state-dir', stateDir]);
+  assert.equal(created.code, 0, created.stderr);
+  assert.ok(created.stdout.includes(NOT_FOUND(join(fresh, 'SCOPE.md'))), created.stdout);
+
+  const written = join(stateDir, 'written-project');
+  mkdirSync(written);
+  writeFileSync(join(written, 'SCOPE.md'), 'Build a thing.');
+  const quiet = await run(['project', 'create', '--name', 'written', '--dir', written, '--state-dir', stateDir]);
+  assert.equal(quiet.code, 0, quiet.stderr);
+  assert.ok(!quiet.stdout.includes('scope document:'), `a present file makes no noise: ${quiet.stdout}`);
+
+  // --json keeps stdout pure JSON; the line goes to stderr.
+  const jsonDir = join(stateDir, 'json-project');
+  mkdirSync(jsonDir);
+  const asJson = await run(['project', 'create', '--name', 'j', '--dir', jsonDir, '--state-dir', stateDir, '--json']);
+  assert.doesNotThrow(() => JSON.parse(asJson.stdout));
+  assert.ok(asJson.stderr.includes(NOT_FOUND(join(jsonDir, 'SCOPE.md'))), asJson.stderr);
+});
+
+test('plan prints the same line when SCOPE.md is absent, then proceeds (it does not refuse); a present file, or --mission, prints nothing', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'plan-'));
+  const dir = join(stateDir, 'proj');
+  mkdirSync(dir);
+  const id = JSON.parse((await run(['project', 'create', '--name', 'p', '--dir', dir, '--state-dir', stateDir, '--json'])).stdout).id as string;
+
+  const first = await run(['plan', '--project', id, '--state-dir', stateDir]);
+  assert.equal(first.code, 0, first.stderr);
+  assert.ok(first.stdout.includes(NOT_FOUND(join(dir, 'SCOPE.md'))), first.stdout);
+  assert.match(first.stdout, /Created manager ticket/, 'plan proceeds after announcing');
+  assert.ok(first.stdout.indexOf('scope document:') < first.stdout.indexOf('Created manager ticket'), 'the line comes first');
+
+  // planProject creates the empty file, so the SECOND plan finds it present.
+  const second = await run(['plan', '--project', id, '--state-dir', stateDir]);
+  assert.ok(!second.stdout.includes('scope document:'), second.stdout);
+
+  const seeded = join(stateDir, 'seeded');
+  mkdirSync(seeded);
+  const seededId = JSON.parse((await run(['project', 'create', '--name', 's', '--dir', seeded, '--state-dir', stateDir, '--json'])).stdout).id as string;
+  const withMission = await run(['plan', '--project', seededId, '--mission', 'Build a thing.', '--state-dir', stateDir]);
+  assert.equal(withMission.code, 0, withMission.stderr);
+  assert.ok(!withMission.stdout.includes('scope document:'), '--mission seeds the file, so nothing is missing');
+});
+
+test('project create refuses a directory whose SCOPE.md is unreadable (a directory at that path), naming the path -- never treating it as empty', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'unreadable-create-'));
+  const dir = join(stateDir, 'proj');
+  mkdirSync(join(dir, 'SCOPE.md'), { recursive: true });
+  const res = await run(['project', 'create', '--name', 'p', '--dir', dir, '--state-dir', stateDir]);
+  assert.notEqual(res.code, 0);
+  assert.ok(res.stderr.includes(join(dir, 'SCOPE.md')), res.stderr);
+  assert.match(res.stderr, /cannot be read/);
+});
+
+test('a real `serve` pauses a project whose SCOPE.md is unreadable, BEFORE any run, with reason unreadable_scope_file', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'unreadable-serve-'));
+  const dir = join(stateDir, 'proj');
+  mkdirSync(dir);
+  const id = JSON.parse((await run(['project', 'create', '--name', 'p', '--dir', dir, '--state-dir', stateDir, '--json'])).stdout).id as string;
+  const ticketId = JSON.parse((await run(['ticket', 'add', '--project', id, '--title', 't', '--state-dir', stateDir, '--json'])).stdout).id as string;
+  mkdirSync(join(dir, 'SCOPE.md')); // the document goes wrong after the project exists
+
+  const proc = spawnManaged({
+    executable: process.execPath,
+    args: [cliPath, 'serve', '--state-dir', stateDir, '--adapter', 'fake', '--tick-interval', '0.05', '--json'],
+  });
+  let stdout = '';
+  proc.onStdout((c) => (stdout += c));
+  try {
+    const deadline = Date.now() + 10_000;
+    let port = 0;
+    while (Date.now() < deadline && !port) {
+      const line = stdout.split('\n').find((l) => l.trim().startsWith('{'));
+      if (line) port = (JSON.parse(line) as { port: number }).port;
+      else await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(port, 'serve never printed its listening line');
+    const token = (JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo).token;
+    let board: any;
+    while (Date.now() < deadline) {
+      board = await (await fetch(`http://127.0.0.1:${port}/board?project=${id}`, { headers: { authorization: `Bearer ${token}` } })).json();
+      if (board.pauseReason) break;
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    assert.equal(board.pauseReason, 'unreadable_scope_file');
+    assert.ok(board.pauseMessage.includes(join(dir, 'SCOPE.md')), board.pauseMessage);
+    assert.equal(board.tickets.find((t: any) => t.id === ticketId).status, 'READY', 'no run started');
   } finally {
     await proc.stop(200);
     await proc.wait();

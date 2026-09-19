@@ -189,7 +189,7 @@ export function applyManagerProposal(
           break;
         case 'update_scope': {
           guard();
-          const before = readScopeText(project);
+          const before = readScopeText(project).text;
           writeScopeText(project, c.content);
           const scopePolicy = classify('scope_updated');
           insertEvent(db, {

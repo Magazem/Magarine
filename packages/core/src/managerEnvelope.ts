@@ -73,6 +73,10 @@ export interface ManagerBriefing {
   recentFailures: ManagerFailureEntry[];
   /** Batch 11 item 1: the CURRENT scope document, read fresh off disk on every invocation (manager.ts's readScopeText) -- empty string for a project with no scope_path set, or whose file is genuinely empty. */
   scopeText: string;
+  /** Ruling 29 (batch 16 addendum 5): whether that document EXISTS -- `absent` is not the same as present-and-empty, and the brief says so in one sentence instead of presenting an empty document. */
+  scopeStatus: 'present' | 'absent';
+  /** The scope document's path, for that sentence; null when the project has none. */
+  scopePath: string | null;
   /** Batch 11 item 3. */
   conversation: ManagerConversationEntry[];
   /** Batch 11 item 2: true when the scope is empty OR the board has no work tickets yet (the manager ticket about to run is always on the board itself by this point -- see buildBoard's own doc comment -- so this filters to `kind === 'work'`). Drives renderManagerBrief's interview-mode framing; not itself a hard gate on what the Manager may do (it may still return questions only or propose, per its own judgement) -- the prompt frames the two outcomes, it does not enforce one. */
@@ -161,7 +165,11 @@ function buildBoard(db: Db, projectId: string): ManagerBoardEntry[] {
 // assert on exactly these fields without parsing prose.
 export function buildManagerBriefing(db: Db, project: Project, ticket: Ticket): ManagerBriefing {
   const board = buildBoard(db, project.id);
-  const scopeText = readScopeText(project);
+  // Throws on an unreadable file (ruling 29): the scheduler's readiness check
+  // pauses such a project before any Manager run is built, so this is defence
+  // in depth -- an error must never become an empty document.
+  const scope = readScopeText(project);
+  const scopeText = scope.text;
   return {
     projectBrief: project.brief ?? '',
     // The mission is the ticket's own description -- set once, at `plan`
@@ -174,6 +182,8 @@ export function buildManagerBriefing(db: Db, project: Project, ticket: Ticket): 
     decisionLog: buildDecisionLog(db, project.id),
     recentFailures: buildRecentFailures(db, project.id),
     scopeText,
+    scopeStatus: scope.status,
+    scopePath: project.scopePath,
     conversation: buildConversation(db, project.id),
     isFreshProject: scopeText.trim().length === 0 || board.filter((b) => b.kind === 'work').length === 0,
   };
@@ -249,7 +259,9 @@ export function renderManagerBrief(briefing: ManagerBriefing): string {
   sections.push(
     briefing.scopeText.trim().length > 0
       ? `Scope document:\n${briefing.scopeText}`
-      : 'Scope document: (empty)'
+      : briefing.scopeStatus === 'absent' && briefing.scopePath
+        ? `Scope document: the scope document at ${briefing.scopePath} does not exist yet.`
+        : 'Scope document: (empty)'
   );
 
   sections.push(

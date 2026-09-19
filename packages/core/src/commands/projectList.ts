@@ -1,5 +1,5 @@
 import type { Db } from '../db/index.ts';
-import { projectReadiness, type Readiness } from '../readiness.ts';
+import { projectReadiness, type Readiness, type ScopeProbe } from '../readiness.ts';
 import { listProjects, listTickets } from '../store.ts';
 import type { TicketStatus } from '../types.ts';
 import { formatSpend, projectSpendUsd } from './board.ts';
@@ -22,13 +22,16 @@ export interface ProjectListEntry {
   totalTickets: number;
   /** Batch 16 ruling 24: the first failing readiness rule and its fix, or null when the project is ready to run. `project list` marks a non-null row `needs --dir` so the owner sees a legacy project before a Manager run finds it. */
   readiness: { rule: Readiness['rule']; fix: string } | null;
+  /** Ruling 29: where the scope document is and how it stands -- `absent` also covers a project with no scope path at all (path null). `project list` marks a ready row whose document is absent `no scope yet`. */
+  scope: { path: string | null; status: 'present' | 'absent' | 'unreadable' };
 }
 
-export function buildProjectList(db: Db, stateDir: string): ProjectListEntry[] {
+export function buildProjectList(db: Db, stateDir: string, probe: ScopeProbe): ProjectListEntry[] {
   return listProjects(db).map((project) => {
     const tickets = listTickets(db, project.id);
     const spend = projectSpendUsd(db, tickets);
-    const readiness = projectReadiness(project, stateDir);
+    const readiness = projectReadiness(project, stateDir, probe);
+    const scope = { path: project.scopePath, status: project.scopePath ? probe(project.scopePath) : ('absent' as const) };
     const ticketCountsByStatus: Partial<Record<TicketStatus, number>> = {};
     for (const ticket of tickets) {
       ticketCountsByStatus[ticket.status] = (ticketCountsByStatus[ticket.status] ?? 0) + 1;
@@ -43,6 +46,7 @@ export function buildProjectList(db: Db, stateDir: string): ProjectListEntry[] {
       ticketCountsByStatus,
       totalTickets: tickets.length,
       readiness: readiness ? { rule: readiness.rule, fix: readiness.fix } : null,
+      scope,
     };
   });
 }
@@ -63,7 +67,8 @@ export function formatProjectList(entries: ProjectListEntry[]): string {
               .join(', ');
       const columns = [entry.id, entry.name, `model ${entry.defaultModel}`, `${spend} (${cap})`, counts];
       // One word per unready row (ruling 24 point 3); the fix itself is named by `--json`'s readiness.fix and by the pause line.
-      if (entry.readiness) columns.push('needs --dir');
+      if (entry.readiness) columns.push(entry.readiness.rule === 'unreadable_scope_file' ? 'scope unreadable' : 'needs --dir');
+      else if (entry.scope.status === 'absent') columns.push('no scope yet');
       return columns.join('\t');
     })
     .join('\n');

@@ -1,6 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import { buildManagerBriefing, buildManagerEnvelope, renderManagerBrief, renderModelGuidance } from './managerEnvelope.ts';
@@ -423,4 +424,49 @@ test('the conversation interleaves discuss events and manager_reply/manager_asse
   assert.match(rendered, /Owner: First owner message\./);
   assert.match(rendered, /Manager: First manager reply\./);
   assert.match(rendered, /Owner: Second owner message\./);
+});
+
+// Ruling 29 (batch 16 addendum 5): the brief says, in one sentence, that the
+// scope document does not exist yet -- instead of presenting an absent file as
+// an empty document -- and only when it is absent. A present-but-empty file
+// keeps `(empty)`; a file with content shows the content; an unreadable path
+// throws rather than being rendered as either.
+test('the Manager brief says "the scope document at <path> does not exist yet" ONLY when the file is absent', () => {
+  const db = openDb(':memory:');
+  const dir = mkdtempSync(join(tmpdir(), 'magarine-envelope-scope-'));
+  try {
+    const path = join(dir, 'SCOPE.md');
+    const project = createProject(db, { name: 'p', scopePath: path });
+    const ticket = makeManagerTicket(db, project.id, 'mission');
+
+    const absent = renderManagerBrief(buildManagerBriefing(db, project, ticket));
+    assert.ok(absent.includes(`the scope document at ${path} does not exist yet.`), absent);
+    assert.ok(!absent.includes('Scope document: (empty)'), 'an absent document is not presented as an empty one');
+
+    writeFileSync(path, '');
+    const empty = renderManagerBrief(buildManagerBriefing(db, project, ticket));
+    assert.ok(empty.includes('Scope document: (empty)'));
+    assert.ok(!empty.includes('does not exist yet'));
+
+    writeFileSync(path, 'Build a thing.');
+    const present = renderManagerBrief(buildManagerBriefing(db, project, ticket));
+    assert.ok(present.includes('Scope document:\nBuild a thing.'));
+    assert.ok(!present.includes('does not exist yet'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an UNREADABLE scope path makes the briefing throw -- it is never rendered as an empty document', () => {
+  const db = openDb(':memory:');
+  const dir = mkdtempSync(join(tmpdir(), 'magarine-envelope-scope-'));
+  try {
+    const dirAtPath = join(dir, 'SCOPE.md');
+    mkdirSync(dirAtPath);
+    const project = createProject(db, { name: 'p', scopePath: dirAtPath });
+    const ticket = makeManagerTicket(db, project.id, 'mission');
+    assert.throws(() => buildManagerBriefing(db, project, ticket));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

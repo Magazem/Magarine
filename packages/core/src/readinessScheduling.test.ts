@@ -27,7 +27,7 @@ test.after(() => {
 });
 
 function deps(db: ReturnType<typeof openDb>, projectId: string, adapter: FakeAdapter) {
-  return { db, adapter, maxParallelWorkers: 2, projectId, readiness: { stateDir }, artifactsDir: join(stateDir, 'artifacts') };
+  return { db, adapter, maxParallelWorkers: 2, projectId, readiness: { stateDir, scopeProbe: () => 'present' as const }, artifactsDir: join(stateDir, 'artifacts') };
 }
 
 test('a scope-less legacy project pauses BEFORE any run starts -- manager or worker -- with a pause reason naming the command', async () => {
@@ -124,6 +124,43 @@ test("'skip' declares the caller is not asking: a legacy project is NOT paused a
   const project = createProject(db, { name: 'legacy' }); // would pause under { stateDir }
   const work = createTicket(db, { projectId: project.id, title: 'Work', workspaceType: 'NONE' });
   const result = await tick({ ...deps(db, project.id, new FakeAdapter()), readiness: 'skip' });
+  await Promise.all(result.started.map((s) => s.done));
+  assert.deepEqual(result.started.map((s) => s.ticketId), [work.id]);
+  assert.equal(getProject(db, project.id)!.adapterPausedAt, null);
+});
+
+// Ruling 29 (batch 16 addendum 5): a scope document that is ABSENT does not
+// pause a project (the talk-first start is deliberate); one that is
+// UNREADABLE does, at the same point of use, naming the path and the fix.
+function withProbe(base: ReturnType<typeof deps>, scopeProbe: () => 'present' | 'absent' | 'unreadable') {
+  return { ...base, readiness: { stateDir, scopeProbe } };
+}
+
+test('an UNREADABLE scope file pauses the project BEFORE any run, with a reason naming the path and the resume command', async () => {
+  const db = openDb(':memory:');
+  const scopePath = join(realDir, 'SCOPE.md');
+  const project = createProject(db, { name: 'unreadable', workspaceRoot: realDir, scopePath });
+  const manager = createTicket(db, { projectId: project.id, title: 'Plan', kind: 'manager', workspaceType: 'NONE' });
+  const work = createTicket(db, { projectId: project.id, title: 'Work', workspaceType: 'NONE' });
+
+  const result = await tick(withProbe(deps(db, project.id, new FakeAdapter()), () => 'unreadable'));
+
+  assert.deepEqual(result.started, [], 'nothing may start');
+  assert.deepEqual(listRunsForTicket(db, manager.id), []);
+  assert.deepEqual(listRunsForTicket(db, work.id), []);
+  assert.equal(getProject(db, project.id)!.pauseReason, 'unreadable_scope_file');
+  const board = buildBoard(db, project.id);
+  assert.equal(board.pauseReason, 'unreadable_scope_file');
+  assert.ok(board.pauseMessage!.includes(scopePath), `names the path: ${board.pauseMessage}`);
+  assert.ok(board.pauseMessage!.includes(`magarine resume --project ${project.id}`), board.pauseMessage!);
+  assert.match(buildInbox(db, project.id)[0]!.message, /cannot be read/);
+});
+
+test('an ABSENT scope file does NOT pause the project: its ticket runs (plan does not refuse a talk-first start)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'absent', workspaceRoot: realDir, scopePath: join(realDir, 'SCOPE.md') });
+  const work = createTicket(db, { projectId: project.id, title: 'Work', workspaceType: 'NONE' });
+  const result = await tick(withProbe(deps(db, project.id, new FakeAdapter()), () => 'absent'));
   await Promise.all(result.started.map((s) => s.done));
   assert.deepEqual(result.started.map((s) => s.ticketId), [work.id]);
   assert.equal(getProject(db, project.id)!.adapterPausedAt, null);

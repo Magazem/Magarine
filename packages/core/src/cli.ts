@@ -46,6 +46,7 @@ import {
   resolveStateDir,
 } from './paths.ts';
 import { projectReadiness } from './readiness.ts';
+import { probeScopeFile, scopeAnnouncement } from './scopeProbe.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
@@ -600,7 +601,7 @@ async function main(): Promise<void> {
     // Batch 16 ruling 24: ruling 22's check is now the shared
     // `projectReadiness`, asked about the row this command is about to write
     // -- the same function the scheduler asks, so the two cannot drift.
-    const notReady = projectReadiness({ workspaceRoot: dir, scopePath: join(dir, 'SCOPE.md') }, stateDir(flags));
+    const notReady = projectReadiness({ workspaceRoot: dir, scopePath: join(dir, 'SCOPE.md') }, stateDir(flags), probeScopeFile);
     if (notReady) {
       process.stderr.write(`${notReady.message}\n`);
       process.exitCode = 1;
@@ -619,7 +620,13 @@ async function main(): Promise<void> {
       managerModel: typeof flags['manager-model'] === 'string' ? flags['manager-model'] : null,
       scopePath: join(dir, 'SCOPE.md'),
     });
-    output(flags, project, `Created project ${project.id} (${project.name}) in ${dir}`);
+    // Ruling 29: never silent about a scope document that is not there yet.
+    // In --json mode stdout stays pure JSON, so the line goes to stderr.
+    const scopeLine = scopeAnnouncement(project.scopePath, probeScopeFile);
+    output(flags, project, `Created project ${project.id} (${project.name}) in ${dir}${scopeLine && !flags.json ? `
+${scopeLine}` : ''}`);
+    if (scopeLine && flags.json) process.stderr.write(`${scopeLine}
+`);
     return;
   }
 
@@ -639,7 +646,7 @@ async function main(): Promise<void> {
     let resolvedDir: string | undefined;
     if (typeof flags.dir === 'string') {
       resolvedDir = resolve(flags.dir);
-      const notReady = projectReadiness({ workspaceRoot: resolvedDir, scopePath: join(resolvedDir, 'SCOPE.md') }, stateDir(flags));
+      const notReady = projectReadiness({ workspaceRoot: resolvedDir, scopePath: join(resolvedDir, 'SCOPE.md') }, stateDir(flags), probeScopeFile);
       if (notReady) {
         process.stderr.write(`${notReady.message}\n`);
         process.exitCode = 1;
@@ -694,7 +701,7 @@ async function main(): Promise<void> {
     // id. Read-only, like board/inbox/status/activity: never routed to a
     // live daemon.
     const db = openDb(dbPath(flags));
-    const entries = buildProjectList(db, stateDir(flags));
+    const entries = buildProjectList(db, stateDir(flags), probeScopeFile);
     output(flags, entries, formatProjectList(entries));
     return;
   }
@@ -747,6 +754,15 @@ async function main(): Promise<void> {
     }
     const mission = String(flags.mission ?? '');
     const budgetUsd = typeof flags.budget === 'string' ? Number(flags.budget) : undefined;
+    // Ruling 29: `plan` does not refuse a missing scope document (the
+    // talk-first start is deliberate) but says so BEFORE the Manager is
+    // queued -- probed here, ahead of planProject's own ensureScopeFile, which
+    // creates the empty file. Skipped with --mission: that seeds the file.
+    if (mission.trim().length === 0) {
+      const scopeLine = scopeAnnouncement(getProject(db, projectId)?.scopePath ?? null, probeScopeFile);
+      if (scopeLine) (flags.json ? process.stderr : process.stdout).write(`${scopeLine}
+`);
+    }
     const live = await liveDaemonFor(flags);
     if (live) {
       // Batch 11 part 2, item 1 (Strategist ruling, settled): one function,
@@ -977,7 +993,7 @@ async function main(): Promise<void> {
       maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
-      readiness: { stateDir: stateDir(flags) },
+      readiness: { stateDir: stateDir(flags), scopeProbe: probeScopeFile },
     });
     output(flags, result, `Started ${result.started.length} run(s).`);
     return;
@@ -1017,7 +1033,7 @@ async function main(): Promise<void> {
       maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
-      readiness: { stateDir: stateDir(flags) },
+      readiness: { stateDir: stateDir(flags), scopeProbe: probeScopeFile },
     });
     output(flags, { idle: true }, 'Idle: no more runnable tickets.');
     return;

@@ -134,7 +134,19 @@ board and inbox say so with the fix, `magarine project set --project <id> --dir
 create`/`project set --dir`'s ruling 22 refusal calls the same function.
 Nothing is healed: the product never picks a directory for a project. The
 `update_scope` validator error in `proposal.ts` stays as defence in depth, now
-unreachable in practice. `project list` marks such rows `needs --dir`, and
+unreachable in practice. **Scope document (Batch 16, ruling 29):** a missing
+`SCOPE.md` is NOT a readiness failure — `plan` does not refuse, because the
+talk-first interview is a deliberate start — but it is never silent:
+`project create` and `plan` print `scope document: <path> (not found; write it
+before plan, or the Manager will start by interviewing you)`, `project list`
+marks the row `no scope yet` (`--json`: `scope: {path, status}`), and the
+Manager's brief says the document "does not exist yet" rather than showing an
+empty one. A scope document that EXISTS but cannot be read (permissions, or a
+directory at that path) is a fourth readiness rule, `unreadable_scope_file`:
+the project pauses with the path named, and after fixing the file the owner runs
+`magarine resume --project <id>`. `readScopeText` returns `{text, status}` and
+throws on any error that is not ENOENT; `projectReadiness` stays pure, taking the
+filesystem as an injected `probe`. `project list` marks such rows `needs --dir`, and
 `--json` carries `readiness: null | { rule, fix }`.
 
 `project list` (Batch 10, Role Q) prints every project in this state

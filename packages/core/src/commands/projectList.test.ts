@@ -16,7 +16,7 @@ test('buildProjectList returns one entry per project, with id/name/model carried
   createProject(db, { name: 'Alpha', defaultModel: 'claude-opus-5' });
   createProject(db, { name: 'Beta' });
 
-  const entries = buildProjectList(db, STATE_DIR);
+  const entries = buildProjectList(db, STATE_DIR, () => 'present');
 
   assert.equal(entries.length, 2);
   const alpha = entries.find((e) => e.name === 'Alpha')!;
@@ -26,7 +26,7 @@ test('buildProjectList returns one entry per project, with id/name/model carried
 
 test('buildProjectList returns an empty array for a database with no projects, not an error', () => {
   const db = openDb(':memory:');
-  assert.deepEqual(buildProjectList(db, STATE_DIR), []);
+  assert.deepEqual(buildProjectList(db, STATE_DIR, () => 'present'), []);
 });
 
 test('buildProjectList groups ticket counts by status, counting only statuses that actually occur', () => {
@@ -35,7 +35,7 @@ test('buildProjectList groups ticket counts by status, counting only statuses th
   createTicket(db, { projectId: project.id, title: 'T1' }); // OPEN by default
   createTicket(db, { projectId: project.id, title: 'T2' });
 
-  const entries = buildProjectList(db, STATE_DIR);
+  const entries = buildProjectList(db, STATE_DIR, () => 'present');
   const entry = entries[0];
 
   assert.equal(entry.totalTickets, 2);
@@ -50,7 +50,7 @@ test('buildProjectList reports project spend and its cap the same way board.ts d
   const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake' });
   setRunUsage(db, run.id, { total_cost_usd: 1.5 });
 
-  const entries = buildProjectList(db, STATE_DIR);
+  const entries = buildProjectList(db, STATE_DIR, () => 'present');
   const entry = entries[0];
 
   assert.equal(entry.spendUsd, 1.5);
@@ -73,6 +73,8 @@ test('formatProjectList prints one tab-separated line per project with id, name,
       maxSpendUsd: 10,
       ticketCountsByStatus: { OPEN: 2, DONE: 1 },
       totalTickets: 3,
+      readiness: null,
+      scope: { path: "/p/SCOPE.md", status: "present" as const },
     },
   ]);
   assert.equal(lines, 'proj_abc\tAlpha\tmodel claude-sonnet-5\t$1.50 (cap $10.00)\tOPEN 2, DONE 1');
@@ -89,6 +91,8 @@ test('formatProjectList shows "no cap set" and "no tickets" for a fresh project'
       maxSpendUsd: null,
       ticketCountsByStatus: {},
       totalTickets: 0,
+      readiness: null,
+      scope: { path: '/p/SCOPE.md', status: 'present' as const },
     },
   ]);
   assert.equal(lines, 'proj_xyz\tFresh\tmodel claude-sonnet-5\t$0.00 (no cap set)\tno tickets');
@@ -102,7 +106,7 @@ test('buildProjectList carries readiness: null for a ready project and { rule, f
   const ready = createProject(db, { name: 'Ready', workspaceRoot: '/work/app', scopePath: '/work/app/SCOPE.md' });
   const legacy = createProject(db, { name: 'Legacy' }); // no workspace_root, no scope_path
 
-  const entries = buildProjectList(db, STATE_DIR);
+  const entries = buildProjectList(db, STATE_DIR, () => 'present');
 
   assert.equal(entries.find((e) => e.id === ready.id)!.readiness, null);
   assert.deepEqual(entries.find((e) => e.id === legacy.id)!.readiness, {
@@ -112,4 +116,27 @@ test('buildProjectList carries readiness: null for a ready project and { rule, f
   const lines = formatProjectList(entries).split('\n');
   assert.ok(!lines.find((l) => l.includes(ready.id))!.includes('needs --dir'));
   assert.ok(lines.find((l) => l.includes(legacy.id))!.endsWith('needs --dir'));
+});
+
+// Ruling 29 (batch 16 addendum 5): `project list` marks a ready row whose scope
+// document does not exist `no scope yet`, and `--json` carries
+// `scope: { path, status }`. Present rows are unmarked; an unreadable row is a
+// readiness failure and reads `scope unreadable`.
+test('buildProjectList/formatProjectList mark ONLY absent-scope rows "no scope yet", and carry scope { path, status }', () => {
+  const db = openDb(':memory:');
+  const present = createProject(db, { name: 'has-scope', workspaceRoot: '/work/a', scopePath: '/work/a/SCOPE.md' });
+  const absent = createProject(db, { name: 'no-scope-yet', workspaceRoot: '/work/b', scopePath: '/work/b/SCOPE.md' });
+  const broken = createProject(db, { name: 'broken-scope', workspaceRoot: '/work/c', scopePath: '/work/c/SCOPE.md' });
+  const probe = (p: string) => (p === '/work/a/SCOPE.md' ? 'present' : p === '/work/b/SCOPE.md' ? 'absent' : 'unreadable') as 'present' | 'absent' | 'unreadable';
+
+  const entries = buildProjectList(db, STATE_DIR, probe);
+
+  assert.deepEqual(entries.find((e) => e.id === present.id)!.scope, { path: '/work/a/SCOPE.md', status: 'present' });
+  assert.deepEqual(entries.find((e) => e.id === absent.id)!.scope, { path: '/work/b/SCOPE.md', status: 'absent' });
+  assert.equal(entries.find((e) => e.id === absent.id)!.readiness, null, 'an absent scope is not a readiness failure');
+  assert.equal(entries.find((e) => e.id === broken.id)!.readiness?.rule, 'unreadable_scope_file');
+  const lines = formatProjectList(entries).split('\n');
+  assert.ok(!/no scope yet|scope unreadable|needs --dir/.test(lines.find((l) => l.includes(present.id))!), 'a present scope is unmarked');
+  assert.ok(lines.find((l) => l.includes(absent.id))!.endsWith('no scope yet'));
+  assert.ok(lines.find((l) => l.includes(broken.id))!.endsWith('scope unreadable'));
 });

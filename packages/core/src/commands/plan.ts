@@ -27,7 +27,7 @@ export function planWithMission(db: Db, projectId: string, input: { mission?: st
 
   const mission = (input.mission ?? '').trim();
   if (mission.length > 0) {
-    const existingScope = readScopeText(project).trim();
+    const existingScope = readScopeText(project).text.trim();
     if (existingScope.length > 0) {
       throw new PlanError(
         'this project already has a scope: edit SCOPE.md directly, or use `discuss --message` to add to the conversation instead of re-seeding it with --mission.'

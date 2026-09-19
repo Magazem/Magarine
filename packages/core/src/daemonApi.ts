@@ -19,6 +19,7 @@ import { discussProject, ManagerError, readScopeText } from './manager.ts';
 import { buildConversation } from './commands/conversation.ts';
 import { planWithMission } from './commands/plan.ts';
 import { validateExpectedArtifacts } from './proposal.ts';
+import { probeScopeFile } from './scopeProbe.ts';
 import {
   addDependency,
   createTicket,
@@ -347,7 +348,7 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
   // same as /board /inbox /activity above: no new write site, a thin
   // wrapper over commands/projectList.ts's existing buildProjectList.
   if (method === 'GET' && path === '/projects') {
-    return { status: 200, body: buildProjectList(deps.db, deps.stateDir) };
+    return { status: 200, body: buildProjectList(deps.db, deps.stateDir, probeScopeFile) };
   }
 
   const scopeMatch = /^\/projects\/([^/]+)\/scope$/.exec(path);
@@ -356,10 +357,12 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     const project = getProject(deps.db, projectId);
     if (!project) throw new ApiError(404, `no such project: ${projectId}`);
     // Batch 11 item 3: the conversation panel shows the scope file as plain
-    // text. readScopeText (manager.ts, Role R's file, called read-only here
-    // -- not edited) already treats "no scope_path" and "file unreadable"
-    // both as empty text, so this route needs no separate not-found case.
-    return { status: 200, body: { scopeText: readScopeText(project) } };
+    // text. Ruling 29: `status` says whether the file exists, so the panel
+    // can tell an absent document from an empty one; an UNREADABLE file
+    // throws out of readScopeText and reaches the caller as a 400 naming the
+    // error, never as a blank document.
+    const scope = readScopeText(project);
+    return { status: 200, body: { scopeText: scope.text, status: scope.status } };
   }
 
   const conversationMatch = /^\/projects\/([^/]+)\/conversation$/.exec(path);

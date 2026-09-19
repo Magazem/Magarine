@@ -1,6 +1,6 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import {
@@ -21,13 +21,13 @@ after(testRoot.cleanup);
 test('readScopeText returns empty text for a project with no scope_path set, without touching the filesystem', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });
-  assert.equal(readScopeText(project), '');
+  assert.equal(readScopeText(project).text, '');
 });
 
 test('readScopeText returns empty text when scope_path is set but the file does not exist yet, rather than throwing', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', scopePath: join(testRoot.root, 'never-written', 'SCOPE.md') });
-  assert.equal(readScopeText(project), '');
+  assert.equal(readScopeText(project).text, '');
 });
 
 test('writeScopeText writes the whole file, creating its parent directory, and readScopeText reads it straight back', () => {
@@ -37,11 +37,11 @@ test('writeScopeText writes the whole file, creating its parent directory, and r
 
   writeScopeText(project, 'First draft of the scope.');
   assert.equal(readFileSync(scopePath, 'utf8'), 'First draft of the scope.');
-  assert.equal(readScopeText(project), 'First draft of the scope.');
+  assert.equal(readScopeText(project).text, 'First draft of the scope.');
 
   // Whole-file replacement, not an append/patch.
   writeScopeText(project, 'Replaced entirely.');
-  assert.equal(readScopeText(project), 'Replaced entirely.');
+  assert.equal(readScopeText(project).text, 'Replaced entirely.');
 });
 
 test('writeScopeText refuses to write when the project has no scope_path set', () => {
@@ -62,7 +62,7 @@ test('ensureScopeFile creates an empty file when scope_path is set but absent, a
 
   writeScopeText(project, 'owner wrote something');
   ensureScopeFile(project); // must not clobber existing content
-  assert.equal(readScopeText(project), 'owner wrote something');
+  assert.equal(readScopeText(project).text, 'owner wrote something');
 });
 
 test('ensureScopeFile is a no-op when the project has no scope_path set', () => {
@@ -158,4 +158,27 @@ test('isManagerDailyCapReached scopes the count to the given project only', () =
   for (let i = 0; i < 5; i++) makeManagerRun(db, projectA.id, now.toISOString());
 
   assert.equal(isManagerDailyCapReached(db, projectB.id, now, 1), false, 'another project\'s invocations must not count');
+});
+
+// Ruling 29 (batch 16 addendum 5): readScopeText tells a document that is
+// absent from one that is present-and-empty, and NEVER turns an error into an
+// empty string -- an unreadable scope used to read as empty and the Manager
+// interviewed the owner about a document they had already written.
+test('readScopeText reports status: absent for no scope_path and for ENOENT, present for a real file (even an empty one)', () => {
+  const db = openDb(':memory:');
+  assert.deepEqual(readScopeText(createProject(db, { name: 'no-path' })), { text: '', status: 'absent' });
+  const missing = createProject(db, { name: 'missing', scopePath: join(testRoot.root, 'ruling29', 'nope', 'SCOPE.md') });
+  assert.deepEqual(readScopeText(missing), { text: '', status: 'absent' });
+  mkdirSync(join(testRoot.root, 'ruling29'), { recursive: true });
+  const emptyPath = join(testRoot.root, 'ruling29', 'EMPTY.md');
+  writeFileSync(emptyPath, '');
+  assert.deepEqual(readScopeText(createProject(db, { name: 'empty', scopePath: emptyPath })), { text: '', status: 'present' });
+});
+
+test('readScopeText THROWS on any error that is not ENOENT (a directory at the scope path), never returning an empty string', () => {
+  const db = openDb(':memory:');
+  const dirAtPath = join(testRoot.root, 'ruling29-dir', 'SCOPE.md');
+  mkdirSync(dirAtPath, { recursive: true });
+  const project = createProject(db, { name: 'dir-at-path', scopePath: dirAtPath });
+  assert.throws(() => readScopeText(project), (err: NodeJS.ErrnoException) => err.code === 'EISDIR');
 });
