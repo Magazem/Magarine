@@ -65,3 +65,19 @@ Things only the owner can do, collected so the checkpoint is one sitting:
 ## 7. Not blocked
 
 Role A on item 1, Role B on ruling 26. Nothing in this addendum changes their work.
+
+## 8. Clarified by the owner the same day, and rulings 27 and 28 amended
+
+The owner's second message, verbatim through the Liaison: "okay i can keep testing, batch 18 halfpoint is batch 18 without going after my own design, a beta running version is probably a working version after batch 18, if it had some bugs undiscovered it is fine but at least it runs the intended workflow of this whole project."
+
+Three things pinned, one premise reversed:
+
+1. **The checkpoint is all of the old batch 18 except the skin.** Section 1's inference about the numbering was right; the fraction was mine and it was wrong. In the current numbering the checkpoint is **all of batch 19 without the skin: per-ticket discussion, tags, shortcuts, persisted layout.** Not the first half. Ruling 27's route stands with that one correction, and "beta" and "checkpoint" collapse into one named moment.
+2. **The beta bar is the owner's, in their words:** a working version that "runs the intended workflow of this whole project", undiscovered bugs accepted. That is an end-to-end bar, not a bug count. Stated as the beta's closing condition so it can be run: one scope document in; the Manager interviews or plans; tickets with dependencies; workers running in parallel under a cap; a Needs You item answered from the page; artefacts delivered and verified; the whole thing watched on the page, in the window the host provides. Performed by the owner and by the stranger of ruling 28, recorded in `docs/evidence/beta/RESULT.md`.
+3. **The owner is available.** Ruling 28 was written on the premise that they were stepping back; they are not. Amended: **the owner's walk returns at every close as an invitation, never a gate.** Offered with the exact steps, through the Liaison, when a batch's other conditions are met; if they walk, their findings are ruled before close; if they do not answer, the batch closes on the two walks of ruling 28, and `RESULT.md` says which it was. A batch is never blocked waiting on them and never closed pretending our walks are theirs.
+
+The two substitute walks stay in every case. The cold walk is cheap and the stranger's walk is the only new-user evidence the team can manufacture; the owner's walk, when it happens, is better evidence than either and does not replace them.
+
+**Real runs:** the permission question was already sent when this arrived. Both readings are open: "i can keep testing" may mean the owner will make real runs themselves, or may not. The Orchestrator takes the owner's answer as given and does not infer one. Until then, section 5 holds.
+
+**Section 6's checkpoint list** becomes a running list offered at each close, not held for one sitting.
