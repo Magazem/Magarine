@@ -68,10 +68,10 @@ Verification of every acceptance on a still tree; the batch walk written to `doc
 ## 3. Closing condition, to be run, not described
 
 1. Suite green, run as `pnpm test` from `packages/core`, with every new test mutation-checked and the mutations listed.
-2. The owner's four legacy projects: `project list` shows `needs --dir` on all four before, none after the owner runs one `project set --dir` each; then one Manager run on one of them succeeds, recorded from their database read-only.
+2. A legacy database fixture in the shape of the owner's four projects (null `scope_path`, null `workspace_root`): `project list` shows `needs --dir` on all four before, none after one `project set --dir` each; then one Manager run on one of them succeeds under the fake adapter. (Amended by addendum 3: the owner's own projects are fixed by them at the beta checkpoint.)
 3. One project with two unblocked tickets under `serve --max-parallel 2` and no project cap: both run at once, observed on the page with `2 of 2 slots`, recorded with the run ids and start times.
 4. One small real run whose recorded activity states are not all one value (ruling 19's real-run check).
-5. The owner's own re-run of the walk, from step one, with one sentence from them.
+5. The two walks of addendum 3 ruling 28: the lead's cold walk from the README on a fresh state directory, and a stranger's walk by a fresh agent given only the README. (Amended by addendum 3: the owner tests nothing until the beta checkpoint.)
 
 ## 4. What the owner must decide or supply
 
