@@ -16,7 +16,7 @@
 
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { testTempRoot } from '../testSupport.ts';
 import { DatabaseSync } from 'node:sqlite';
@@ -168,7 +168,7 @@ test('shape only, until Role A item 5: the page knows every readiness cause ruli
   // scope_path. The fourth is carried in case the daemon names the family
   // rather than the rule; this list is the one place to change if Role A
   // spells them differently.
-  for (const reason of ['missing_workspace_root', 'unsafe_workspace_root', 'missing_scope_path', 'project_not_ready']) {
+  for (const reason of ['missing_workspace_root', 'unsafe_workspace_root', 'missing_scope_path', 'unreadable_scope_file', 'project_not_ready']) {
     assert.match(APP, new RegExp(`READINESS_REASONS[\\s\\S]{0,200}'${reason}'`),
       `app.js does not treat ${reason} as a readiness cause, so its banner would offer no fix`);
     assert.match(APP, new RegExp(`${reason}: 'Paused`),
@@ -181,8 +181,10 @@ test('shape only, until Role A item 5: a readiness pause offers the command and 
   // `project set --dir` the un-pause, so a Resume button here would be one
   // that cannot work.
   const fn = APP.slice(APP.indexOf('function renderPause('), APP.indexOf('// FONT READINESS'));
-  assert.match(fn, /magarine project set --project ' \+\s*\(state\.projectId \|\| ''\) \+ ' --dir <folder>'/,
+  const fix = APP.slice(APP.indexOf('function readinessFix('), APP.indexOf('function readinessFix(') + 400);
+  assert.match(fix, /'magarine project set --project ' \+ id \+ ' --dir <folder>'/,
     'the fix command is not offered with the project id filled in');
+  assert.match(fn, /readinessFix\(b\.pauseReason\)/, 'the banner does not use the per-cause fix');
   const readinessBranch = fn.slice(fn.indexOf('READINESS_REASONS.indexOf'));
   assert.match(readinessBranch.slice(0, 400), /return;/,
     'the readiness branch does not return before the Resume button is added');
@@ -201,6 +203,61 @@ test('a project the daemon does not report as paused shows no banner at all', as
     assert.equal(page.text('pauseBody'), '');
   });
 });
+
+// -------------------- ruling 29: the fourth pause cause and the scope route's 400
+// Against a REAL daemon, no stubs and no rewriteJson: a directory sitting at
+// SCOPE.md is a state the real daemon produces itself.
+
+/** A project whose SCOPE.md has become a directory, with a READY ticket so the scheduler pauses it. */
+async function unreadableScopeProject(d: { stateDir: string; createProject: (n: string, e?: string[]) => Promise<{ id: string }> }) {
+  const dir = mkdtempSync(join(root.root, 'unreadable-'));
+  const project = await d.createProject('Broken scope', ['--dir', dir]);
+  await runCli(['ticket', 'add', '--project', project.id, '--title', 't', '--state-dir', d.stateDir, '--json']);
+  mkdirSync(join(dir, 'SCOPE.md'));
+  return project;
+}
+
+test('an unreadable scope file pauses with its OWN heading and the resume command, not project set and not the generic line', async () => {
+  await withDaemon(root, async (d) => {
+    const project = await unreadableScopeProject(d);
+    const page = openPage({ baseUrl: d.baseUrl, token: d.token });
+    await pollUntil(page, () => page.byId('pauseBanner').hidden === false, 'the pause banner', 60);
+    assert.equal(page.text('pauseHead'), 'Paused — this project’s scope file cannot be read');
+    const acts = page.byId('pauseActs').children;
+    assert.deepEqual(acts.map((a) => a.textContent), [`magarine resume --project ${project.id}`]);
+    assert.ok(!acts.some((a) => a.textContent === 'Resume'), 'a Resume button was offered for a cause it cannot fix');
+  });
+});
+
+test('the scope route answering 400 is not drawn as an empty document, and does not take the board down with it', async () => {
+  await withDaemon(root, async (d) => {
+    const project = await unreadableScopeProject(d);
+    const page = openPage({ baseUrl: d.baseUrl, token: d.token });
+    await pollUntil(page, () => /could not be read/.test(page.text('scopeText')), 'the scope panel to say it cannot be read', 60);
+    const shown = page.text('scopeText');
+    assert.match(shown, /exists but could not be read/);
+    assert.ok(!/no scope file|is empty/.test(shown), shown);
+    assert.equal(page.text('projectId'), project.id, 'the 400 on the scope route blanked the rest of the page');
+    assert.equal(page.document.getElementById('notice-daemon'), null, 'a 400 on the scope route was reported as the daemon not answering');
+  });
+});
+
+test('the scope panel tells an absent file from an empty one from one with content', async () => {
+  await withDaemon(root, async (d) => {
+    const dir = mkdtempSync(join(root.root, 'absent-'));
+    await d.createProject('No file', ['--dir', dir]);
+    const page = openPage({ baseUrl: d.baseUrl, token: d.token });
+    await pollUntil(page, () => page.text('scopeText') !== '', 'the scope panel');
+    assert.equal(page.text('scopeText'), '(this project has no scope file yet)');
+
+    writeFileSync(join(dir, 'SCOPE.md'), '');
+    await pollUntil(page, () => page.text('scopeText') === '(the scope file is empty)', 'an empty file to read as empty');
+
+    writeFileSync(join(dir, 'SCOPE.md'), 'Build the thing.');
+    await pollUntil(page, () => page.text('scopeText') === 'Build the thing.', 'the scope text');
+  });
+});
+
 
 // ------------------------------------- ruling 26's conditions, as tests
 

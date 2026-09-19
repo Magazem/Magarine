@@ -136,13 +136,28 @@
     missing_workspace_root: 'Paused — this project has no folder',
     unsafe_workspace_root: 'Paused — this project’s folder is not safe to work in',
     missing_scope_path: 'Paused — this project has no scope file',
+    // RULING 29: the scope document EXISTS but cannot be read (permissions, or
+    // a directory at that path). Not "no scope file": a different fault with a
+    // different fix, so it does not borrow that heading.
+    unreadable_scope_file: 'Paused — this project’s scope file cannot be read',
     project_not_ready: 'Paused — this project is not ready to run'
   };
 
   // The causes whose fix is one command rather than a button on this page.
   var READINESS_REASONS = [
-    'missing_workspace_root', 'unsafe_workspace_root', 'missing_scope_path', 'project_not_ready'
+    'missing_workspace_root', 'unsafe_workspace_root', 'missing_scope_path', 'unreadable_scope_file',
+    'project_not_ready'
   ];
+
+  // The command that fixes each readiness cause. The directory causes are
+  // fixed by choosing a folder; an unreadable scope file is fixed by repairing
+  // the file and then resuming, so it names a different command.
+  function readinessFix(reason) {
+    var id = state.projectId || '';
+    return reason === 'unreadable_scope_file'
+      ? 'magarine resume --project ' + id
+      : 'magarine project set --project ' + id + ' --dir <folder>';
+  }
 
   // The actions an item offers, keyed on the same field. An event type with no
   // entry offers none — rule 7's converse: if the daemon cannot name a next
@@ -179,6 +194,8 @@
     activity: [],
     conversation: [],
     scopeText: '',
+    scopeStatus: null,
+    scopeError: null,
     convFilter: 'all',
     live: false,            // true only while a stream is genuinely open
     lastSequence: 0,
@@ -718,8 +735,13 @@
 
   // ------------------------------------------- scope and conversation ----
   function renderScope() {
-    $('scopeText').textContent = state.scopeText ||
-      '(this project has no scope file, or it could not be read)';
+    // Rule 9: three different truths, three different sentences. An unreadable
+    // file is never drawn as an empty document.
+    var text = state.scopeText;
+    if (state.scopeError) text = '(this project’s scope file exists but could not be read: ' + state.scopeError + ')';
+    else if (!text && state.scopeStatus === 'absent') text = '(this project has no scope file yet)';
+    else if (!text) text = '(the scope file is empty)';
+    $('scopeText').textContent = text;
   }
 
   function renderConversation() {
@@ -808,8 +830,7 @@
     // the same check and pause again, which is a button that cannot work.
     // Un-pausing IS `project set --dir`; the ruling says so.
     if (READINESS_REASONS.indexOf(b.pauseReason) >= 0) {
-      acts.appendChild(el('span', 'mono', 'magarine project set --project ' +
-        (state.projectId || '') + ' --dir <folder>'));
+      acts.appendChild(el('span', 'mono', readinessFix(b.pauseReason)));
       return;
     }
 
@@ -1033,19 +1054,39 @@
     }, fail);
   }
 
+  // The daemon's 400 body is JSON with an error string; show that string, or
+  // the raw body when it is not.
+  function scopeErrorText(body) {
+    try {
+      var j = JSON.parse(body);
+      if (j && typeof j.error === 'string') return j.error;
+    } catch (e) { /* not JSON: show it as it came */ }
+    return body;
+  }
+
   function refreshProject() {
     var p = encodeURIComponent(state.projectId);
     return Promise.all([
       api('/board?project=' + p),
       api('/inbox?project=' + p),
       api('/activity?project=' + p),
-      api('/projects/' + p + '/scope'),
+      // A 400 here is the daemon saying the scope file cannot be READ (ruling
+      // 29). It must not take the whole refresh down with it, nor be read as
+      // an empty document: it is carried as its own state. Any other failure,
+      // including a refused token, still fails the read as before.
+      api('/projects/' + p + '/scope').catch(function (err) {
+        var m = /^400 [^:]*: ([\s\S]*)$/.exec(String((err && err.message) || ''));
+        if (!m) throw err;
+        return { scopeError: scopeErrorText(m[1]) };
+      }),
       api('/projects/' + p + '/conversation')
     ]).then(function (r) {
       state.board = r[0];
       state.inbox = r[1] || [];
       state.activity = r[2] || [];
       state.scopeText = (r[3] && r[3].scopeText) || '';
+      state.scopeStatus = (r[3] && r[3].status) || null;
+      state.scopeError = (r[3] && r[3].scopeError) || null;
       state.conversation = r[4] || [];
       state.activity.forEach(function (e) {
         state.lastSequence = Math.max(state.lastSequence, e.sequence || 0);

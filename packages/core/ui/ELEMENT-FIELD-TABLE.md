@@ -26,7 +26,7 @@ Routes used, and the page requests nothing else:
 | `GET /board?project=` | `src/commands/board.ts` → `BoardResult` |
 | `GET /inbox?project=` | `src/commands/inbox.ts` → `InboxItem[]` |
 | `GET /activity?project=` | `src/commands/activity.ts` → `EventRow[]` |
-| `GET /projects/{id}/scope` | `src/daemonApi.ts` → `{ scopeText }` |
+| `GET /projects/{id}/scope` | `src/daemonApi.ts` → `{ scopeText, status }`; **400** when the file exists but cannot be read (ruling 29) |
 | `GET /projects/{id}/conversation` | `src/commands/conversation.ts` → `ConversationEntry[]` |
 | `GET /events?since=` | Role A's stream. Events are event rows as JSON. |
 | `POST /tickets/{id}/{decide,approve,reject,retry}` | existing write routes |
@@ -107,7 +107,7 @@ terminal lane with `DONE`, struck through, rather than being dropped.
 | body | field | `BoardResult.pauseMessage`, verbatim |
 | "Raise cap" form | field | offered only when `pauseReason === 'spend_cap'` — the reason is structured so the page picks the right fix without parsing the message |
 | "Resume" button | copy | offered while paused, EXCEPT for a readiness cause — see below |
-| readiness fix command | derived | offered only when `pauseReason` is a readiness cause (`missing_workspace_root`, `unsafe_workspace_root`, `missing_scope_path`, `project_not_ready`): the exact command `magarine project set --project <id> --dir <folder>`, with `<id>` from the selected project. Ruling 24 (batch 16) |
+| readiness fix command | derived | offered only when `pauseReason` is a readiness cause (`missing_workspace_root`, `unsafe_workspace_root`, `missing_scope_path`, `unreadable_scope_file`, `project_not_ready`): the exact command with `<id>` from the selected project — `magarine project set --project <id> --dir <folder>`, except `unreadable_scope_file`, whose fix is repairing the file and then `magarine resume --project <id>`. Rulings 24 and 29 (batch 16) |
 | Resume, for a readiness cause | — | DELIBERATELY ABSENT. Ruling 24 makes `project set --dir` the un-pause; resuming without a folder would fail the same check and pause again, so the button would be one that cannot work |
 
 ## 4. Needs you
@@ -135,7 +135,7 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | element | kind | source |
 |---|---|---|
 | scope text | field | `GET /projects/{id}/scope` → `scopeText` |
-| when empty | copy | "(this project has no scope file, or it could not be read)" — `readScopeText` returns empty for both, and the page does not claim to tell them apart |
+| when empty | copy | three sentences, because the page can now tell them apart (ruling 29): `status: 'absent'` → "(this project has no scope file yet)"; present but empty → "(the scope file is empty)"; a **400** from the route → "(this project’s scope file exists but could not be read: <the daemon’s error>)". A 400 is caught on this one read only, so it neither blanks the board nor renders as emptiness; any other failure still fails the refresh. `project list` also carries `scope: { path, status }`, which the page does not need |
 | "read-only here" | copy | true: the page has no scope write route |
 
 ## 6. Conversation
