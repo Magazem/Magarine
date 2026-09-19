@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { mkdirSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
@@ -45,8 +44,8 @@ import {
   artifactsDir as resolveArtifactsDir,
   dbPath as resolveDbPath,
   resolveStateDir,
-  validateWorkspaceRoot,
 } from './paths.ts';
+import { projectReadiness } from './readiness.ts';
 import type { AgentAdapter, WorkspaceType } from './types.ts';
 
 // Thin CLI over the core library. Every subcommand opens the sqlite file at
@@ -598,9 +597,12 @@ async function main(): Promise<void> {
     // batch 11's own README walk hit (a DIRECTORY ticket with no
     // workspace_root configured) cannot be reproduced.
     const dir = resolve(typeof flags.dir === 'string' ? flags.dir : process.cwd());
-    const unsafeDir = validateWorkspaceRoot(dir, homedir(), stateDir(flags));
-    if (unsafeDir) {
-      process.stderr.write(`${unsafeDir}\n`);
+    // Batch 16 ruling 24: ruling 22's check is now the shared
+    // `projectReadiness`, asked about the row this command is about to write
+    // -- the same function the scheduler asks, so the two cannot drift.
+    const notReady = projectReadiness({ workspaceRoot: dir, scopePath: join(dir, 'SCOPE.md') }, stateDir(flags));
+    if (notReady) {
+      process.stderr.write(`${notReady.message}\n`);
       process.exitCode = 1;
       return;
     }
@@ -637,9 +639,9 @@ async function main(): Promise<void> {
     let resolvedDir: string | undefined;
     if (typeof flags.dir === 'string') {
       resolvedDir = resolve(flags.dir);
-      const unsafeDir = validateWorkspaceRoot(resolvedDir, homedir(), stateDir(flags));
-      if (unsafeDir) {
-        process.stderr.write(`${unsafeDir}\n`);
+      const notReady = projectReadiness({ workspaceRoot: resolvedDir, scopePath: join(resolvedDir, 'SCOPE.md') }, stateDir(flags));
+      if (notReady) {
+        process.stderr.write(`${notReady.message}\n`);
         process.exitCode = 1;
         return;
       }
@@ -692,7 +694,7 @@ async function main(): Promise<void> {
     // id. Read-only, like board/inbox/status/activity: never routed to a
     // live daemon.
     const db = openDb(dbPath(flags));
-    const entries = buildProjectList(db);
+    const entries = buildProjectList(db, stateDir(flags));
     output(flags, entries, formatProjectList(entries));
     return;
   }
@@ -975,6 +977,7 @@ async function main(): Promise<void> {
       maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
+      readiness: { stateDir: stateDir(flags) },
     });
     output(flags, result, `Started ${result.started.length} run(s).`);
     return;
@@ -1014,6 +1017,7 @@ async function main(): Promise<void> {
       maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
+      readiness: { stateDir: stateDir(flags) },
     });
     output(flags, { idle: true }, 'Idle: no more runnable tickets.');
     return;

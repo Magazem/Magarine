@@ -579,7 +579,12 @@ test('update_scope with a valid string content is accepted', () => {
   assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
 });
 
-test('update_scope is rejected as a clean validation error, not an unhandled write failure, when the project has no scope_path set yet', () => {
+// Batch 16 ruling 24 point 4: defence in depth. The scheduler's readiness
+// check pauses a scope-less project before any Manager run starts, so no
+// envelope is built for one and this branch is UNREACHABLE in practice -- it
+// stays so that a future path around the check still fails with a clean
+// validation error rather than an unhandled write failure.
+test('update_scope is rejected as a clean validation error, not an unhandled write failure, when the project has no scope_path set yet (unreachable in practice: readiness pauses such a project first)', () => {
   const board: ProposalBoard = { tickets: [], dependencies: [], hasScopePath: false };
   const result = validateProposal({ rationale: 'r', commands: [{ type: 'update_scope', content: 'x' }] }, board);
   assert.equal(result.valid, false);

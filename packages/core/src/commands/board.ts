@@ -1,7 +1,7 @@
 import type { Db } from '../db/index.ts';
 import { isKnownModel } from '../pricing.ts';
 import { countTicketsByStatus, getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
-import type { Ticket, TicketKind, TicketStatus } from '../types.ts';
+import type { PauseReason, Ticket, TicketKind, TicketStatus } from '../types.ts';
 import type { ActivityState } from './activity.ts';
 import { describeProjectPause, reasonFor } from './inbox.ts';
 
@@ -113,7 +113,7 @@ export interface BoardResult {
   /** Batch 11 rule a: null when not paused. Same wording commands/inbox.ts uses for this pause's inbox line -- see describeProjectPause, this field's one composer -- so the board and the inbox never say two different things about the same pause. */
   pauseMessage: string | null;
   /** Batch 11 item 3 (the page): the same cause as `pauseMessage`, but structured, so a caller (the page) can decide WHICH fix to offer (a max-spend form vs a plain resume button) without parsing the message text. Null whenever pauseMessage is null. */
-  pauseReason: 'spend_cap' | 'adapter_unavailable' | null;
+  pauseReason: PauseReason | null;
   /** Batch 16 item 4 (ruling 23): the machine-wide picture of parallelism. `used` is every IN_PROGRESS ticket across ALL projects (the ceiling is machine-wide, so only a machine-wide count is comparable with it); `cap` is the daemon's `--max-parallel`, or null when the caller has no daemon to ask (the offline `board` command reads the database alone and cannot know it). */
   slots: { used: number; cap: number | null };
   tickets: BoardTicket[];

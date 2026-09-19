@@ -136,7 +136,7 @@ test('T1 and T2 run in the same tick while T3 waits, then T3 runs once both are 
   adapter.setScript(t2.id, { kind: 'succeed' });
   adapter.setScript(t3.id, { kind: 'succeed' });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
 
   const firstTick = await tick(deps);
   assert.deepEqual(
@@ -170,7 +170,7 @@ test('tick() refuses to start a ticket that is READY in the row but not actually
   addDependency(db, { ticketId: dependent.id, dependsOnTicketId: blocker.id });
   db.prepare("UPDATE tickets SET status = 'READY' WHERE id = ?").run(dependent.id);
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
 
   assert.deepEqual(
@@ -190,7 +190,7 @@ test('the concurrency cap holds even when workers hang', async () => {
   adapter.setScript(t2.id, { kind: 'hang' });
   adapter.setScript(t3.id, { kind: 'succeed' });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
 
   const firstTick = await tick(deps);
   assert.equal(firstTick.started.length, 2, 'cap is 2, both hanging tickets start');
@@ -217,7 +217,7 @@ test('retry exhaustion reaches FAILED after max_attempts retryable failures', as
   const ticket = createTicket(db, { projectId: project.id, title: 'flaky', maxAttempts: 2, workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'retryable_failure' });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
 
   const first = await tick(deps);
   await Promise.all(first.started.map((s) => s.done));
@@ -243,7 +243,7 @@ test('budget_insufficient (the worker\'s own budget self-stop): FAILED, attempt_
     'completing all 16 files impossible within the $0.25 budget ceiling.';
   adapter.setScript(ticket.id, { kind: 'budget_insufficient', summary: reasoning });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -298,7 +298,7 @@ test('a malformed result is treated as a retryable failure, not a crash', async 
   const ticket = createTicket(db, { projectId: project.id, title: 'bad json', maxAttempts: 3, workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'malformed_result' });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -316,7 +316,7 @@ test('a work ticket\'s done result declaring zero artifacts is malformed and ret
   const ticket = createTicket(db, { projectId: project.id, title: 'reports done but writes nothing', maxAttempts: 3, workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [] });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -350,7 +350,7 @@ test('a manager ticket\'s done result declaring zero artifacts (not even the pro
     workspaceType: 'NONE',
   });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
   const workspacePath = adapter.startedWith.get(s.handle.id)!.workspace!.path!;
@@ -374,7 +374,7 @@ test('a worker question keeps the ticket IN_PROGRESS and the run continues to a 
   const ticket = createTicket(db, { projectId: project.id, title: 'asks a question', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'question' });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -386,7 +386,7 @@ test('needs_user_decision moves the ticket to BLOCKED', async () => {
   const ticket = createTicket(db, { projectId: project.id, title: 'needs a human', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'needs_user_decision' });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -399,7 +399,7 @@ test('run usage reported by the adapter is persisted on the run row', async () =
   const usage = { inputTokens: 1200, outputTokens: 340, cacheReadTokens: 900, cacheWriteTokens: 100 };
   adapter.setScript(ticket.id, { kind: 'succeed', usage });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -418,7 +418,7 @@ test('runUntilIdle drives a full dependency chain to completion without manual t
   adapter.setScript(t2.id, { kind: 'succeed' });
   adapter.setScript(t3.id, { kind: 'succeed' });
 
-  await runUntilIdle({ db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id });
+  await runUntilIdle({ readiness: 'skip', db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id });
 
   assert.equal(getTicket(db, t1.id)!.status, 'DONE');
   assert.equal(getTicket(db, t2.id)!.status, 'DONE');
@@ -434,7 +434,7 @@ test('an adapter_unavailable failure leaves attempt_count unchanged, records an 
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'needs auth', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   assert.equal(result.started.length, 1);
   const started = result.started[0];
@@ -478,7 +478,7 @@ test("a NONE dependent finds its dependency's file under .orchestrator/inputs/<d
 
   const artifactsDir = mkdtempSync(join(tmpdir(), 'magarine-artifacts-'));
   try {
-    const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, artifactsDir, workspaceBaseDir };
+    const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 2, projectId: project.id, artifactsDir, workspaceBaseDir };
 
     const firstTick = await tick(deps);
     assert.deepEqual(firstTick.started.map((s) => s.ticketId), [dep.id]);
@@ -536,7 +536,7 @@ test("a shared-directory (DIRECTORY) dependent's envelope lists the dependency's
     const dependent = createTicket(db, { projectId: project.id, title: 'consumer', workspaceType: 'DIRECTORY' });
     addDependency(db, { ticketId: dependent.id, dependsOnTicketId: dep.id });
 
-    const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
+    const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
 
     const firstTick = await tick(deps);
     const depStarted = firstTick.started[0];
@@ -582,7 +582,7 @@ test('two concurrent runs declaring the same path in a shared DIRECTORY workspac
     const t1 = createTicket(db, { projectId: project.id, title: 'writer 1', workspaceType: 'DIRECTORY' });
     const t2 = createTicket(db, { projectId: project.id, title: 'writer 2', workspaceType: 'DIRECTORY' });
 
-    const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
+    const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
     const { started } = await tick(deps);
     assert.equal(started.length, 2, 'both writers start in the same tick, proving they are genuinely concurrent');
 
@@ -644,7 +644,7 @@ test('a DIRECTORY-mode ticket declaring a non-file artefact captures its content
     const adapter = new TestAdapter();
     const t1 = createTicket(db, { projectId: project.id, title: 'writer', workspaceType: 'DIRECTORY' });
 
-    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
     const { started } = await tick(deps);
     writeFileSync(join(workspaceRoot, 'out.txt'), 'real file');
 
@@ -682,7 +682,7 @@ test('SIGINT during a hanging fake run stops the worker, cancels the run without
   const ticket = createTicket(db, { projectId: project.id, title: 'hangs forever', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'hang' });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
 
   const runPromise = runUntilIdle(deps);
   // Give tick() a beat to start the hanging run before interrupting.
@@ -706,7 +706,7 @@ test('SchedulerDeps.runTimeoutMs cancels a hanging run without consuming an atte
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'hangs', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, runTimeoutMs: 30, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, runTimeoutMs: 30, workspaceBaseDir };
   const { started } = await tick(deps);
   assert.equal(getTicket(db, ticket.id)!.status, 'IN_PROGRESS');
 
@@ -733,7 +733,7 @@ test('the envelope carries the ticket budget override when set, else the project
     workspaceType: 'NONE',
   });
 
-  const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
 
   const defaultStarted = started.find((s) => s.ticketId === defaultTicket.id)!;
@@ -757,7 +757,7 @@ test('progress events are persisted as worker_progress internal events on the ru
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'chatty', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -792,7 +792,7 @@ test('a ticket that declares expected_artifacts but whose worker never produces 
   // ticket specifically declared it expects.
   adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'wrong.txt' }] });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -816,7 +816,7 @@ test('a ticket that declares expected_artifacts and whose worker produces exactl
   });
   adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'out.txt' }] });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -833,7 +833,7 @@ test('a ticket with no expected_artifacts list at all keeps today\'s rule -- any
   });
   adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'whatever.txt' }] });
 
-  const deps = { db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: project.maxParallelWorkers, projectId: project.id, workspaceBaseDir };
   const result = await tick(deps);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -868,7 +868,7 @@ test("ruling 21: an expected artefact declared as an ABSOLUTE path inside the ru
       artifacts: [{ kind: 'file', path: join(workspaceRoot, 'index.md') }],
     });
 
-    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
     const result = await tick(deps);
     await Promise.all(result.started.map((s) => s.done));
 
@@ -899,7 +899,7 @@ test('ruling 21: an expected artefact declared as an absolute path under a DIFFE
       artifacts: [{ kind: 'file', path: join(elsewhere, 'index.md') }],
     });
 
-    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
     const result = await tick(deps);
     await Promise.all(result.started.map((s) => s.done));
 
@@ -930,7 +930,7 @@ test('ruling 21: an expected artefact declared RELATIVE still matches, exactly a
     });
     adapter.setScript(ticket.id, { kind: 'succeed', artifacts: [{ kind: 'file', path: 'index.md' }] });
 
-    const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+    const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
     const result = await tick(deps);
     await Promise.all(result.started.map((s) => s.done));
 
@@ -1011,7 +1011,7 @@ test('a worker_progress event\'s payload carries the tool name and activity stat
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'reads then writes', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1044,7 +1044,7 @@ test('a progress event whose cumulative costUsd crosses the ceiling stops the wo
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'chatty and expensive', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1085,7 +1085,7 @@ test("the tool's own budget stop (claudeCli.ts's classifyOutcome, surfaced as a 
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'tool reports its own budget stop', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1121,7 +1121,7 @@ test('a progress event flagging unknownModel raises exactly one unknown_model_ra
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'runs an unrecognized model', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1148,7 +1148,7 @@ test('a progress event with no unknownModel flag never raises unknown_model_rate
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'runs a recognized model', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1166,7 +1166,7 @@ test("batch 6 item 4: a completed run's terminal result_raw event flagging unkno
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'completes on an unrecognized model', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1206,7 +1206,7 @@ test('a project spend cap shrinks a ticket\'s ceiling to what remains, rather th
   // and the ticket would sit IN_PROGRESS forever.
   adapter.setScript(second.id, { kind: 'progress', costUsd: 0.5 });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
 
   const firstTick = await tick(deps);
   assert.deepEqual(firstTick.started.map((s) => s.ticketId), [first.id]);
@@ -1263,7 +1263,7 @@ test('a project spend cap refuses to spawn, pausing the project with reason spen
   adapter.setScript(first.id, { kind: 'succeed', usage: { total_cost_usd: 0.8 } });
   adapter.setScript(second.id, { kind: 'succeed', usage: { total_cost_usd: 0.6 } });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
 
   // First run: 0.8 recorded, leaving 0.2 -- below the $0.25 floor.
   const firstTick = await tick(deps);
@@ -1303,7 +1303,7 @@ test('a project with no max_spend_usd set never refuses a spawn on spend-cap gro
   const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'succeed' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
 
   assert.equal(started.length, 1);
@@ -1345,7 +1345,7 @@ test('a post-stop terminal event from a budget stop must not crash the daemon (b
   // adapter.stop() itself, before the worker would ever finish on its own.
   adapter.setScript(ticket.id, { kind: 'progress', costUsd: 999 });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
 
   const rejections: unknown[] = [];
   const onRejection = (err: unknown) => rejections.push(err);
@@ -1399,7 +1399,7 @@ test('a late non-terminal event after settlement is dropped without minting a la
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'settles once, then keeps chattering', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1424,7 +1424,7 @@ test('a late terminal event after settlement merges its usage into the run row o
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'settles once, no usage yet', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1463,7 +1463,7 @@ test('a late terminal event never overwrites usage the settled run already recor
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'settles once, with usage', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1497,7 +1497,7 @@ test('a throwing transition inside the observe callback is caught, recorded, and
   const bad = createTicket(db, { projectId: project.id, title: 'malformed event', workspaceType: 'NONE' });
   const good = createTicket(db, { projectId: project.id, title: 'well-behaved', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const badStarted = started.find((s) => s.ticketId === bad.id)!;
   const goodStarted = started.find((s) => s.ticketId === good.id)!;
@@ -1541,7 +1541,7 @@ test('a progress event at or under the ceiling never stops the worker', async ()
   const adapter = new TestAdapter();
   const ticket = createTicket(db, { projectId: project.id, title: 'exactly on budget', workspaceType: 'NONE' });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const s = started[0];
 
@@ -1568,7 +1568,7 @@ test('a fake `progress` script with a message list drives FIVE progress events t
   const messages = ['one', 'two', 'three', 'four', 'five'];
   adapter.setScript(ticket.id, { kind: 'progress', messages, gapMs: 5 });
 
-  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
   const { started } = await tick(deps);
   const runId = started[0].runId;
   try {
@@ -1597,7 +1597,7 @@ test('the gap between the messages of a scripted burst is the configured gapMs, 
   const ticket = createTicket(db, { projectId: project.id, title: 'spaced', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'progress', messages: ['a', 'b', 'c'], gapMs: 60 });
 
-  const { started } = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   try {
     const rows = () => listEventsForEntity(db, 'run', started[0].runId).filter((e) => e.eventType === 'worker_progress');
     const deadline = Date.now() + 3000;
@@ -1628,7 +1628,7 @@ test('a scripted [tool_use: Write, tool result received, text: ...] burst persis
     gapMs: 5,
   });
 
-  const { started } = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   try {
     const rows = () => listEventsForEntity(db, 'run', started[0].runId).filter((e) => e.eventType === 'worker_progress');
     const deadline = Date.now() + 3000;
@@ -1648,7 +1648,7 @@ test('the phase is per run and starts at running: a tool result and a thinking l
   adapter.setScript(a.id, { kind: 'progress', messages: ['tool result received', 'tool_use: Read', 'thinking (~5 tokens)'], gapMs: 5 });
   adapter.setScript(b.id, { kind: 'progress', messages: ['session initialized', 'tool result received'], gapMs: 5 });
 
-  const { started } = await tick({ db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
   try {
     const states = (runId: string) =>
       listEventsForEntity(db, 'run', runId)
@@ -1676,7 +1676,7 @@ test('every persisted worker_progress row carries the ticketId of the ticket its
   adapter.setScript(a.id, { kind: 'progress', messages: ['tool_use: Read', 'text: a says hi'], gapMs: 5 });
   adapter.setScript(b.id, { kind: 'progress', messages: ['tool_use: Write'], gapMs: 5 });
 
-  const { started } = await tick({ db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
   try {
     const rowsOf = (runId: string) =>
       listEventsForEntity(db, 'run', runId).filter((e) => e.eventType === 'worker_progress');
@@ -1697,7 +1697,7 @@ test('a fake `progress` script with NO message list still emits exactly one even
   const ticket = createTicket(db, { projectId: project.id, title: 'single', workspaceType: 'NONE' });
   adapter.setScript(ticket.id, { kind: 'progress', message: 'only one' });
 
-  const { started } = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   try {
     await new Promise((resolve) => setTimeout(resolve, 150));
     const rows = listEventsForEntity(db, 'run', started[0].runId).filter((e) => e.eventType === 'worker_progress');

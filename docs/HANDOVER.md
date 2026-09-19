@@ -36,11 +36,61 @@ raised it, the measures below are theirs approved, and they are rules now, not s
 6. **Only wake the Liaison when the owner must decide something.** Status is not a decision.
 7. **Retire idle teammates.** The Butler ran the whole of batches 15 and 16 without a task and
    was shut down at the park.
-8. **An option the owner approved and left to judgement:** Role B's remaining batch-16 item is
-   a text field on the page. It could go to the sonnet engineer instead of the opus Designer.
-   Weigh that against the Designer holding all the page context.
+8. **RESOLVED 2026-09-19, kept for the reasoning.** The owner approved sending Role B's last
+   batch-16 item to the engineer instead of the Designer, on cost. It went to the Designer:
+   `team_members` shows them on **sonnet**, not opus, so the premium-context argument did not
+   apply, and they held the page. Committed at `5f54292`. **Check a teammate's actual model
+   before costing a decision on it.**
 
-## PARKED 2026-09-19 — batch 16 mid-flight, exact resume point
+## STATE 2026-09-19 (updated after the park) — batch 16, items 5 and 6 in flight
+
+The park below was resumed and is now history. **Committed since, each mutation re-run by the
+lead on a still tree before the commit, never taken on the engineer's report:**
+
+- `548303b` **Role A item 4, one number governs parallelism.** Migration 0014 makes
+  `projects.max_parallel_workers` nullable (null = no cap of its own, the daemon's ceiling
+  governs); existing rows keep their explicit value deliberately, because they were created
+  under the old meaning and widening them silently would spend the owner's subscription on
+  sessions they never approved. The table is rebuilt from its OWN live DDL under the runner's
+  new `rebuildsReferencedTable` bracket, and refuses to rebuild if the column is not declared
+  as expected. `--max-parallel` is validated on create/tick/run/serve, serve first so an
+  invalid value never starts a daemon. `GET /board` carries `slots { used, cap }`.
+  Cold suite on the lead's own run: **769 pass, 0 fail.** Five mutations, each failing exactly
+  what it should — including the migration overwriting an explicit row with NULL (both upgrade
+  tests fail) and a fifth the lead added: serve not passing `machineCap` fails ONLY the
+  spawned-daemon `/board` test, which is what proves the wiring rather than the payload shape.
+- `5f54292` **Role B item 3, the fleet header.** "1 of 3 slots in use machine-wide", plus
+  "— full, other tickets wait" at the cap, and NO denominator when `cap` is null. `src/ui`
+  **82 pass, 0 fail, 0 skipped** on the lead's own run — zero skips is the claim that Chrome
+  was really present. The lead re-ran the mutation that matters (render `used` per-project):
+  the machine-wide test fails, so it asserts the distinction, not the number.
+  One declared deviation: a real daemon cannot send `slots.cap: null` over the wire, so
+  `domHarness` gained an opt-in `rewriteJson`, off unless a test names it, changing only that
+  one field on the daemon's real response. "The daemon is the fixture" still holds everywhere
+  else.
+
+**BATCH 16 ROLE B IS COMPLETE.** The Designer is idle and their context was cleared.
+
+**IN FLIGHT, UNCOMMITTED — Role A items 5 and 6** (task `01a0ba69-b656-74f2-8e46-152753c73e41`,
+the brief is on the board). Item 5 is ruling 24: one `projectReadiness(project, stateDir)` that
+`cli.ts`'s ruling 22 check must also call so the two cannot drift; the scheduler runs it before
+any run, manager or worker, and pauses with a structured reason naming the exact fix; `project
+list` marks unready rows `needs --dir`; no healing of rows. The `pauseReason` widening is three
+places TOGETHER — `store.ts`, `board.ts`'s `BoardResult`, `inbox.ts`'s `describeProjectPause` —
+using Role B's names `missing_workspace_root` | `unsafe_workspace_root` | `missing_scope_path`.
+Item 6 is the two small truths.
+
+**THEN BATCH 16 CLOSES** on addendum 3's closing condition, which has NOT been run: the lead's
+cold walk, the stranger's walk, the legacy-DB fixture, the two-workers-at-once observation, and
+the owner's walk as an invitation. Rule 20 — a batch does not close until its closing condition
+has actually been run.
+
+**The owner's own daemon (pid 31044, their real `~/.magarine`) is running and is not ours to
+stop, read or use.**
+
+### The original park note, kept because its NOT-DONE list is how item 4 was resumed
+
+#### PARKED 2026-09-19 — batch 16 mid-flight, exact resume point
 
 Parked on the owner's instruction: session limits are burning fast, so we stopped at a
 coherent point rather than at a finished item.

@@ -52,6 +52,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
     maxParallelWorkers: opts.maxParallelWorkers,
     runTimeoutMs: opts.runTimeoutMs,
     artifactsDir: opts.artifactsDir,
+    readiness: { stateDir: opts.stateDir },
     tickIntervalMs: opts.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS,
   });
 
@@ -59,7 +60,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
   const startedAt = new Date().toISOString();
   const token = generateDaemonToken();
 
-  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt, machineCap: opts.maxParallelWorkers });
+  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt, machineCap: opts.maxParallelWorkers, stateDir: opts.stateDir });
   const server: Server = createServer(requestHandler.handle);
 
   try {

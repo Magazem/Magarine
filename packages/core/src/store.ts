@@ -2,7 +2,9 @@ import { join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { newId } from './id.ts';
 import { classify } from './policy.ts';
+import { isReadinessRule } from './readiness.ts';
 import type {
+  PauseReason,
   Artifact,
   DependencyType,
   EventRow,
@@ -81,7 +83,10 @@ function rowToProject(row: ProjectRow): Project {
     adapterPausedAt: row.adapter_paused_at,
     managerModel: row.manager_model,
     scopePath: row.scope_path,
-    pauseReason: row.pause_reason === 'spend_cap' || row.pause_reason === 'adapter_unavailable' ? row.pause_reason : null,
+    pauseReason:
+      row.pause_reason === 'spend_cap' || row.pause_reason === 'adapter_unavailable' || isReadinessRule(row.pause_reason)
+        ? row.pause_reason
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -169,13 +174,27 @@ export function setProjectScopePath(db: Db, projectId: string, scopePath: string
 // callers; `dir` is never null here -- `project create` always resolves one
 // (defaulting to the current working directory), so a project can no longer
 // exist without a directory at all.
-export function setProjectDir(db: Db, projectId: string, dir: string): void {
+//
+// Batch 16 ruling 24 point 2: a project the scheduler paused for a readiness
+// rule (its `pause_reason` is one of the three) is resumed here, in the same
+// call -- `project set --dir` IS the fix the pause names, so there is no
+// separate command. Callers validate `dir` first (ruling 22, cli.ts), so a
+// directory that reaches this function makes all three rules pass. Any other
+// pause cause is left alone, like `setProjectMaxSpendUsd` leaves a
+// non-spend-cap pause.
+export function setProjectDir(db: Db, projectId: string, dir: string): { unpaused: boolean } {
   db.prepare('UPDATE projects SET workspace_root = ?, scope_path = ?, updated_at = ? WHERE id = ?').run(
     dir,
     join(dir, 'SCOPE.md'),
     new Date().toISOString(),
     projectId
   );
+  const project = getProject(db, projectId);
+  if (project && project.adapterPausedAt != null && isReadinessRule(project.pauseReason)) {
+    resumeProject(db, projectId);
+    return { unpaused: true };
+  }
+  return { unpaused: false };
 }
 
 /** `null` clears the cap: the project has none of its own and the daemon's ceiling governs. */
@@ -242,7 +261,7 @@ export function setProjectMaxSpendUsd(
   return { unpaused: false };
 }
 
-export function pauseProjectAdapter(db: Db, projectId: string, reason: 'spend_cap' | 'adapter_unavailable'): void {
+export function pauseProjectAdapter(db: Db, projectId: string, reason: PauseReason): void {
   db.prepare('UPDATE projects SET adapter_paused_at = ?, pause_reason = ? WHERE id = ?').run(
     new Date().toISOString(),
     reason,

@@ -40,6 +40,7 @@ import {
   setRunUsage,
   setRunWorkerSessionRef,
 } from './store.ts';
+import { assertReadinessMode, projectReadiness, type ReadinessMode } from './readiness.ts';
 import type {
   AgentAdapter,
   Project,
@@ -62,6 +63,8 @@ export interface SchedulerDeps {
   runTimeoutMs?: number;
   /** Where NONE-mode runs' verified artifacts are captured before their temp workspace is deleted. Defaults to `<cwd>/.magarine/artifacts`. */
   artifactsDir?: string;
+  /** REQUIRED (batch 16 ruling 24, Strategist's ruling): `{ stateDir }` runs the readiness check before any run starts; `'skip'` is the explicit opt-out for a caller that is not asking the question. `tick` throws if it is absent. See readiness.ts's `ReadinessMode`. */
+  readiness: ReadinessMode;
   /** Passed straight through to `prepareWorkspace`'s `baseDir` for NONE-mode runs. Test-only; production default (the OS temp directory) is unchanged. See workspace.ts's WorkspaceOptions.baseDir. */
   workspaceBaseDir?: string;
 }
@@ -874,10 +877,28 @@ async function applyWorkerEventInner(
 // itself (needed so the concurrency cap can be observed while a worker
 // hangs).
 export async function tick(deps: SchedulerDeps): Promise<TickResult> {
+  assertReadinessMode(deps.readiness, 'tick');
   resolveReadiness(deps.db, deps.projectId);
 
   if (isProjectAdapterPaused(deps.db, deps.projectId)) {
     return { started: [] };
+  }
+
+  // Batch 16 ruling 24: readiness at the point of use. Before ANY run starts
+  // -- manager or worker -- the project must have a directory, a safe one,
+  // and a scope path; otherwise it is paused through the existing pause
+  // mechanism with the failing rule as the structured reason (the board and
+  // inbox render it with the exact fix). Nothing is healed: the owner picks
+  // the directory. `deps.readiness` is REQUIRED -- absence is impossible, not
+  // merely named (guard at the top of this function): `{ stateDir }` asks the
+  // question, `'skip'` is the one greppable declaration that a caller does not.
+  if (deps.readiness !== 'skip') {
+    const projectRow = getProject(deps.db, deps.projectId);
+    const readiness = projectRow ? projectReadiness(projectRow, deps.readiness.stateDir) : null;
+    if (readiness) {
+      pauseProjectAdapter(deps.db, deps.projectId, readiness.rule);
+      return { started: [] };
+    }
   }
 
   const inProgressCount = listTicketsByStatus(deps.db, deps.projectId, 'IN_PROGRESS').length;
@@ -1180,6 +1201,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
 // hung fake/real worker emits nothing once stopped), so cancellation must
 // not wait on it — it forces the DB state directly instead.
 export async function runUntilIdle(deps: SchedulerDeps): Promise<void> {
+  assertReadinessMode(deps.readiness, 'runUntilIdle');
   const live = new Map<string, StartedRun>();
   let signalled = false;
   let interruptResolve!: () => void;

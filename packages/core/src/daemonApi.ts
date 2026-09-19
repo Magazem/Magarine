@@ -62,6 +62,8 @@ export interface DaemonApiDeps {
   startedAt: string;
   /** The daemon's machine-wide `--max-parallel`, reported on `GET /board` as `slots.cap`. Optional so a handler built without a scheduler in view (tests) reports null rather than a guess. */
   machineCap?: number;
+  /** Magarine's state directory: `GET /projects` needs it for the readiness rules (batch 16 ruling 24). */
+  stateDir: string;
 }
 
 export class ApiError extends Error {
@@ -333,7 +335,7 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
   // same as /board /inbox /activity above: no new write site, a thin
   // wrapper over commands/projectList.ts's existing buildProjectList.
   if (method === 'GET' && path === '/projects') {
-    return { status: 200, body: buildProjectList(deps.db) };
+    return { status: 200, body: buildProjectList(deps.db, deps.stateDir) };
   }
 
   const scopeMatch = /^\/projects\/([^/]+)\/scope$/.exec(path);

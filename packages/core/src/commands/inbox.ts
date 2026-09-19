@@ -1,7 +1,8 @@
 import type { Db } from '../db/index.ts';
 import { classify } from '../policy.ts';
 import { getProject, getRun, getTicket, listEventsForProject } from '../store.ts';
-import type { EventRow } from '../types.ts';
+import { describeReadinessRule, isReadinessRule } from '../readiness.ts';
+import type { EventRow, PauseReason } from '../types.ts';
 
 // `inbox`: events that require the user's attention and have not yet been
 // resolved. There is no separate "acknowledged" column on `events` (the
@@ -201,9 +202,19 @@ function mostRecent(events: EventRow[], eventType: string): EventRow | undefined
 export function describeProjectPause(
   db: Db,
   project: { id: string; updatedAt: string },
-  pauseReason: 'spend_cap' | 'adapter_unavailable' | null
+  pauseReason: PauseReason | null
 ): { eventType: string; message: string; createdAt: string } {
   const pausedEvents = listEventsForProject(db, project.id);
+  // Batch 16 ruling 24: a readiness pause names its rule and the one command
+  // that fixes it -- composed by readiness.ts, the same module that decided
+  // the rule, so the wording cannot drift from the check.
+  if (isReadinessRule(pauseReason)) {
+    return {
+      eventType: 'project_not_ready',
+      message: describeReadinessRule(pauseReason, project.id, getProject(db, project.id)?.workspaceRoot ?? null),
+      createdAt: project.updatedAt,
+    };
+  }
   if (pauseReason === 'adapter_unavailable') {
     const triggering = mostRecent(pausedEvents, 'adapter_unavailable');
     return {

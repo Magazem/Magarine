@@ -1,4 +1,5 @@
 import type { Db } from '../db/index.ts';
+import { projectReadiness, type Readiness } from '../readiness.ts';
 import { listProjects, listTickets } from '../store.ts';
 import type { TicketStatus } from '../types.ts';
 import { formatSpend, projectSpendUsd } from './board.ts';
@@ -19,12 +20,15 @@ export interface ProjectListEntry {
   /** Only statuses with at least one ticket are present -- an empty project has an empty object here, not every status zeroed out. */
   ticketCountsByStatus: Partial<Record<TicketStatus, number>>;
   totalTickets: number;
+  /** Batch 16 ruling 24: the first failing readiness rule and its fix, or null when the project is ready to run. `project list` marks a non-null row `needs --dir` so the owner sees a legacy project before a Manager run finds it. */
+  readiness: { rule: Readiness['rule']; fix: string } | null;
 }
 
-export function buildProjectList(db: Db): ProjectListEntry[] {
+export function buildProjectList(db: Db, stateDir: string): ProjectListEntry[] {
   return listProjects(db).map((project) => {
     const tickets = listTickets(db, project.id);
     const spend = projectSpendUsd(db, tickets);
+    const readiness = projectReadiness(project, stateDir);
     const ticketCountsByStatus: Partial<Record<TicketStatus, number>> = {};
     for (const ticket of tickets) {
       ticketCountsByStatus[ticket.status] = (ticketCountsByStatus[ticket.status] ?? 0) + 1;
@@ -38,6 +42,7 @@ export function buildProjectList(db: Db): ProjectListEntry[] {
       maxSpendUsd: project.maxSpendUsd,
       ticketCountsByStatus,
       totalTickets: tickets.length,
+      readiness: readiness ? { rule: readiness.rule, fix: readiness.fix } : null,
     };
   });
 }
@@ -56,7 +61,10 @@ export function formatProjectList(entries: ProjectListEntry[]): string {
           : Object.entries(entry.ticketCountsByStatus)
               .map(([status, count]) => `${status} ${count}`)
               .join(', ');
-      return [entry.id, entry.name, `model ${entry.defaultModel}`, `${spend} (${cap})`, counts].join('\t');
+      const columns = [entry.id, entry.name, `model ${entry.defaultModel}`, `${spend} (${cap})`, counts];
+      // One word per unready row (ruling 24 point 3); the fix itself is named by `--json`'s readiness.fix and by the pause line.
+      if (entry.readiness) columns.push('needs --dir');
+      return columns.join('\t');
     })
     .join('\n');
 }

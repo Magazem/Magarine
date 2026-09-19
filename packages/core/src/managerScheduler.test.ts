@@ -52,7 +52,7 @@ test('a valid proposal, driven through a real tick(), creates a small dependency
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   assert.equal(result.started.length, 1);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -100,7 +100,7 @@ test('a proposal setting model and model_reason on both create_ticket and update
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   assert.equal(result.started.length, 1);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -147,7 +147,7 @@ test('Run B fixture: the actual four-ticket proposal that landed on NONE by defa
   const managerTicket = makeManagerTicket(db, project.id);
   adapter.setScript(managerTicket.id, { kind: 'manager_proposal', proposal: runBProposalFixture });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
@@ -173,7 +173,7 @@ test('an invalid proposal, driven through a real tick(), is rejected whole (retr
   });
   const ticketsBefore = listTickets(db, project.id).length;
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'READY', 'a malformed proposal is retryable, same as any other malformed result');
@@ -193,7 +193,7 @@ test('an invalid proposal that exhausts its attempts lands FAILED and reaches th
   });
   adapter.setScript(managerTicket.id, { kind: 'manager_proposal', proposal: { rationale: 'r', commands: [{ type: 'not_a_real_command' }] } });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'FAILED');
@@ -211,7 +211,7 @@ test('a request_user_decision proposal, driven through a real tick(), lands the 
     proposal: { rationale: 'r', commands: [{ type: 'request_user_decision', question: 'Which library?', context: 'two look equivalent' }] },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'BLOCKED');
@@ -235,7 +235,7 @@ test('replay: after a real tick() applies a proposal, the recorded event alone r
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   const applied = listEventsForEntity(db, 'ticket', managerTicket.id).find((e) => e.eventType === 'manager_proposal_applied')!;
@@ -276,7 +276,7 @@ test('a manager ticket at the daily cap is skipped (continue), not spawned, but 
   // maxParallelWorkers=2 so BOTH tickets are considered in the SAME tick's
   // readyTickets batch (created_at ASC ordering would otherwise mean a
   // cap of 1 only ever looks at the manager ticket).
-  const result = await tick({ db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(
@@ -306,7 +306,7 @@ test('a manager ticket below the cap spawns normally, and the same project is un
   }
 
   const managerTicket = makeManagerTicket(db, project.id);
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(result.started.some((s) => s.ticketId === managerTicket.id), true, 'another project\'s cap usage must not affect this one');
@@ -322,7 +322,7 @@ test('decide on a manager ticket BLOCKED by request_user_decision re-invokes the
     proposal: { rationale: 'r', commands: [{ type: 'request_user_decision', question: 'Which library?', context: 'c' }] },
   });
 
-  const firstTick = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const firstTick = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(firstTick.started.map((s) => s.done));
   assert.equal(getTicket(db, managerTicket.id)!.status, 'BLOCKED');
 
@@ -330,7 +330,7 @@ test('decide on a manager ticket BLOCKED by request_user_decision re-invokes the
   assert.equal(getTicket(db, managerTicket.id)!.status, 'READY');
 
   adapter.setScript(managerTicket.id, { kind: 'manager_proposal', proposal: { rationale: 'done deciding', commands: [] } });
-  const secondTick = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const secondTick = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(secondTick.started.map((s) => s.done));
 
   assert.equal(secondTick.started.length, 1, 'exactly one new run must start for the re-invoked manager ticket');

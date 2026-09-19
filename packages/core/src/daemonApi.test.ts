@@ -789,6 +789,7 @@ test('createRequestHandler().closeAllStreams() ends every open /events response 
     token: 'test-token',
     pid: process.pid,
     startedAt: new Date().toISOString(),
+    stateDir: testRoot.root,
   });
   const server = createServer(requestHandler.handle);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

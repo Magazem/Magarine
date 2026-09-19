@@ -1,5 +1,10 @@
 // Core domain types shared across the state machine, scheduler and adapters.
 
+import type { ReadinessRule } from './readiness.ts';
+
+/** Every cause that can set `projects.pause_reason`. The three readiness rules (batch 16 ruling 24) join the two batch-11 causes; store.ts's row mapper, board.ts's `BoardResult.pauseReason` and inbox.ts's `describeProjectPause` all take this one type, so the widening cannot be done in one place and forgotten in another. */
+export type PauseReason = 'spend_cap' | 'adapter_unavailable' | ReadinessRule;
+
 export type TicketStatus =
   | 'OPEN'
   | 'READY'
@@ -39,7 +44,7 @@ export interface Project {
   /** Set when an `adapter_unavailable` failure pauses this project's adapter; cleared by `resumeProjectAdapter`. Null means not paused. */
   adapterPausedAt: string | null;
   /** Batch 11: which of the two pause causes set `adapterPausedAt`, so the board/inbox can name the fix instead of guessing. Null whenever `adapterPausedAt` is null; also null for pauses recorded before this column existed. See store.ts's `pauseProjectAdapter`. */
-  pauseReason: 'spend_cap' | 'adapter_unavailable' | null;
+  pauseReason: PauseReason | null;
   /** Batch 9: overrides `defaultModel` for this project's Manager tickets specifically; null falls back to `defaultModel` (same shape as `Ticket.model`/`defaultModel`, but this is a project-level setting because a project can have many Manager tickets over its lifetime, each of which should see a later change here -- not something a single ticket's own `model` column would give). See store.ts's resolveManagerModel. */
   managerModel: string | null;
   /** Batch 11: the scope document's filesystem path, read fresh into the Manager's envelope on every invocation and hand-editable by the owner between turns. Null means no scope file has been set yet -- see manager.ts's readScopeText, which treats that as empty text rather than inventing a default location. */

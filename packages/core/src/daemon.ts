@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Db } from './db/index.ts';
+import { assertReadinessMode, type ReadinessMode } from './readiness.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { cancelRun, tick, type StartedRun } from './scheduler.ts';
 import { countTicketsByStatus, getProject, listProjects, listTicketsByStatus } from './store.ts';
@@ -171,6 +172,8 @@ export interface DaemonLoopDeps {
   maxParallelWorkers: number;
   runTimeoutMs?: number;
   artifactsDir: string;
+  /** REQUIRED, passed to every tick (batch 16 ruling 24): `{ stateDir }` runs the readiness check, `'skip'` declares this caller is not asking. `startDaemonLoop` throws if it is absent. */
+  readiness: ReadinessMode;
   tickIntervalMs: number;
 }
 
@@ -219,6 +222,7 @@ export interface DaemonLoop {
 // has no natural idle exit, since a ticket can arrive from another process
 // at any moment.
 export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
+  assertReadinessMode(deps.readiness, 'startDaemonLoop');
   recoverOrphanedRuns(deps.db);
 
   const live = new Map<string, StartedRun>();
@@ -237,6 +241,7 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
       maxParallelWorkers: computeProjectCap(deps.db, projectId, deps.maxParallelWorkers),
       runTimeoutMs: deps.runTimeoutMs,
       artifactsDir: deps.artifactsDir,
+      readiness: deps.readiness,
     });
     for (const s of started) {
       live.set(s.runId, s);

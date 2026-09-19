@@ -123,6 +123,20 @@ refuses before it opens the database or binds a port. The effective cap under
 `serve` is the smaller of an explicit project cap and `serve --max-parallel`,
 which is why `serve`'s human listening line names "up to <n> workers at once".
 
+**Readiness (Batch 16, ruling 24).** `readiness.ts`'s `projectReadiness(project,
+stateDir)` is the one check of whether a project can run a worker: it has a
+`workspace_root`, that directory is safe (ruling 22's three rules), and it has a
+`scope_path`. The scheduler asks it before starting ANY run, manager or worker;
+a failing project is paused with `pause_reason` set to the rule
+(`missing_workspace_root`, `unsafe_workspace_root`, `missing_scope_path`), and the
+board and inbox say so with the fix, `magarine project set --project <id> --dir
+<folder>` — which also resumes the project, no separate command. `project
+create`/`project set --dir`'s ruling 22 refusal calls the same function.
+Nothing is healed: the product never picks a directory for a project. The
+`update_scope` validator error in `proposal.ts` stays as defence in depth, now
+unreachable in practice. `project list` marks such rows `needs --dir`, and
+`--json` carries `readiness: null | { rule, fix }`.
+
 `project list` (Batch 10, Role Q) prints every project in this state
 directory's database -- id, name, default model, spend against its cap, and
 ticket counts by status -- the read path back to a project's id if it's been

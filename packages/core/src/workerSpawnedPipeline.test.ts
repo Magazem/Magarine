@@ -85,7 +85,7 @@ test('done: a real spawned process reporting status done lands the work ticket o
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   assert.equal(result.started.length, 1);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -120,7 +120,7 @@ test('review: a real spawned process reporting status review lands the ticket on
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, ticketId)!.status, 'REVIEW');
@@ -155,7 +155,7 @@ test('needs_user_decision: a real spawned process reporting status needs_user_de
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, ticketId)!.status, 'BLOCKED');
@@ -194,7 +194,7 @@ test('failed: a real spawned process reporting status failed is a retryable atte
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   const ticket = getTicket(db, ticketId)!;
@@ -228,7 +228,7 @@ test('budget_insufficient: a real spawned process reporting its own budget self-
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   const ticket = getTicket(db, ticketId)!;
@@ -268,7 +268,7 @@ test('malformed result: a schema-valid-looking result.json missing a required fi
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   const ticket = getTicket(db, ticketId)!;
@@ -306,7 +306,7 @@ test('artefact not found: a result declaring an artefact that was never written 
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   const ticket = getTicket(db, ticketId)!;
@@ -340,7 +340,7 @@ test('budget_exceeded (recorded subtype): a real tool-side budget stop is a non-
 
   try {
     const adapter = buildAdapter({ stdoutFile, exitCode: 0 });
-    const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+    const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
     await Promise.all(result.started.map((s) => s.done));
 
     const ticket = getTicket(db, ticketId)!;
@@ -369,7 +369,7 @@ test('timeout: a real spawned process that hangs past the wall-clock timeout is 
   const { db, projectId, ticketId } = setUp();
   const adapter = buildAdapter({ sleepMs: 5000 }, { timeoutMs: 300 });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   const ticket = getTicket(db, ticketId)!;
@@ -427,7 +427,7 @@ test('adapter_unavailable: a real not-logged-in worker returns the ticket to REA
   const { db, projectId, ticketId } = setUp();
   const adapter = buildAdapter({ stdoutFile: notLoggedInStdout, exitCode: 0 });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   const ticket = getTicket(db, ticketId)!;
@@ -494,7 +494,7 @@ test('Run B fixture: every real recorded invented-kind artefact (documentation, 
       },
     });
 
-    const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
+    const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId, workspaceBaseDir });
     await Promise.all(result.started.map((s) => s.done));
 
     const ticket = getTicket(db, ticketId)!;

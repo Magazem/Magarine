@@ -94,7 +94,7 @@ test('a real spawned process producing a manager result.json + proposal.json dri
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   assert.equal(result.started.length, 1);
   await Promise.all(result.started.map((s) => s.done));
 
@@ -150,7 +150,7 @@ test('a real spawned process whose result.json declares a proposal artifact that
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'READY');
@@ -196,7 +196,7 @@ test('a real spawned process whose result.json declares an UNRELATED missing art
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'READY', 'verifyArtifacts must reject the whole result over ANY missing declared artifact, not just a missing proposal.json');
@@ -238,7 +238,7 @@ test('a real spawned process producing an invalid proposal (a dependency cycle) 
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'READY', 'a malformed (cyclic) proposal is retryable');
@@ -286,7 +286,7 @@ test('SYNTHETIC: a manager_reply artifact survives the real verifyArtifacts pipe
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
@@ -325,7 +325,7 @@ test('SYNTHETIC: a manager_assessment artifact survives the real verifyArtifacts
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'BLOCKED', 'questions only is a valid outcome, landing BLOCKED same as any request_user_decision');
@@ -358,7 +358,7 @@ test('SYNTHETIC: an update_scope command, driven through the real spawned pipeli
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');
@@ -394,7 +394,7 @@ test('SYNTHETIC: a cancel_ticket + update_ticket proposal, driven through the re
     },
   });
 
-  const result = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const result = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
   await Promise.all(result.started.map((s) => s.done));
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE');

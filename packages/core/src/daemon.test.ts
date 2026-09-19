@@ -219,6 +219,7 @@ test('startDaemonLoop ticks every project in the database, not just one', async 
   // needed here, matching how the CLI's own `tick`/`run --until-idle` work.
 
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 1,
@@ -255,6 +256,7 @@ test('startDaemonLoop recovers an orphaned "running" run at startup, before its 
 
   const adapter = new FakeAdapter();
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 1,
@@ -290,6 +292,7 @@ test('DaemonLoop.stop() cancels a hanging worker back to READY without consuming
   adapter.setScript(ticket.id, { kind: 'hang' });
 
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 1,
@@ -360,6 +363,7 @@ test('DaemonLoop.forceTick ticks only the named project, registers the started r
   // impossible to tell "blocked by its own cap" apart from "blocked by the
   // machine-wide ceiling" below.
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 2,
@@ -424,6 +428,7 @@ test('a project whose cap is raised after creation runs that many workers on the
   for (const tk of tickets) adapter.setScript(tk.id, { kind: 'hang' });
 
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 4,
@@ -458,6 +463,7 @@ test('a project created without a cap of its own runs as many workers as the mac
   for (const tk of tickets) adapter.setScript(tk.id, { kind: 'hang' });
 
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 2,
@@ -497,6 +503,7 @@ test('the daemon never runs more workers than its machine-wide --max-parallel, e
   for (const t of [...ticketsA, ...ticketsB]) adapter.setScript(t.id, { kind: 'hang' });
 
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 2,
@@ -558,6 +565,7 @@ test('DaemonLoop.cancelTicket cancels a live run for the given ticket, and repor
   adapter.setScript(hangTicket.id, { kind: 'hang' });
 
   const loop = startDaemonLoop({
+    readiness: 'skip',
     db,
     adapter,
     maxParallelWorkers: 1,
