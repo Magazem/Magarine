@@ -262,6 +262,37 @@ organism's three channels is close to silent. It is the price of ruling 18's "re
 board's marker" design, which the fake adapter -- one event per script -- could never
 show. Put to the Strategist; not changed here.
 
+## The walk re-run from step one, by the lead, after rulings 20-23 -- PASSES
+
+Addendum 10's closing condition: the walk re-run from step one by the Orchestrator, then
+by the owner. Run 2026-09-19 against the committed tree, following `README.md`'s own
+steps rather than memory of them (rule 22).
+
+One deliberate deviation, stated because it is the only departure from a literal
+first-time run: a temp `--state-dir`, so nothing is added to the owner's live `~/.magarine`
+while their own daemon is running. Everything else is the README verbatim.
+
+| step | what the README says | what happened |
+|---|---|---|
+| 1 | make a folder and stand inside it | done; the step now also says the folder is the boundary a task's assistant may write inside |
+| 2 | `project create --name ... --max-parallel 4 --brief ...` | `Created project proj_3ac878f6... (My First Project) in <the folder>` -- it names the folder it will use |
+| 3 | `serve --adapter claude --max-parallel 4` | `magarine daemon listening on 127.0.0.1:52634 (pid 42428) -- page: http://127.0.0.1:52634/ -- token: run ``magarine token`` -- up to 4 workers at once (--max-parallel)` |
+| 4 | `magarine token` | `token copied to the clipboard; paste it into the page at http://127.0.0.1:52634/` |
+| 5 | paste it into the page | gate accepted it, hid itself, and cleared the box |
+
+**The clipboard really carries the token**, checked without printing either value: the
+clipboard held 64 characters and its SHA-256 equalled the daemon file's `token` field.
+The owner's own clipboard was saved before the run and restored afterwards, byte-identical.
+
+**The page, after settling:** `data-live="stream"`, the project listed by name with its id,
+no notices, and zero cards -- correct, since the project has no tickets. Read once too
+early it showed `poll` and no projects; that was the measurement, not the product, and the
+settled read is the honest one.
+
+The three false promises the owner hit are gone: `serve` now names the page and the
+command; `magarine token` exists; the gate names it instead of a token `serve` never
+prints.
+
 ## Observations raised during the walk -- all ruled, none put to the owner
 
 Recorded here so they reach the owner's walk rather than a chat log. None blocks the
