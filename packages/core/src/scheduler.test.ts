@@ -1611,6 +1611,61 @@ test('the gap between the messages of a scripted burst is the configured gapMs, 
   }
 });
 
+// --- Batch 16 Role A item 2, ruling 19 (batch 15 addendum 8) ---------------
+// The real run showed `reporting` for every animation because a "tool result
+// received" event follows each tool use within milliseconds and used to be
+// classified `reporting`. The phase is now carried per run: the result keeps
+// the phase of the tool it answers, only a `text:` line reports, and `tool`
+// stays null for every non-tool message (the phase is the state, the tool is
+// the evidence). Driven with item 1's burst, in the adapter's real message
+// shapes.
+test('a scripted [tool_use: Write, tool result received, text: ...] burst persists states writing, writing, reporting, with tools Write, null, null', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'phases', workspaceType: 'NONE' });
+  adapter.setScript(ticket.id, {
+    kind: 'progress',
+    messages: ['tool_use: Write', 'tool result received', 'text: all written'],
+    gapMs: 5,
+  });
+
+  const { started } = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  try {
+    const rows = () => listEventsForEntity(db, 'run', started[0].runId).filter((e) => e.eventType === 'worker_progress');
+    const deadline = Date.now() + 3000;
+    while (rows().length < 3 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    const payloads = rows().map((e) => e.payload as { state: string; tool: string | null });
+    assert.deepEqual(payloads.map((p) => p.state), ['writing', 'writing', 'reporting']);
+    assert.deepEqual(payloads.map((p) => p.tool), ['Write', null, null]);
+  } finally {
+    await adapter.stop(started[0].handle);
+  }
+});
+
+test('the phase is per run and starts at running: a tool result and a thinking line BEFORE any tool use are running, and the phase of one run never leaks into another', async () => {
+  const { db, project, adapter } = setupProject(2);
+  const a = createTicket(db, { projectId: project.id, title: 'a', workspaceType: 'NONE' });
+  const b = createTicket(db, { projectId: project.id, title: 'b', workspaceType: 'NONE' });
+  adapter.setScript(a.id, { kind: 'progress', messages: ['tool result received', 'tool_use: Read', 'thinking (~5 tokens)'], gapMs: 5 });
+  adapter.setScript(b.id, { kind: 'progress', messages: ['session initialized', 'tool result received'], gapMs: 5 });
+
+  const { started } = await tick({ db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
+  try {
+    const states = (runId: string) =>
+      listEventsForEntity(db, 'run', runId)
+        .filter((e) => e.eventType === 'worker_progress')
+        .map((e) => (e.payload as { state: string }).state);
+    const runOf = (ticketId: string) => started.find((s) => s.ticketId === ticketId)!.runId;
+    const deadline = Date.now() + 3000;
+    while ((states(runOf(a.id)).length < 3 || states(runOf(b.id)).length < 2) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(states(runOf(a.id)), ['running', 'reading', 'reading']);
+    assert.deepEqual(states(runOf(b.id)), ['running', 'running'], "run A's reading phase must not leak into run B");
+  } finally {
+    for (const s of started) await adapter.stop(s.handle);
+  }
+});
+
 test('a fake `progress` script with NO message list still emits exactly one event, as before', async () => {
   const { db, project, adapter } = setupProject(1);
   const ticket = createTicket(db, { projectId: project.id, title: 'single', workspaceType: 'NONE' });

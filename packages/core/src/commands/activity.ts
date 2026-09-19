@@ -22,7 +22,11 @@ const TEST_RUNNER_COMMAND_PATTERN =
   /(^|[\s;&|])((pnpm|npm|yarn)\s+(run\s+)?test|pytest|jest|vitest|mocha|rspec|go\s+test|cargo\s+test|dotnet\s+test)(\s|$)/i;
 
 export function classifyToolActivity(tool: string | undefined, command?: string): ActivityState {
-  if (!tool) return 'reporting';
+  // No tool name: "working, tool unknown" -- `running`, the same answer an
+  // unrecognised tool gets below. NOT `reporting`: that state is a text line
+  // and nothing else (ruling 19, batch 15 addendum 8), produced only by
+  // classifyProgressMessage's `text:` branch.
+  if (!tool) return 'running';
   switch (tool) {
     case 'Read':
     case 'Grep':
@@ -75,9 +79,28 @@ export function parseProgressTool(message: string): string | undefined {
   return TOOL_USE_MESSAGE_PATTERN.exec(message)?.[1];
 }
 
-export function classifyProgressMessage(message: string): ActivityState {
+// Ruling 19 (batch 15 addendum 8). `currentPhase` is the state of the
+// previous progress event on the SAME run, carried by the scheduler beside
+// `progressSeq` (scheduler.ts, ApplyEventContext.activityPhase) and initially
+// `running`; this function stays pure -- every branch is a lookup on
+// (message, currentPhase), no memory of its own:
+//   - a tool use is the state of that tool (the test-runner marker: testing);
+//   - a `text:` line is `reporting`, and NOTHING else is;
+//   - anything else (`tool result received`, `thinking`, `assistant message`,
+//     `session initialized`, `rate limit status update`) is not a phase
+//     change, so it keeps `currentPhase`. A tool result thereby carries the
+//     state of the tool it answers, and before any tool use the phase is
+//     still `running`.
+// The persisted `tool` stays null for every non-tool message (scheduler.ts):
+// the state is the phase, the tool is the evidence for it.
+const TEXT_MESSAGE_PATTERN = /^text:/;
+
+export function classifyProgressMessage(message: string, currentPhase: ActivityState): ActivityState {
   if (message === BASH_TEST_RUNNER_MESSAGE) return 'testing';
-  return classifyToolActivity(parseProgressTool(message));
+  const tool = parseProgressTool(message);
+  if (tool !== undefined) return classifyToolActivity(tool);
+  if (TEXT_MESSAGE_PATTERN.test(message)) return 'reporting';
+  return currentPhase;
 }
 
 export function buildActivity(

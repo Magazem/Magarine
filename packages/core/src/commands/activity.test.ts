@@ -62,35 +62,74 @@ test('classifyToolActivity: StructuredOutput is finishing', () => {
   assert.equal(classifyToolActivity('StructuredOutput'), 'finishing');
 });
 
-test('classifyToolActivity: no tool name (a text line) is reporting', () => {
-  assert.equal(classifyToolActivity(undefined), 'reporting');
+// Ruling 19: "no tool name" is "working, tool unknown" -- `running`, like an
+// unrecognised tool -- NOT `reporting`, which only a `text:` line produces
+// (classifyProgressMessage's own branch). This was the defect's exact site.
+test('classifyToolActivity: no tool name is running, never reporting', () => {
+  assert.equal(classifyToolActivity(undefined), 'running');
 });
 
 test('classifyToolActivity: an unrecognized tool name defaults to running rather than throwing', () => {
   assert.equal(classifyToolActivity('SomeFutureTool'), 'running');
 });
 
-test('classifyProgressMessage: parses "tool_use: <name>" the way claudeCli.ts\'s describeProgress produces it', () => {
-  assert.equal(classifyProgressMessage('tool_use: Read'), 'reading');
-  assert.equal(classifyProgressMessage('tool_use: Write'), 'writing');
-  assert.equal(classifyProgressMessage('tool_use: StructuredOutput'), 'finishing');
+// Ruling 19 (batch 15 addendum 8): `reporting` is a text line and NOTHING
+// else; a tool result carries the phase of the tool it answers; any other
+// non-tool message keeps the current phase; before the first tool use the
+// phase is `running`. The classifier stays pure -- the phase is an
+// argument -- so every branch is a lookup on (message, currentPhase), one
+// test per branch.
+
+test('classifyProgressMessage: "tool_use: <name>" is the state of that tool, whatever the phase was', () => {
+  assert.equal(classifyProgressMessage('tool_use: Read', 'running'), 'reading');
+  assert.equal(classifyProgressMessage('tool_use: Write', 'reading'), 'writing');
+  assert.equal(classifyProgressMessage('tool_use: StructuredOutput', 'writing'), 'finishing');
+  assert.equal(classifyProgressMessage('tool_use: SomeFutureTool', 'reading'), 'running');
 });
 
 // Batch 15 addendum 3 (ruling 14): testing is live -- claudeCli.ts's
-// describeProgress now sources the "(test runner)" marker at the adapter,
-// from isTestRunnerCommand, and never forwards the raw command text (see
-// claudeCli.test.ts's own secret-leak test). This function reads exactly
-// that marker back off the message.
+// describeProgress sources the "(test runner)" marker at the adapter and
+// never forwards the raw command text (see claudeCli.test.ts's own
+// secret-leak test). This function reads exactly that marker back.
 test('classifyProgressMessage: "tool_use: Bash" (no marker) is running; "tool_use: Bash (test runner)" is testing', () => {
-  assert.equal(classifyProgressMessage('tool_use: Bash'), 'running');
-  assert.equal(classifyProgressMessage('tool_use: Bash (test runner)'), 'testing');
+  assert.equal(classifyProgressMessage('tool_use: Bash', 'reading'), 'running');
+  assert.equal(classifyProgressMessage('tool_use: Bash (test runner)', 'reading'), 'testing');
 });
 
-test('classifyProgressMessage: any non-tool_use message (text, assistant message, session init, ...) is reporting', () => {
-  assert.equal(classifyProgressMessage('text: hello there'), 'reporting');
-  assert.equal(classifyProgressMessage('assistant message'), 'reporting');
-  assert.equal(classifyProgressMessage('session initialized'), 'reporting');
-  assert.equal(classifyProgressMessage('tool result received'), 'reporting');
+test('classifyProgressMessage: a "text:" message is reporting, after anything', () => {
+  for (const phase of ['running', 'reading', 'writing', 'testing', 'finishing', 'reporting'] as const) {
+    assert.equal(classifyProgressMessage('text: hello there', phase), 'reporting', `after ${phase}`);
+  }
+});
+
+test('classifyProgressMessage: a tool result carries the state of the tool it answers -- the current phase, never reporting', () => {
+  assert.equal(classifyProgressMessage('tool result received', 'writing'), 'writing');
+  assert.equal(classifyProgressMessage('tool result received', 'reading'), 'reading');
+  assert.equal(classifyProgressMessage('tool result received', 'testing'), 'testing');
+});
+
+test('classifyProgressMessage: a tool result with no prior phase is running (the pre-first-tool phase)', () => {
+  assert.equal(classifyProgressMessage('tool result received', 'running'), 'running');
+});
+
+test('classifyProgressMessage: thinking, assistant message, session initialized and rate limit status update keep the current phase', () => {
+  for (const message of ['thinking (~120 tokens)', 'assistant message', 'session initialized', 'rate limit status update']) {
+    assert.equal(classifyProgressMessage(message, 'reading'), 'reading', `${message} after reading`);
+    assert.equal(classifyProgressMessage(message, 'running'), 'running', `${message} before any tool`);
+  }
+});
+
+test('classifyProgressMessage: "reporting" is produced by a text line and by nothing else', () => {
+  const nonText = [
+    'tool_use: Read', 'tool_use: Write', 'tool_use: Bash', 'tool_use: Bash (test runner)', 'tool_use: StructuredOutput',
+    'tool result received', 'thinking (~9 tokens)', 'assistant message', 'session initialized', 'rate limit status update',
+    'fake progress', '',
+  ];
+  for (const phase of ['running', 'reading', 'writing', 'testing', 'finishing'] as const) {
+    for (const message of nonText) {
+      assert.notEqual(classifyProgressMessage(message, phase), 'reporting', `"${message}" after ${phase}`);
+    }
+  }
 });
 
 // Ruling 7 item 1: `GET /tickets/{id}/progress` / `activity --progress

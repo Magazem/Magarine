@@ -564,24 +564,29 @@ test('GET /tickets/{id}/progress returns one entry per run, and GET /board repor
 
     const handle = spawnServe([
       '--state-dir', stateDir, '--tick-interval', '0.1', '--json',
-      '--fake-script', `${ticket.id}=progress`,
+      '--fake-script', `${ticket.id}=progress:tool_use: Write`,
+      '--fake-script', `${ticket.id}=progress:tool result received`,
     ]);
     try {
       const info = await handle.waitForListening();
       const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
       const call = (method: 'GET' | 'POST', path: string) => api(info.port, fileInfo.token, method, path);
 
-      // No CLI flag exists to script the progress message's own text
-      // (cli.ts's --fake-script only ever constructs `{ kind }`), so this
-      // run's message is the fake's own default ('fake progress'), which
-      // classifyProgressMessage reads as 'reporting' -- still enough to
-      // prove the plumbing, distinct from activity.test.ts's own direct
-      // unit coverage of every tool-name branch.
+      // Ruling 19 through the real daemon: the LAST event a board read can
+      // land on is a tool result (batch 16 item 1's scripted burst, in the
+      // adapter's real message shapes), and it must publish `writing` --
+      // the phase of the Write it answers -- not `reporting`. This is the
+      // exact shape the owner's real run got wrong: every board read landed
+      // on a tool result. `tool` stays null on that row (the phase is the
+      // state; the tool is evidence), while the earlier row carries Write.
       const deadline = Date.now() + 10_000;
-      let progress: Array<{ runId: string; runStatus: string; latest: { state: string } | null }> = [];
+      let progress: Array<{ runId: string; runStatus: string; latest: { state: string; message?: string } | null }> = [];
       while (Date.now() < deadline) {
         const res = await call('GET', `/tickets/${ticket.id}/progress`);
-        if (res.status === 200 && (res.json as unknown[]).length > 0 && (res.json as Array<{ latest: unknown }>)[0].latest) {
+        if (
+          res.status === 200 &&
+          (res.json as Array<{ latest: { message?: string } | null }>)[0]?.latest?.message === 'tool result received'
+        ) {
           progress = res.json as typeof progress;
           break;
         }
@@ -589,7 +594,7 @@ test('GET /tickets/{id}/progress returns one entry per run, and GET /board repor
       }
       assert.equal(progress.length, 1);
       assert.equal(progress[0].runStatus, 'running');
-      assert.equal(progress[0].latest?.state, 'reporting');
+      assert.equal(progress[0].latest?.state, 'writing');
 
       const missing = await call('GET', '/tickets/tkt_ghost/progress');
       assert.equal(missing.status, 404);
@@ -598,7 +603,7 @@ test('GET /tickets/{id}/progress returns one entry per run, and GET /board repor
       const board = boardRes.json as { tickets: Array<{ id: string; status: string; latestActivity: { state: string } | null }> };
       const row = board.tickets.find((t) => t.id === ticket.id)!;
       assert.equal(row.status, 'IN_PROGRESS');
-      assert.equal(row.latestActivity?.state, 'reporting');
+      assert.equal(row.latestActivity?.state, 'writing');
     } finally {
       await handle.kill();
     }

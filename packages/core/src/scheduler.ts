@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
 import { isManagerDailyCapReached, MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
-import { classifyProgressMessage, parseProgressTool } from './commands/activity.ts';
+import { classifyProgressMessage, parseProgressTool, type ActivityState } from './commands/activity.ts';
 import { applyManagerProposal } from './managerApply.ts';
 import { buildManagerEnvelope } from './managerEnvelope.ts';
 import { classify } from './policy.ts';
@@ -367,6 +367,8 @@ export async function cancelRun(
 interface ApplyEventContext {
   questionSeq: { n: number };
   progressSeq: { n: number };
+  /** Ruling 19: the activity state of this run's previous progress event, passed to classifyProgressMessage so a message that is not a phase change (a tool result, thinking, ...) keeps it. Starts at `running`: "working, no tool yet". */
+  activityPhase: { state: ActivityState };
   /** Batch 5 section 1 ruling 1: counts late_worker_event rows for this run, for a deterministic idempotency key (the house pattern, per questionSeq/progressSeq -- not randomUUID, so the count is exact and inspectable). */
   lateEventSeq: { n: number };
   workspacePath: string;
@@ -618,12 +620,14 @@ async function applyWorkerEventInner(
       // real value rather than an absent key a reader might mistake for
       // "not yet computed".
       const tool = parseProgressTool(event.message) ?? null;
+      const state = classifyProgressMessage(event.message, ctx.activityPhase.state);
+      ctx.activityPhase.state = state;
       insertEvent(db, {
         projectId: ticket.projectId,
         eventType: 'worker_progress',
         entityType: 'run',
         entityId: run.id,
-        payload: { message: event.message, costUsd: event.costUsd, tool, state: classifyProgressMessage(event.message) },
+        payload: { message: event.message, costUsd: event.costUsd, tool, state },
         visibility: 'internal',
         idempotencyKey: `worker_progress:${run.id}:${ctx.progressSeq.n}`,
       });
@@ -1089,6 +1093,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     const ctx: ApplyEventContext = {
       questionSeq: { n: 0 },
       progressSeq: { n: 0 },
+      activityPhase: { state: 'running' },
       lateEventSeq: { n: 0 },
       workspacePath: ws.path,
       workspaceType: ticket.workspaceType,
