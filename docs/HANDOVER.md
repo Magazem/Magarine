@@ -63,6 +63,15 @@ find. The three observations raised during testing are ruled and recorded in RES
    scheduler test needs a scripted burst.** The next small real run must record the states
    actually seen, and they must not all be one state.
 
+6. **`serve`/`tick`/`run --max-parallel` are still unvalidated.** Ruling 23 put one validator
+   behind `project create`/`project set` (store.ts's `assertValidMaxParallelWorkers`), but the
+   machine-wide flag takes any value: `serve --max-parallel 0` sets a ceiling of zero, so the
+   daemon starts no workers at all and says nothing, and `abc` becomes NaN. Same class as the
+   project-side bug the owner's walk exposed, on the surface that was left out of scope.
+7. **A project created while the page is open is invisible until a reload.** `loadProjects()`
+   runs only at start and on token save (`app.js` 1118, 1167). The owner hit this during the
+   demo recipe.
+
 **Sequence from here:** 16 = worker profiles and avatar seeds. 17 = the Windows window host.
 18 = per-ticket discussion, tags, shortcuts, and the owner's second skin.
 
