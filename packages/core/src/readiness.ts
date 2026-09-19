@@ -37,7 +37,16 @@ export function isReadinessRule(value: unknown): value is ReadinessRule {
  * fs-backed `probeScopeFile` (scopeProbe.ts), tests pass a stub. 'absent' (no
  * such file) is NOT a readiness failure; 'unreadable' is.
  */
-export type ScopeProbe = (path: string) => 'present' | 'absent' | 'unreadable';
+export type ScopeProbe = (path: string) => ScopeProbeResult;
+
+/**
+ * `{ unreadable: <error> }` carries the REAL reason the file cannot be read
+ * (e.g. `EACCES: permission denied`, `EISDIR: a directory is at this path`) as
+ * data, so the pause can name it: the causes need different fixes (repair
+ * permissions vs. remove what is at the path) and the owner should not have to
+ * work out which. The narrow cases stay bare strings.
+ */
+export type ScopeProbeResult = 'present' | 'absent' | { unreadable: string };
 
 export interface Readiness {
   rule: ReadinessRule;
@@ -45,6 +54,8 @@ export interface Readiness {
   message: string;
   /** The exact command that fixes it, with the project id filled in when there is one. */
   fix: string;
+  /** For `unreadable_scope_file`: the real error the probe reported (also carried in `message`). */
+  detail?: string;
 }
 
 // The one command that fixes the directory rules: a row's directory is the
@@ -61,7 +72,8 @@ export function describeReadinessRule(
   rule: ReadinessRule,
   projectId: string,
   workspaceRoot: string | null,
-  scopePath?: string | null
+  scopePath?: string | null,
+  error?: string | null
 ): string {
   const fix = readinessFix(projectId, rule);
   switch (rule) {
@@ -72,7 +84,10 @@ export function describeReadinessRule(
     case 'missing_scope_path':
       return `this project has no scope document path, so no worker can start -- run \`${fix}\``;
     case 'unreadable_scope_file':
-      return `the scope document at ${scopePath ?? '(unknown path)'} exists but cannot be read (a permissions problem, or a directory at that path) -- fix the file, or point the project elsewhere with \`magarine project set --project ${projectId} --dir <folder>\`, then run \`${fix}\``;
+      // `error` is what the probe actually reported when the pause was
+      // recorded; only a pause recorded without one (there is none today)
+      // says the cause was not recorded, rather than guessing between causes.
+      return `the scope document at ${scopePath ?? '(unknown path)'} cannot be read: ${error ?? 'cause not recorded'} -- fix the file, or point the project elsewhere with \`magarine project set --project ${projectId} --dir <folder>\`, then run \`${fix}\``;
   }
 }
 
@@ -104,12 +119,14 @@ export function projectReadiness(
   // Ruling 29: 'absent' passes (announced elsewhere, never a failure);
   // 'unreadable' fails -- reading it as empty would have the Manager
   // interview the owner about a document they already wrote.
-  if (probe(project.scopePath) === 'unreadable') {
+  const scope = probe(project.scopePath);
+  if (typeof scope === 'object') {
     const id = project.id ?? '<projectId>';
     return {
       rule: 'unreadable_scope_file',
-      message: describeReadinessRule('unreadable_scope_file', id, project.workspaceRoot, project.scopePath),
+      message: describeReadinessRule('unreadable_scope_file', id, project.workspaceRoot, project.scopePath, scope.unreadable),
       fix: readinessFix(project.id, 'unreadable_scope_file'),
+      detail: scope.unreadable,
     };
   }
   return null;

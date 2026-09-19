@@ -63,11 +63,30 @@ test('cli.ts, scheduler.ts and projectList.ts all ask projectReadiness and none 
 
 // Ruling 29 (batch 16 addendum 5): the scope document's state enters through an
 // injected probe, so these run without touching disk.
-test('projectReadiness: an UNREADABLE scope file -> unreadable_scope_file, naming the path and the resume fix', () => {
-  const r = projectReadiness(GOOD, STATE, () => 'unreadable', HOME);
-  assert.equal(r?.rule, 'unreadable_scope_file');
-  assert.ok(r!.message.includes(GOOD.scopePath), `names the path: ${r!.message}`);
-  assert.equal(r!.fix, 'magarine resume --project proj_1');
+// Each cause is STUBBED through the probe (no disk) and the message must name
+// the path AND that cause's real error -- the causes need different fixes
+// (repair permissions vs. remove what is at the path), so the owner must not
+// be left to guess between them.
+for (const [label, error] of [
+  ['permissions', 'EACCES: permission denied'],
+  ['a directory at the path', 'EISDIR: something that is not a file (a directory) is at this path'],
+  ['an I/O failure', 'EIO: i/o error'],
+] as const) {
+  test(`projectReadiness: an UNREADABLE scope file (${label}) -> unreadable_scope_file, naming the path AND the real error, and the resume fix`, () => {
+    const r = projectReadiness(GOOD, STATE, () => ({ unreadable: error }), HOME);
+    assert.equal(r?.rule, 'unreadable_scope_file');
+    assert.ok(r!.message.includes(GOOD.scopePath), `names the path: ${r!.message}`);
+    assert.ok(r!.message.includes(error), `names the real error: ${r!.message}`);
+    assert.ok(!/permissions problem, or a directory/.test(r!.message), 'no either/or guess between causes');
+    assert.equal(r!.detail, error);
+    assert.equal(r!.fix, 'magarine resume --project proj_1');
+  });
+}
+
+test('projectReadiness: two different causes give two different messages', () => {
+  const a = projectReadiness(GOOD, STATE, () => ({ unreadable: 'EACCES: permission denied' }), HOME)!;
+  const b = projectReadiness(GOOD, STATE, () => ({ unreadable: 'EISDIR: a directory is at this path' }), HOME)!;
+  assert.notEqual(a.message, b.message);
 });
 
 test('projectReadiness: an ABSENT scope file is NOT a readiness failure (the talk-first start is deliberate)', () => {

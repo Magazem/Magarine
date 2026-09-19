@@ -127,7 +127,7 @@ test('buildProjectList/formatProjectList mark ONLY absent-scope rows "no scope y
   const present = createProject(db, { name: 'has-scope', workspaceRoot: '/work/a', scopePath: '/work/a/SCOPE.md' });
   const absent = createProject(db, { name: 'no-scope-yet', workspaceRoot: '/work/b', scopePath: '/work/b/SCOPE.md' });
   const broken = createProject(db, { name: 'broken-scope', workspaceRoot: '/work/c', scopePath: '/work/c/SCOPE.md' });
-  const probe = (p: string) => (p === '/work/a/SCOPE.md' ? 'present' : p === '/work/b/SCOPE.md' ? 'absent' : 'unreadable') as 'present' | 'absent' | 'unreadable';
+  const probe = (p: string) => (p === '/work/a/SCOPE.md' ? 'present' : p === '/work/b/SCOPE.md' ? 'absent' : { unreadable: 'EACCES: permission denied' }) as 'present' | 'absent' | { unreadable: string };
 
   const entries = buildProjectList(db, STATE_DIR, probe);
 
@@ -135,6 +135,7 @@ test('buildProjectList/formatProjectList mark ONLY absent-scope rows "no scope y
   assert.deepEqual(entries.find((e) => e.id === absent.id)!.scope, { path: '/work/b/SCOPE.md', status: 'absent' });
   assert.equal(entries.find((e) => e.id === absent.id)!.readiness, null, 'an absent scope is not a readiness failure');
   assert.equal(entries.find((e) => e.id === broken.id)!.readiness?.rule, 'unreadable_scope_file');
+  assert.deepEqual(entries.find((e) => e.id === broken.id)!.scope, { path: '/work/c/SCOPE.md', status: 'unreadable', error: 'EACCES: permission denied' });
   const lines = formatProjectList(entries).split('\n');
   assert.ok(!/no scope yet|scope unreadable|needs --dir/.test(lines.find((l) => l.includes(present.id))!), 'a present scope is unmarked');
   assert.ok(lines.find((l) => l.includes(absent.id))!.endsWith('no scope yet'));

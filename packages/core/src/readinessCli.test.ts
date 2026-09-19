@@ -185,7 +185,7 @@ test('project create refuses a directory whose SCOPE.md is unreadable (a directo
   const res = await run(['project', 'create', '--name', 'p', '--dir', dir, '--state-dir', stateDir]);
   assert.notEqual(res.code, 0);
   assert.ok(res.stderr.includes(join(dir, 'SCOPE.md')), res.stderr);
-  assert.match(res.stderr, /cannot be read/);
+  assert.match(res.stderr, /cannot be read: EISDIR/);
 });
 
 test('a real `serve` pauses a project whose SCOPE.md is unreadable, BEFORE any run, with reason unreadable_scope_file', async () => {
@@ -220,6 +220,7 @@ test('a real `serve` pauses a project whose SCOPE.md is unreadable, BEFORE any r
     }
     assert.equal(board.pauseReason, 'unreadable_scope_file');
     assert.ok(board.pauseMessage.includes(join(dir, 'SCOPE.md')), board.pauseMessage);
+    assert.ok(board.pauseMessage.includes('EISDIR'), `names the real cause recorded by the scheduler: ${board.pauseMessage}`);
     assert.equal(board.tickets.find((t: any) => t.id === ticketId).status, 'READY', 'no run started');
   } finally {
     await proc.stop(200);

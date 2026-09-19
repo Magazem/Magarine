@@ -143,7 +143,7 @@ marks the row `no scope yet` (`--json`: `scope: {path, status}`), and the
 Manager's brief says the document "does not exist yet" rather than showing an
 empty one. A scope document that EXISTS but cannot be read (permissions, or a
 directory at that path) is a fourth readiness rule, `unreadable_scope_file`:
-the project pauses with the path named, and after fixing the file the owner runs
+the project pauses naming the path AND the real OS error (`EACCES` vs `EISDIR` need different fixes; the scheduler records it with the pause), and after fixing the file the owner runs
 `magarine resume --project <id>`. `readScopeText` returns `{text, status}` and
 throws on any error that is not ENOENT; `projectReadiness` stays pure, taking the
 filesystem as an injected `probe`. `project list` marks such rows `needs --dir`, and

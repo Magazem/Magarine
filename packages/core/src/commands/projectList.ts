@@ -23,7 +23,7 @@ export interface ProjectListEntry {
   /** Batch 16 ruling 24: the first failing readiness rule and its fix, or null when the project is ready to run. `project list` marks a non-null row `needs --dir` so the owner sees a legacy project before a Manager run finds it. */
   readiness: { rule: Readiness['rule']; fix: string } | null;
   /** Ruling 29: where the scope document is and how it stands -- `absent` also covers a project with no scope path at all (path null). `project list` marks a ready row whose document is absent `no scope yet`. */
-  scope: { path: string | null; status: 'present' | 'absent' | 'unreadable' };
+  scope: { path: string | null; status: 'present' | 'absent' | 'unreadable'; /** The real error, only when `status` is `unreadable`. */ error?: string };
 }
 
 export function buildProjectList(db: Db, stateDir: string, probe: ScopeProbe): ProjectListEntry[] {
@@ -31,7 +31,11 @@ export function buildProjectList(db: Db, stateDir: string, probe: ScopeProbe): P
     const tickets = listTickets(db, project.id);
     const spend = projectSpendUsd(db, tickets);
     const readiness = projectReadiness(project, stateDir, probe);
-    const scope = { path: project.scopePath, status: project.scopePath ? probe(project.scopePath) : ('absent' as const) };
+    const probed = project.scopePath ? probe(project.scopePath) : ('absent' as const);
+    const scope: ProjectListEntry['scope'] =
+      typeof probed === 'object'
+        ? { path: project.scopePath, status: 'unreadable', error: probed.unreadable }
+        : { path: project.scopePath, status: probed };
     const ticketCountsByStatus: Partial<Record<TicketStatus, number>> = {};
     for (const ticket of tickets) {
       ticketCountsByStatus[ticket.status] = (ticketCountsByStatus[ticket.status] ?? 0) + 1;

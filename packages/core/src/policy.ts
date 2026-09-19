@@ -235,6 +235,13 @@ const POLICY: Record<string, EventPolicy> = {
   // refused to spawn and paused the project, so this needs the owner's
   // attention the same way an adapter pause does.
   project_spend_cap_reached: { visibility: 'inbox', requiresUser: true, resolvesWhen: { projectResumed: true } },
+  // Batch 16 (rulings 24 and 29): the scheduler paused a project because it is
+  // not ready to run a worker (no directory, unsafe directory, no scope path,
+  // unreadable scope file). Same shape as project_spend_cap_reached: the pause
+  // itself is what the inbox shows (describeProjectPause), and this event
+  // carries the payload -- for an unreadable scope file, the real error --
+  // that the pause line names. Resolved by resuming the project.
+  project_not_ready: { visibility: 'inbox', requiresUser: true, resolvesWhen: { projectResumed: true } },
 
   // --- Batch 5: the supervisor must survive its own decisions ---
   // docs/strategy/batch-5-spec.md section 1 ruling 1's three guards. Neither

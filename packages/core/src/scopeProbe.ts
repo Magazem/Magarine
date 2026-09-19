@@ -9,16 +9,19 @@ import type { ScopeProbe } from './readiness.ts';
 // 'absent' is ONLY "no such file" (ENOENT/ENOTDIR): a missing scope document
 // is a legibility gap, not a failure. Everything else that stops the file
 // being read -- a permissions error, a directory at that path, a path that
-// cannot be resolved -- is 'unreadable', never folded into 'absent' (rule 9:
-// an unreadable file must not be reported as an empty one).
+// cannot be resolved -- is `{ unreadable: <the real error> }`, never folded
+// into 'absent' (rule 9: an unreadable file must not be reported as an empty
+// one), and the error travels so the pause can name it.
 export const probeScopeFile: ScopeProbe = (path) => {
   try {
-    if (!statSync(path).isFile()) return 'unreadable';
+    if (!statSync(path).isFile()) return { unreadable: 'EISDIR: something that is not a file (a directory) is at this path' };
     accessSync(path, constants.R_OK);
     return 'present';
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'unreadable';
+    const { code, message } = err as NodeJS.ErrnoException;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return 'absent';
+    // The OS's own words, path stripped (the message names the path already).
+    return { unreadable: `${code ?? 'error'}: ${message.replace(/^[A-Z]+: /, '').replace(/,? (stat|access|open) '.*'$/, '')}` };
   }
 };
 

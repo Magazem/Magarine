@@ -897,6 +897,20 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     const readiness = projectRow ? projectReadiness(projectRow, deps.readiness.stateDir, deps.readiness.scopeProbe) : null;
     if (readiness) {
       pauseProjectAdapter(deps.db, deps.projectId, readiness.rule);
+      // Ruling 29: record WHY, so the pause line can name the actual error
+      // (the causes of an unreadable scope file need different fixes) instead
+      // of guessing between them. describeProjectPause reads this back.
+      const notReadyPolicy = classify('project_not_ready');
+      insertEvent(deps.db, {
+        projectId: deps.projectId,
+        eventType: 'project_not_ready',
+        entityType: 'project',
+        entityId: deps.projectId,
+        payload: { rule: readiness.rule, ...(readiness.detail !== undefined ? { error: readiness.detail } : {}) },
+        visibility: notReadyPolicy.visibility,
+        requiresUser: notReadyPolicy.requiresUser,
+        idempotencyKey: `project_not_ready:${randomUUID()}`,
+      });
       return { started: [] };
     }
   }

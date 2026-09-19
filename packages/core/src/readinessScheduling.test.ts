@@ -132,7 +132,7 @@ test("'skip' declares the caller is not asking: a legacy project is NOT paused a
 // Ruling 29 (batch 16 addendum 5): a scope document that is ABSENT does not
 // pause a project (the talk-first start is deliberate); one that is
 // UNREADABLE does, at the same point of use, naming the path and the fix.
-function withProbe(base: ReturnType<typeof deps>, scopeProbe: () => 'present' | 'absent' | 'unreadable') {
+function withProbe(base: ReturnType<typeof deps>, scopeProbe: () => 'present' | 'absent' | { unreadable: string }) {
   return { ...base, readiness: { stateDir, scopeProbe } };
 }
 
@@ -143,7 +143,7 @@ test('an UNREADABLE scope file pauses the project BEFORE any run, with a reason 
   const manager = createTicket(db, { projectId: project.id, title: 'Plan', kind: 'manager', workspaceType: 'NONE' });
   const work = createTicket(db, { projectId: project.id, title: 'Work', workspaceType: 'NONE' });
 
-  const result = await tick(withProbe(deps(db, project.id, new FakeAdapter()), () => 'unreadable'));
+  const result = await tick(withProbe(deps(db, project.id, new FakeAdapter()), () => ({ unreadable: 'EACCES: permission denied' })));
 
   assert.deepEqual(result.started, [], 'nothing may start');
   assert.deepEqual(listRunsForTicket(db, manager.id), []);
@@ -153,7 +153,9 @@ test('an UNREADABLE scope file pauses the project BEFORE any run, with a reason 
   assert.equal(board.pauseReason, 'unreadable_scope_file');
   assert.ok(board.pauseMessage!.includes(scopePath), `names the path: ${board.pauseMessage}`);
   assert.ok(board.pauseMessage!.includes(`magarine resume --project ${project.id}`), board.pauseMessage!);
-  assert.match(buildInbox(db, project.id)[0]!.message, /cannot be read/);
+  // The REAL error was recorded with the pause and is what the line names.
+  assert.ok(board.pauseMessage!.includes('EACCES: permission denied'), board.pauseMessage!);
+  assert.match(buildInbox(db, project.id)[0]!.message, /cannot be read: EACCES: permission denied/);
 });
 
 test('an ABSENT scope file does NOT pause the project: its ticket runs (plan does not refuse a talk-first start)', async () => {

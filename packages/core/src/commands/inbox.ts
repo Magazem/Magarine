@@ -209,10 +209,15 @@ export function describeProjectPause(
   // that fixes it -- composed by readiness.ts, the same module that decided
   // the rule, so the wording cannot drift from the check.
   if (isReadinessRule(pauseReason)) {
+    // The scheduler recorded the real error with the pause (ruling 29); the
+    // most recent event is the pause in effect now.
+    const triggering = mostRecent(pausedEvents, 'project_not_ready');
+    const payload = triggering && typeof triggering.payload === 'object' && triggering.payload !== null ? (triggering.payload as { error?: unknown }) : {};
+    const row = getProject(db, project.id);
     return {
       eventType: 'project_not_ready',
-      message: describeReadinessRule(pauseReason, project.id, getProject(db, project.id)?.workspaceRoot ?? null, getProject(db, project.id)?.scopePath ?? null),
-      createdAt: project.updatedAt,
+      message: describeReadinessRule(pauseReason, project.id, row?.workspaceRoot ?? null, row?.scopePath ?? null, typeof payload.error === 'string' ? payload.error : null),
+      createdAt: triggering?.createdAt ?? project.updatedAt,
     };
   }
   if (pauseReason === 'adapter_unavailable') {

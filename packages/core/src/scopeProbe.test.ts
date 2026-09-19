@@ -19,7 +19,9 @@ test('probeScopeFile: a real file is present, a missing path (or missing parent)
   assert.equal(probeScopeFile(join(testRoot.root, 'no-such-dir', 'SCOPE.md')), 'absent');
   const dirAtPath = join(testRoot.root, 'dir-at-path');
   mkdirSync(dirAtPath);
-  assert.equal(probeScopeFile(dirAtPath), 'unreadable', 'a directory at the scope path is not "absent"');
+  // Not 'absent': the real cause travels as data, so the pause can name it.
+  const result = probeScopeFile(dirAtPath);
+  assert.ok(typeof result === 'object' && /^EISDIR: /.test(result.unreadable), `a directory at the scope path is unreadable with its real cause: ${JSON.stringify(result)}`);
 });
 
 test('scopeAnnouncement: the exact ruling 29 line, printed ONLY when the document is absent', () => {
@@ -28,6 +30,31 @@ test('scopeAnnouncement: the exact ruling 29 line, printed ONLY when the documen
     'scope document: /p/SCOPE.md (not found; write it before plan, or the Manager will start by interviewing you)'
   );
   assert.equal(scopeAnnouncement('/p/SCOPE.md', () => 'present'), null);
-  assert.equal(scopeAnnouncement('/p/SCOPE.md', () => 'unreadable'), null, 'unreadable is a readiness failure with its own pause, not this line');
+  assert.equal(scopeAnnouncement('/p/SCOPE.md', () => ({ unreadable: 'EACCES: permission denied' })), null, 'unreadable is a readiness failure with its own pause, not this line');
   assert.equal(scopeAnnouncement(null, () => 'absent'), null, 'no scope path at all is a readiness failure, not this line');
+});
+
+// A permissions failure is the OTHER real cause, and it needs a different fix
+// from a directory at the path. It is only reproducible where the OS enforces
+// file modes (not Windows, not root): this test proves that itself first and
+// SKIPS otherwise -- NOT OBSERVED, not faked.
+test('probeScopeFile: a file the process cannot read is unreadable with its real EACCES cause (skipped where modes are not enforced)', async (t) => {
+  const { chmodSync, accessSync, constants } = await import('node:fs');
+  const path = join(testRoot.root, 'locked.md');
+  writeFileSync(path, 'secret');
+  chmodSync(path, 0o000);
+  let enforced = false;
+  try {
+    accessSync(path, constants.R_OK);
+  } catch {
+    enforced = true;
+  }
+  if (!enforced) {
+    chmodSync(path, 0o644);
+    t.skip('this OS/user does not enforce file modes (Windows, or root): the EACCES case is NOT OBSERVED here');
+    return;
+  }
+  const result = probeScopeFile(path);
+  chmodSync(path, 0o644);
+  assert.ok(typeof result === 'object' && /^EACCES: /.test(result.unreadable), JSON.stringify(result));
 });

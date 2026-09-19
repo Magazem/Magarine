@@ -198,6 +198,28 @@ const SCENARIOS: Record<string, { build: () => Scenario; nextCommand: string; pe
     },
     nextCommand: 'magarine project set --project',
   },
+  // Batch 16 (rulings 24 and 29): the scheduler's readiness pause. The event
+  // carries the real error for an unreadable scope file; the inbox line is
+  // composed from the pause + that payload and names the resume command.
+  project_not_ready: {
+    build: () => {
+      const db = openDb(':memory:');
+      const project = createProject(db, { name: 'p', workspaceRoot: '/work/p', scopePath: '/work/p/SCOPE.md' });
+      insertEvent(db, {
+        projectId: project.id,
+        eventType: 'project_not_ready',
+        entityType: 'project',
+        entityId: project.id,
+        payload: { rule: 'unreadable_scope_file', error: 'EACCES: permission denied' },
+        visibility: 'inbox',
+        requiresUser: true,
+        idempotencyKey: `pnr_${project.id}`,
+      });
+      pauseProjectAdapter(db, project.id, 'unreadable_scope_file');
+      return { db, projectId: project.id };
+    },
+    nextCommand: 'magarine resume --project',
+  },
 };
 
 test('every inbox-visibility policy row has a completeness scenario, and every scenario is a real policy row', () => {
