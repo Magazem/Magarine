@@ -1666,6 +1666,32 @@ test('the phase is per run and starts at running: a tool result and a thinking l
   }
 });
 
+// Batch 16 Role A item 3 (ruling 18 option B): an event whose entity is a
+// RUN could only be tied to a ticket by a second lookup, which is why the page
+// could never resolve one. The payload now names the ticket itself.
+test('every persisted worker_progress row carries the ticketId of the ticket its run belongs to, and only that ticket', async () => {
+  const { db, project, adapter } = setupProject(2);
+  const a = createTicket(db, { projectId: project.id, title: 'a', workspaceType: 'NONE' });
+  const b = createTicket(db, { projectId: project.id, title: 'b', workspaceType: 'NONE' });
+  adapter.setScript(a.id, { kind: 'progress', messages: ['tool_use: Read', 'text: a says hi'], gapMs: 5 });
+  adapter.setScript(b.id, { kind: 'progress', messages: ['tool_use: Write'], gapMs: 5 });
+
+  const { started } = await tick({ db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
+  try {
+    const rowsOf = (runId: string) =>
+      listEventsForEntity(db, 'run', runId).filter((e) => e.eventType === 'worker_progress');
+    const runOf = (ticketId: string) => started.find((s) => s.ticketId === ticketId)!.runId;
+    const deadline = Date.now() + 3000;
+    while ((rowsOf(runOf(a.id)).length < 2 || rowsOf(runOf(b.id)).length < 1) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.deepEqual(rowsOf(runOf(a.id)).map((e) => (e.payload as { ticketId?: string }).ticketId), [a.id, a.id]);
+    assert.deepEqual(rowsOf(runOf(b.id)).map((e) => (e.payload as { ticketId?: string }).ticketId), [b.id]);
+  } finally {
+    for (const s of started) await adapter.stop(s.handle);
+  }
+});
+
 test('a fake `progress` script with NO message list still emits exactly one event, as before', async () => {
   const { db, project, adapter } = setupProject(1);
   const ticket = createTicket(db, { projectId: project.id, title: 'single', workspaceType: 'NONE' });

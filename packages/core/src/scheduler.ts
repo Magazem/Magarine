@@ -627,7 +627,10 @@ async function applyWorkerEventInner(
         eventType: 'worker_progress',
         entityType: 'run',
         entityId: run.id,
-        payload: { message: event.message, costUsd: event.costUsd, tool, state },
+        // Batch 16 item 3 (ruling 18 option B): the entity is a RUN, so
+        // without this a consumer needs a second lookup to know which ticket
+        // a row is about -- which is why the page could never resolve one.
+        payload: { ticketId: ticket.id, message: event.message, costUsd: event.costUsd, tool, state },
         visibility: 'internal',
         idempotencyKey: `worker_progress:${run.id}:${ctx.progressSeq.n}`,
       });

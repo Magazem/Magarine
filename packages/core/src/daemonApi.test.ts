@@ -718,6 +718,13 @@ test('GET /events replays existing rows after since, then pushes a live fake-ada
       assert.ok(progressEvent, 'expected a worker_progress event to arrive over the live stream');
       assert.equal(progressEvent.id, progressEvent.data.sequence, 'the SSE frame id must equal the event row\'s own sequence');
       assert.equal(progressEvent.event, progressEvent.data.eventType, 'the SSE event name must equal the event row\'s own event_type');
+      // Batch 16 item 3 (ruling 18 option B): the frame names its own ticket, so
+      // a consumer needs no second lookup from the run id to understand it.
+      assert.equal(
+        (progressEvent.data.payload as { ticketId?: string }).ticketId,
+        ticket.id,
+        'the streamed worker_progress frame must carry the ticket it belongs to'
+      );
     } finally {
       await handle.kill();
     }
