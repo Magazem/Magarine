@@ -22,58 +22,51 @@ $3.38 equivalent.
 
 ## Where we are
 
-**Batch 15 is BUILT, WALKED BY THE LEAD, AND WAITS ONLY ON THE OWNER'S WALK.** Batch 14 delivered
-the design; batch 15 built it and the daemon serves it. `docs/strategy/batch-15-spec.md` plus
-addenda 1-7 are the authority. **The acceptance record is `docs/evidence/batch-15-walk/RESULT.md`**
--- read it before claiming anything about batch 15.
+**BATCH 15 IS CLOSED.** Its closing condition was run: the lead's acceptance walk, the lead's
+re-run of the owner's walk from step one, and the owner's own re-run. Their verdict: *"the demo
+run was perfect."* The ticket the batch turned on -- their `index.md`, delivered and failed four
+times by a raw string comparison -- is `DONE`, succeeded 2026-09-19 after ruling 21.
+**The record is `docs/evidence/batch-15-walk/RESULT.md`**; read it before claiming anything about
+batch 15. Authority is `batch-15-spec.md` plus addenda 1-10.
 
-**Done, each verified by the lead on a still tree, suite 704 pass / 0 fail:**
-- Role A, the daemon: read path, `/events` stream, static assets, expected artefacts (`e9d37f8`).
-- Role B, the page: pass 3 as served files (`448b97b`); the three views as a root `data-view`
-  (ruling 15, `68ca8a7`); the scope-view page-scroll fix (`80231ec`); the organism animating from
-  the board's marker (ruling 18, `d7070f8`); keyboard focus on every scrolling region (3A,
-  `88501b0`); the current view drawn, and 23 captures re-taken (`a69f0e2`).
-- Close-out rulings: `ticket add --expected-artifact` and the same on `POST /tickets` (ruling 16,
-  `d3e8281`, `07ebfd2`); `reasonFor` reads `errors` (ruling 17, `edef94c`); the README route table
-  names batch 15's routes (`cad05e5`).
-- **The acceptance walk against a real daemon**, all five Role A items, ruling 18's live-stream
-  animation, and **spec line 82's one small real run**: a Haiku ticket, `DONE` in ~20 s, **$0.0758
-  equivalent, measured**, `hello.md` delivered, watched animating on the page and settling.
+**What batch 15 delivered:** the daemon's read path, `/events`, static assets and expected
+artefacts (`e9d37f8`); pass 3 as the page the daemon serves, the three views as a root
+`data-view`, per-column scrolling, keyboard reach on every scrolling region, the current view
+drawn, the organism animating from the board's own marker and surviving re-renders, and 23
+capture files (`448b97b`, `68ca8a7`, `80231ec`, `d7070f8`, `88501b0`, `a69f0e2`); expected
+artefacts on `ticket add` and `POST /tickets` (`d3e8281`, `07ebfd2`); `reasonFor` reading
+`errors` (`edef94c`); and, from the owner's walk, `magarine token` (`fd0d94e`, `4416031`),
+resolved-path artefact matching (`5f1e7f2`), unsafe project roots refused (`aa84325`), and
+`project set --max-parallel` (`9937064`). Suite 736 pass, 0 fail.
 
-**WHAT REMAINS IN BATCH 15: only the owner's walk** through the Liaison, which closes it. Per
-addendum 7 section 2 the walk asks the owner nothing -- they use the page and report what they
-find. The three observations raised during testing are ruled and recorded in RESULT.md.
+**BATCH 16, ruled or carried. The Strategist sets its final shape; this is what is banked:**
+1. **Parallelism, ruled (addendum 10, ruling 23 items 4-5):** `projects.max_parallel_workers`
+   becomes nullable so ONE number governs, by migration with an upgrade test, and the fleet
+   header shows "N of M slots". **This one first** -- the owner hit it, and the page could not
+   tell them why nothing ran in parallel.
+2. **`reporting` means a text line, ruled (addendum 8, ruling 19).** Needs the fake adapter to
+   script a progress burst first (item 3), because the scheduler test needs one.
+3. **The fake adapter cannot script a progress burst**, and the CLI has no `review` kind, so
+   ruling 18 requirement 4 and the approve/reject path are proven by hand rather than by test.
+4. **LEGACY PROJECTS ARE THE COMMON THREAD OF THE REST** -- rows created before a rule existed:
+   - **No scope path (found by the owner, 2026-09-19).** A Manager run on a pre-14-September
+     project failed with "update_scope cannot be applied: this project has no scope_path set
+     yet"; a retry passed by luck. `managerEnvelope.ts` 209 offers `update_scope`
+     unconditionally, `proposal.ts` 470 refuses it without a scope path, and a proposal is
+     all-or-nothing, so the run fails. Four of the owner's nine projects are in this state. The
+     Manager must not be offered a command that cannot be applied to that project.
+   - **Unsafe workspace roots** (ruling 22's carry): the point-of-use guard in the scheduler,
+     pausing the project with a reason naming the fix.
+5. **`serve`/`tick`/`run --max-parallel` are still unvalidated**: `--max-parallel 0` sets a
+   machine ceiling of zero, so the daemon starts nothing and says nothing; `abc` becomes NaN.
+6. **A project created while the page is open is invisible until a reload** (`app.js` 1118, 1167).
+7. Worker profiles and avatar seeds, planned for 16 before any of the above.
+8. `POST /tickets` names the Manager's snake_case field in its unknown-kind error; `status`
+   without `--project` errors instead of reporting the daemon, port and page address.
+9. Ruling 18's option B, carried on its own merits: `worker_progress` events self-describing.
 
-**CARRIED TO BATCH 16** (confirmed by the Strategist, addendum 7 section 3):
-1. **The fake adapter cannot script a progress burst -- FIRST**, because ruling 18 requirement 4
-   (the animation survives a re-render) was proven by hand and a scripted burst turns it into a test.
-2. The CLI's `--fake-script` has no `review` kind, so approve/reject cannot be driven end to end.
-3. `POST /tickets` names the Manager's snake_case `expected_artifacts` in its unknown-kind error.
-4. Ruling 18's option B: `worker_progress` events self-describing to any consumer (carry ticketId).
-5. **Ruled -- see `docs/strategy/batch-15-addendum-8-reporting-is-a-text-line.md` (ruling 19).**
-   Found by the real run: the page's activity state was almost always `reporting`. The defect is
-   the classifier's default, not the page and not ruling 18 -- `classifyToolActivity` returns
-   `reporting` for ANY message with no tool, while spec line 63 defines it as "a text line", and
-   the adapter emits five other non-tool families (`tool result received`, `thinking`, ...). A
-   frame-driven page would have shown the same thing. Fix, all in Role A's files: `reporting`
-   only from a `text:` message; a tool result carries its tool's state; other non-tool messages
-   keep the run's current phase (`running` before the first tool), carried beside
-   `ctx.progressSeq`; the persisted `tool` stays `null` for non-tool messages -- the state is the
-   phase, the tool is the evidence. **Order: burst scripting (item 1) first, because ruling 19's
-   scheduler test needs a scripted burst.** The next small real run must record the states
-   actually seen, and they must not all be one state.
-
-6. **`serve`/`tick`/`run --max-parallel` are still unvalidated.** Ruling 23 put one validator
-   behind `project create`/`project set` (store.ts's `assertValidMaxParallelWorkers`), but the
-   machine-wide flag takes any value: `serve --max-parallel 0` sets a ceiling of zero, so the
-   daemon starts no workers at all and says nothing, and `abc` becomes NaN. Same class as the
-   project-side bug the owner's walk exposed, on the surface that was left out of scope.
-7. **A project created while the page is open is invisible until a reload.** `loadProjects()`
-   runs only at start and on token save (`app.js` 1118, 1167). The owner hit this during the
-   demo recipe.
-
-**Sequence from here:** 16 = worker profiles and avatar seeds. 17 = the Windows window host.
-18 = per-ticket discussion, tags, shortcuts, and the owner's second skin.
+**Sequence after 16:** 17 = the Windows window host. 18 = per-ticket discussion, tags, shortcuts,
+and the owner's second skin.
 
 ## How this team works — the rules that were earned, not assumed
 

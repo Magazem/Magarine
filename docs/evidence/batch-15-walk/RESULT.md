@@ -1,14 +1,15 @@
 # Batch 15 - the acceptance walk
 
-> **The acceptance walk is RUN, including spec line 82's one small real run.** All five
-> Role A items, ruling 18's live-stream animation and the real run are satisfied, each
-> with its limits stated where it is. **What remains is only the owner's walk** through
-> the Liaison, which closes the batch; per addendum 7 section 2 it asks them nothing.
+> # BATCH 15 IS CLOSED. Its own closing condition was run, not assumed.
 >
-> This file was opened part-written, with its holes named, and filled in against a real
-> daemon. It is kept that way on purpose: batch 14 closed because a spec sentence read as
-> done and nobody checked it against reality (rule 20). One of those holes -- the real run
-> -- was nearly reported done while still using the fake adapter; see afca124.
+> Every Role A acceptance item, ruling 18's live-stream animation, spec line 82's small real
+> run, rulings 20-23 from the owner's walk, the lead's re-run of the walk from step one, and
+> **the owner's own re-run** are done. The owner's words: *"the demo run was perfect."*
+>
+> **The ticket the batch turned on:** their `index.md`, which was delivered and failed four
+> times on a raw string comparison, is `DONE` -- succeeded 2026-09-19 10:54:36 after ruling 21
+> landed, with the file recorded as its artefact. Read from their database, not taken from the
+> report.
 
 Orchestrator. Started 2026-09-16. Authority: `docs/strategy/batch-15-spec.md`
 line 68 (Role A acceptance) and line 82 (Role B acceptance and the closing
@@ -292,6 +293,23 @@ settled read is the honest one.
 The three false promises the owner hit are gone: `serve` now names the page and the
 command; `magarine token` exists; the gate names it instead of a token `serve` never
 prints.
+
+## The owner's own re-run -- BATCH 15 CLOSES HERE
+
+2026-09-19. The owner restarted `serve`, took the token with `magarine token`, and retried the
+ticket that had failed four times. It passed: `DONE`, attempt 4, artefact recorded. Their
+verdict on the demo: *"the demo run was perfect."*
+
+**One new fault, found by them on an OLDER project and not a regression.** A Manager run failed
+with *"update_scope cannot be applied: this project has no scope_path set yet"*, and a plain
+retry then worked. Diagnosed rather than accepted as flaky: that project (created 13 Sept)
+predates the rule that every project has a folder, so it has no scope file -- as do three of
+their other nine projects. The Manager's instructions offer `update_scope` unconditionally
+(`managerEnvelope.ts` 209), the validator refuses it when there is no scope path
+(`proposal.ts` 470), and a proposal is accepted or rejected whole, so the run fails. The retry
+succeeded only because the Manager happened not to use that command the second time -- the
+same project, the same conditions, a coin toss. Put to the Strategist for batch 16, with the
+two related legacy-row items already carried.
 
 ## Observations raised during the walk -- all ruled, none put to the owner
 
