@@ -46,8 +46,12 @@ resolved-path artefact matching (`5f1e7f2`), unsafe project roots refused (`aa84
    tell them why nothing ran in parallel.
 2. **`reporting` means a text line, ruled (addendum 8, ruling 19).** Needs the fake adapter to
    script a progress burst first (item 3), because the scheduler test needs one.
-3. **The fake adapter cannot script a progress burst**, and the CLI has no `review` kind, so
-   ruling 18 requirement 4 and the approve/reject path are proven by hand rather than by test.
+3. **The fake adapter cannot script a progress burst**, so ruling 18 requirement 4 (an
+   animation survives the re-render a frame causes) is proven by a Chrome run rather than by
+   test. **Corrected 2026-09-19: approve/reject are NOT in that state** -- `--fake-outcome
+   review` has scripted a review since batch 5 and `commands.test.ts` 1139/1177 drive both to
+   their real transitions. Only `--fake-script` lacks the `review` spelling. My error, from the
+   batch 15 walk, inherited by batch 16's item 1 rationale before the Engineer caught it.
 4. **LEGACY PROJECTS ARE THE COMMON THREAD OF THE REST** -- rows created before a rule existed:
    - **No scope path (found by the owner, 2026-09-19).** A Manager run on a pre-14-September
      project failed with "update_scope cannot be applied: this project has no scope_path set

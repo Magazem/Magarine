@@ -132,10 +132,13 @@ The refusals, verbatim (ids replaced):
 Ticket created with no `expectedArtifacts` stored `null`, not `[]`.
 
 **Limits, stated rather than papered over:**
-- **approve and reject were driven only to their refusal.** No ticket could be put
-  into review: the CLI's `--fake-script` accepts seven kinds and `review` is not one.
-  The refusal is real and legible ("is DONE, not REVIEW"); the success path is covered
-  by tests, not by this walk. A harness gap, carried to batch 16.
+- **approve and reject were driven only to their refusal** *in this walk*. The refusal is
+  real and legible ("is DONE, not REVIEW"). **CORRECTED 2026-09-19:** calling this a harness
+  gap was wrong. `--fake-outcome review` has existed since batch 5 (`cli.ts`'s
+  `FAKE_OUTCOME_KINDS.review`), and `commands.test.ts` 1139 and 1177 drive approve to DONE and
+  reject to READY end to end through a real tick. Only the `--fake-script` SPELLING lacks the
+  kind. The Invariants Engineer caught it when batch 16 handed them my rationale; the real
+  harness gap is the progress BURST, which stands.
 - **plan was driven with the fake adapter only**, so no real money was spent.
 - **Small wording defect found:** an unknown kind on `POST /tickets` names the field
   `ticket.expected_artifacts[1].kind` -- the Manager's snake_case -- while this route's
