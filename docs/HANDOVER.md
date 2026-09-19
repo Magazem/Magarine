@@ -72,6 +72,44 @@ resolved-path artefact matching (`5f1e7f2`), unsafe project roots refused (`aa84
 **Sequence after 16:** 17 = the Windows window host. 18 = per-ticket discussion, tags, shortcuts,
 and the owner's second skin.
 
+## PARKED 2026-09-19 — batch 16 mid-flight, exact resume point
+
+Parked on the owner's instruction: session limits are burning fast, so we stopped at a
+coherent point rather than at a finished item.
+
+**COMMITTED AND VERIFIED** (each mutation re-run by the lead, suite green at the time):
+`c2a9bab` fake-adapter burst + `review` under --fake-script; `f3ca200` ruling 19 (`reporting`
+is a text line); `1d0321a` ticketId on progress events; `e2faa15` the DOM harness with NO
+fixtures (a real spawned daemon is the fixture) plus Role B items 1 and 2; `871ea9f` the two
+browser proofs as real tests, with Chrome resolution reporting its strategy.
+
+**UNCOMMITTED IN THE TREE — Role A item 4, mid-edit, 23 files.** Coherent and green in scoped
+runs, deliberately NOT committed because it is incomplete. Do not treat it as done.
+- DONE: migration 0014 (nullable project cap) with the runner's `rebuildsReferencedTable`
+  flag, its upgrade test against a real 0001-0013 legacy DB, and 0014 appended to the
+  hard-coded id lists in 11 other db tests; `Project.maxParallelWorkers: number|null`;
+  createProject defaults null; `computeProjectCap` treats null as unbounded; `cli.ts`'s
+  `parseMaxParallelFlag` used by create/tick/run/serve with serve validating FIRST;
+  `project set --max-parallel none`; the route accepting `maxParallel: number|null`.
+- NOT DONE: `board.slots` (buildBoard, BoardResult, route wiring — DaemonApiDeps needs the
+  machine cap from serve.ts, and its test); ALL FOUR mutations unrun, including the one that
+  matters most, a migration overwriting an explicit row with NULL; the full cold suite unrun;
+  README lines for `none` and null-by-default; other tests assuming a default cap of 1
+  unchecked.
+- `packages/core/burstprobe.probe.ts` is untracked and disowned by both engineers; it imports
+  Role B's testDaemon/browserHarness. Delete it rather than commit it.
+
+**STILL TO DO IN BATCH 16:** finish item 4; item 5 (ruling 24 readiness check, which must widen
+`store.ts:84`, `commands/board.ts`'s BoardResult type and `commands/inbox.ts`'s
+describeProjectPause TOGETHER, using Role B's names `missing_workspace_root` |
+`unsafe_workspace_root` | `missing_scope_path`); item 6 (camelCase in the route error, `status`
+with no project); Role B item 3 (`N of M slots`, blocked on `board.slots`); then the closing
+condition of addendum 3 — the lead's cold walk, the stranger's walk, the legacy-DB fixture, the
+two-workers-at-once observation, and the owner's walk as an invitation.
+
+**The owner's own daemon (pid 31044, their real `~/.magarine`) is running and is not ours to
+stop, read or use.**
+
 ## How this team works — the rules that were earned, not assumed
 
 1. **Verify every claim independently before reporting or committing it.** This has caught a
