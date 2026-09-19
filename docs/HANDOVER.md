@@ -4,74 +4,6 @@ Written so the Orchestrator's and Strategist's contexts can be reset without los
 Everything below is durable: the task board, `docs/strategy/`, `docs/design/`, `docs/evidence/`
 and the commit history carry the rest.
 
-## What Magarine is, today
-
-A cross-platform agent-orchestration daemon. **It works end to end and has been proven with
-real money:**
-
-- Hand it a markdown scope document. It **interviews you about what it does not know** rather
-  than assuming — and does *not* interview when the scope is already clear.
-- It plans the work into tickets with dependencies, **chooses a model per ticket and records
-  why** (mechanical work on haiku at ~$0.05, real design work on opus-5).
-- A daemon runs workers in parallel under a spend cap, on a loopback HTTP API.
-- A browser page shows the board, the inbox, activity, and a conversation with the Manager.
-- You can talk to it in plain language and it **re-plans**.
-
-Proven runs are in `docs/evidence/`. Batch 13's replay: four tickets, four files delivered,
-$3.38 equivalent.
-
-## Where we are
-
-**BATCH 15 IS CLOSED.** Its closing condition was run: the lead's acceptance walk, the lead's
-re-run of the owner's walk from step one, and the owner's own re-run. Their verdict: *"the demo
-run was perfect."* The ticket the batch turned on -- their `index.md`, delivered and failed four
-times by a raw string comparison -- is `DONE`, succeeded 2026-09-19 after ruling 21.
-**The record is `docs/evidence/batch-15-walk/RESULT.md`**; read it before claiming anything about
-batch 15. Authority is `batch-15-spec.md` plus addenda 1-10.
-
-**What batch 15 delivered:** the daemon's read path, `/events`, static assets and expected
-artefacts (`e9d37f8`); pass 3 as the page the daemon serves, the three views as a root
-`data-view`, per-column scrolling, keyboard reach on every scrolling region, the current view
-drawn, the organism animating from the board's own marker and surviving re-renders, and 23
-capture files (`448b97b`, `68ca8a7`, `80231ec`, `d7070f8`, `88501b0`, `a69f0e2`); expected
-artefacts on `ticket add` and `POST /tickets` (`d3e8281`, `07ebfd2`); `reasonFor` reading
-`errors` (`edef94c`); and, from the owner's walk, `magarine token` (`fd0d94e`, `4416031`),
-resolved-path artefact matching (`5f1e7f2`), unsafe project roots refused (`aa84325`), and
-`project set --max-parallel` (`9937064`). Suite 736 pass, 0 fail.
-
-**BATCH 16, ruled or carried. The Strategist sets its final shape; this is what is banked:**
-1. **Parallelism, ruled (addendum 10, ruling 23 items 4-5):** `projects.max_parallel_workers`
-   becomes nullable so ONE number governs, by migration with an upgrade test, and the fleet
-   header shows "N of M slots". **This one first** -- the owner hit it, and the page could not
-   tell them why nothing ran in parallel.
-2. **`reporting` means a text line, ruled (addendum 8, ruling 19).** Needs the fake adapter to
-   script a progress burst first (item 3), because the scheduler test needs one.
-3. **The fake adapter cannot script a progress burst**, so ruling 18 requirement 4 (an
-   animation survives the re-render a frame causes) is proven by a Chrome run rather than by
-   test. **Corrected 2026-09-19: approve/reject are NOT in that state** -- `--fake-outcome
-   review` has scripted a review since batch 5 and `commands.test.ts` 1139/1177 drive both to
-   their real transitions. Only `--fake-script` lacks the `review` spelling. My error, from the
-   batch 15 walk, inherited by batch 16's item 1 rationale before the Engineer caught it.
-4. **LEGACY PROJECTS ARE THE COMMON THREAD OF THE REST** -- rows created before a rule existed:
-   - **No scope path (found by the owner, 2026-09-19).** A Manager run on a pre-14-September
-     project failed with "update_scope cannot be applied: this project has no scope_path set
-     yet"; a retry passed by luck. `managerEnvelope.ts` 209 offers `update_scope`
-     unconditionally, `proposal.ts` 470 refuses it without a scope path, and a proposal is
-     all-or-nothing, so the run fails. Four of the owner's nine projects are in this state. The
-     Manager must not be offered a command that cannot be applied to that project.
-   - **Unsafe workspace roots** (ruling 22's carry): the point-of-use guard in the scheduler,
-     pausing the project with a reason naming the fix.
-5. **`serve`/`tick`/`run --max-parallel` are still unvalidated**: `--max-parallel 0` sets a
-   machine ceiling of zero, so the daemon starts nothing and says nothing; `abc` becomes NaN.
-6. **A project created while the page is open is invisible until a reload** (`app.js` 1118, 1167).
-7. Worker profiles and avatar seeds, planned for 16 before any of the above.
-8. `POST /tickets` names the Manager's snake_case field in its unknown-kind error; `status`
-   without `--project` errors instead of reporting the daemon, port and page address.
-9. Ruling 18's option B, carried on its own merits: `worker_progress` events self-describing.
-
-**Sequence after 16:** 17 = the Windows window host. 18 = per-ticket discussion, tags, shortcuts,
-and the owner's second skin.
-
 ## READ FIRST IF YOU ARE A FRESH ORCHESTRATOR
 
 The lead's context was reset here deliberately. Everything you need is this file, the task
@@ -145,6 +77,74 @@ two-workers-at-once observation, and the owner's walk as an invitation.
 
 **The owner's own daemon (pid 31044, their real `~/.magarine`) is running and is not ours to
 stop, read or use.**
+
+## What Magarine is, today
+
+A cross-platform agent-orchestration daemon. **It works end to end and has been proven with
+real money:**
+
+- Hand it a markdown scope document. It **interviews you about what it does not know** rather
+  than assuming — and does *not* interview when the scope is already clear.
+- It plans the work into tickets with dependencies, **chooses a model per ticket and records
+  why** (mechanical work on haiku at ~$0.05, real design work on opus-5).
+- A daemon runs workers in parallel under a spend cap, on a loopback HTTP API.
+- A browser page shows the board, the inbox, activity, and a conversation with the Manager.
+- You can talk to it in plain language and it **re-plans**.
+
+Proven runs are in `docs/evidence/`. Batch 13's replay: four tickets, four files delivered,
+$3.38 equivalent.
+
+## Where we are
+
+**BATCH 15 IS CLOSED.** Its closing condition was run: the lead's acceptance walk, the lead's
+re-run of the owner's walk from step one, and the owner's own re-run. Their verdict: *"the demo
+run was perfect."* The ticket the batch turned on -- their `index.md`, delivered and failed four
+times by a raw string comparison -- is `DONE`, succeeded 2026-09-19 after ruling 21.
+**The record is `docs/evidence/batch-15-walk/RESULT.md`**; read it before claiming anything about
+batch 15. Authority is `batch-15-spec.md` plus addenda 1-10.
+
+**What batch 15 delivered:** the daemon's read path, `/events`, static assets and expected
+artefacts (`e9d37f8`); pass 3 as the page the daemon serves, the three views as a root
+`data-view`, per-column scrolling, keyboard reach on every scrolling region, the current view
+drawn, the organism animating from the board's own marker and surviving re-renders, and 23
+capture files (`448b97b`, `68ca8a7`, `80231ec`, `d7070f8`, `88501b0`, `a69f0e2`); expected
+artefacts on `ticket add` and `POST /tickets` (`d3e8281`, `07ebfd2`); `reasonFor` reading
+`errors` (`edef94c`); and, from the owner's walk, `magarine token` (`fd0d94e`, `4416031`),
+resolved-path artefact matching (`5f1e7f2`), unsafe project roots refused (`aa84325`), and
+`project set --max-parallel` (`9937064`). Suite 736 pass, 0 fail.
+
+**BATCH 16, ruled or carried. The Strategist sets its final shape; this is what is banked:**
+1. **Parallelism, ruled (addendum 10, ruling 23 items 4-5):** `projects.max_parallel_workers`
+   becomes nullable so ONE number governs, by migration with an upgrade test, and the fleet
+   header shows "N of M slots". **This one first** -- the owner hit it, and the page could not
+   tell them why nothing ran in parallel.
+2. **`reporting` means a text line, ruled (addendum 8, ruling 19).** Needs the fake adapter to
+   script a progress burst first (item 3), because the scheduler test needs one.
+3. **The fake adapter cannot script a progress burst**, so ruling 18 requirement 4 (an
+   animation survives the re-render a frame causes) is proven by a Chrome run rather than by
+   test. **Corrected 2026-09-19: approve/reject are NOT in that state** -- `--fake-outcome
+   review` has scripted a review since batch 5 and `commands.test.ts` 1139/1177 drive both to
+   their real transitions. Only `--fake-script` lacks the `review` spelling. My error, from the
+   batch 15 walk, inherited by batch 16's item 1 rationale before the Engineer caught it.
+4. **LEGACY PROJECTS ARE THE COMMON THREAD OF THE REST** -- rows created before a rule existed:
+   - **No scope path (found by the owner, 2026-09-19).** A Manager run on a pre-14-September
+     project failed with "update_scope cannot be applied: this project has no scope_path set
+     yet"; a retry passed by luck. `managerEnvelope.ts` 209 offers `update_scope`
+     unconditionally, `proposal.ts` 470 refuses it without a scope path, and a proposal is
+     all-or-nothing, so the run fails. Four of the owner's nine projects are in this state. The
+     Manager must not be offered a command that cannot be applied to that project.
+   - **Unsafe workspace roots** (ruling 22's carry): the point-of-use guard in the scheduler,
+     pausing the project with a reason naming the fix.
+5. **`serve`/`tick`/`run --max-parallel` are still unvalidated**: `--max-parallel 0` sets a
+   machine ceiling of zero, so the daemon starts nothing and says nothing; `abc` becomes NaN.
+6. **A project created while the page is open is invisible until a reload** (`app.js` 1118, 1167).
+7. Worker profiles and avatar seeds, planned for 16 before any of the above.
+8. `POST /tickets` names the Manager's snake_case field in its unknown-kind error; `status`
+   without `--project` errors instead of reporting the daemon, port and page address.
+9. Ruling 18's option B, carried on its own merits: `worker_progress` events self-describing.
+
+**Sequence after 16:** 17 = the Windows window host. 18 = per-ticket discussion, tags, shortcuts,
+and the owner's second skin.
 
 ## How this team works — the rules that were earned, not assumed
 
