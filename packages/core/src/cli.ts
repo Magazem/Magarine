@@ -309,13 +309,13 @@ const FLAG_SPECS: Record<string, string[]> = {
   // batch 7). Layered on top of `--fake-script`, not a replacement: existing
   // scripts (`succeed`, `question`, `malformed_result`, `hang`) still only
   // have a `--fake-script` spelling.
-  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
-  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
+  tick: ['project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome', 'fake-progress-gap'],
+  run: ['until-idle', 'project', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome', 'fake-progress-gap'],
   // Batch 8 (Role M): `serve` has no `--project` -- it ticks every project in
   // the state directory's database (see daemon.ts's startDaemonLoop). `--port`
   // defaults to 0 (any free loopback port); `--tick-interval` is in seconds,
   // matching `--run-timeout`'s convention elsewhere in this file.
-  serve: ['port', 'tick-interval', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome'],
+  serve: ['port', 'tick-interval', 'max-parallel', 'adapter', 'claude-exe', 'run-timeout', 'fake-script', 'fake-outcome', 'fake-progress-gap'],
   // Batch 10 (Role Q): `--paid` opts into one real, billed `claude -p` call
   // (see commands/doctor.ts) -- absent by default, so `doctor` costs nothing
   // unless explicitly asked to spend.
@@ -388,6 +388,9 @@ const FAKE_SCRIPT_KINDS = new Set<FakeScript['kind']>([
   // the real CLI rather than only from a test file calling FakeAdapter
   // directly.
   'progress',
+  // Batch 16 Role A item 1: lands the ticket in REVIEW under `--fake-script`'s
+  // own spelling too (`--fake-outcome review` has done so since batch 5).
+  'review',
 ]);
 
 // Batch 5 item 5: the daemon's own outcome vocabulary, mapped onto
@@ -428,13 +431,41 @@ function buildAdapter(db: Db, flags: Flags, projectId: string): AgentAdapter {
 
   if (kind === 'fake') {
     const adapter = new FakeAdapter();
+    // Batch 16 Role A item 1: `--fake-progress-gap <ms>` is the gap between
+    // the messages of a `progress:<message>` burst below (default
+    // FAKE_PROGRESS_GAP_MS).
+    let gapMs: number | undefined;
+    if ('fake-progress-gap' in flags) {
+      // Present at all: a bare flag (parseFlags stores `true`) is refused too,
+      // not ignored. `0` is legitimate (no gap); NaN, negatives and
+      // fractions are not -- never a silent NaN.
+      const raw = flags['fake-progress-gap'];
+      gapMs = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : Number.NaN;
+      if (!Number.isInteger(gapMs) || gapMs < 0) {
+        throw new Error(
+          `--fake-progress-gap must be a whole number of milliseconds, 0 or more, got: ${typeof raw === 'string' ? raw : '(no value)'}`
+        );
+      }
+    }
+    const bursts = new Map<string, string[]>();
     for (const spec of flagList(flags, 'fake-script')) {
       const eq = spec.indexOf('=');
       if (eq < 0) {
         throw new Error(`--fake-script must be "<ticketId>=<kind>", got: ${spec}`);
       }
       const ticketId = spec.slice(0, eq);
-      const scriptKind = spec.slice(eq + 1);
+      let scriptKind = spec.slice(eq + 1);
+      // `<ticketId>=progress:<message>`, repeatable: each occurrence appends
+      // one message to that ticket's ordered burst. Only the FIRST ':' splits
+      // kind from message, so a message may itself contain ':' or '='. Bare
+      // `progress` (no colon) is the unchanged single-event form.
+      if (scriptKind.startsWith('progress:')) {
+        const list = bursts.get(ticketId) ?? [];
+        list.push(scriptKind.slice('progress:'.length));
+        bursts.set(ticketId, list);
+        adapter.setScript(ticketId, { kind: 'progress', messages: list, gapMs });
+        continue;
+      }
       if (!FAKE_SCRIPT_KINDS.has(scriptKind as FakeScript['kind'])) {
         throw new Error(
           `--fake-script has an unknown kind "${scriptKind}" for ticket ${ticketId}. Valid kinds: ${[

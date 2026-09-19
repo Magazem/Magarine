@@ -399,9 +399,14 @@ no cap (the previous, still-default behaviour).
 With `--adapter fake` (the default), `--fake-script <ticketId>=<kind>`
 (repeatable) scripts the permanent `FakeAdapter` test double per ticket id —
 `succeed` (default if unscripted), `retryable_failure`, `question`,
-`needs_user_decision`, `malformed_result`, or `hang` — so a scenario like "this
-ticket needs a user decision" can be driven through the real CLI, e.g. for
-trying `decide`/`inbox` by hand:
+`needs_user_decision`, `malformed_result`, `hang`, `review` (lands the ticket in
+REVIEW, for `approve`/`reject`) or `progress` (never terminal: the ticket stays
+`IN_PROGRESS`) — so a scenario like "this ticket needs a user decision" can be
+driven through the real CLI, e.g. for trying `decide`/`inbox` by hand. `progress`
+also scripts a BURST: `--fake-script <ticketId>=progress:<message>`, repeated,
+appends one message per occurrence, emitted in that order `--fake-progress-gap
+<ms>` apart (default 20; a message may contain `:` and `=`, only the first `:`
+splits). Bare `<ticketId>=progress` is still the single-event form.
 
 ```sh
 node src/cli.ts tick --project <projectId> --fake-script <ticketId>=needs_user_decision --json

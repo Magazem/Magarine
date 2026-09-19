@@ -1556,3 +1556,74 @@ test('a progress event at or under the ceiling never stops the worker', async ()
 
   assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
 });
+
+// --- Batch 16 Role A item 1: the fake adapter scripts a progress BURST ------
+// One `progress` script used to emit exactly one event, so nothing could
+// exercise "several progress events through one run" without a hand-built
+// TestAdapter (and ruling 18 requirement 4 was proven by a Chrome run). A
+// script now carries an ordered list with a configurable gap.
+test('a fake `progress` script with a message list drives FIVE progress events through ONE run: five worker_progress rows, ascending sequence, in the scripted order', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'bursts', workspaceType: 'NONE' });
+  const messages = ['one', 'two', 'three', 'four', 'five'];
+  adapter.setScript(ticket.id, { kind: 'progress', messages, gapMs: 5 });
+
+  const deps = { db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  const runId = started[0].runId;
+  try {
+    const rows = () => listEventsForEntity(db, 'run', runId).filter((e) => e.eventType === 'worker_progress');
+    const deadline = Date.now() + 3000;
+    while (rows().length < 5 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const got = rows();
+    assert.equal(got.length, 5, 'exactly five worker_progress rows for the one run');
+    const sequences = got.map((e) => e.sequence);
+    assert.deepEqual([...sequences].sort((a, b) => a - b), sequences, 'sequences ascend');
+    assert.equal(new Set(sequences).size, 5, 'and are all distinct');
+    assert.deepEqual(
+      got.map((e) => (e.payload as { message: string }).message),
+      messages,
+      'emitted in the scripted order'
+    );
+    assert.equal(getTicket(db, ticket.id)!.status, 'IN_PROGRESS', 'a progress script never terminates on its own');
+  } finally {
+    await adapter.stop(started[0].handle);
+  }
+});
+
+test('the gap between the messages of a scripted burst is the configured gapMs, not zero: first-to-last spans at least the summed gaps', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'spaced', workspaceType: 'NONE' });
+  adapter.setScript(ticket.id, { kind: 'progress', messages: ['a', 'b', 'c'], gapMs: 60 });
+
+  const { started } = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  try {
+    const rows = () => listEventsForEntity(db, 'run', started[0].runId).filter((e) => e.eventType === 'worker_progress');
+    const deadline = Date.now() + 3000;
+    while (rows().length < 3 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    const got = rows();
+    assert.equal(got.length, 3);
+    const span = Date.parse(got[2].createdAt) - Date.parse(got[0].createdAt);
+    assert.ok(span >= 100, `two 60ms gaps must span at least ~100ms first-to-last (timers never fire early), got ${span}ms`);
+  } finally {
+    await adapter.stop(started[0].handle);
+  }
+});
+
+test('a fake `progress` script with NO message list still emits exactly one event, as before', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'single', workspaceType: 'NONE' });
+  adapter.setScript(ticket.id, { kind: 'progress', message: 'only one' });
+
+  const { started } = await tick({ db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const rows = listEventsForEntity(db, 'run', started[0].runId).filter((e) => e.eventType === 'worker_progress');
+    assert.equal(rows.length, 1);
+    assert.equal((rows[0].payload as { message: string }).message, 'only one');
+  } finally {
+    await adapter.stop(started[0].handle);
+  }
+});
+

@@ -640,6 +640,93 @@ test('project set --max-parallel and project create --max-parallel refuse 0, -1,
   });
 });
 
+// --- Batch 16 Role A item 1: the SAME two outcomes under `--fake-script`'s
+// own spelling, plus a scripted progress burst. `--fake-outcome review` (above)
+// has driven approve/reject to their real transitions since batch 5; what was
+// missing was `review` as a `--fake-script` kind and any way to script more
+// than one progress event from the CLI.
+
+async function tickReview(dbFile: string, kindSpec: (ticketId: string) => string[]): Promise<{ projectId: string; ticketId: string }> {
+  const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+  const ticket = JSON.parse(
+    (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+  );
+  const tickRes = await run(['tick', '--project', project.id, ...kindSpec(ticket.id), '--json', '--db', dbFile]);
+  assert.equal(tickRes.code, 0, tickRes.stderr);
+  const status = JSON.parse((await run(['status', '--project', project.id, '--json', '--db', dbFile])).stdout) as Array<{ id: string; status: string }>;
+  assert.equal(status.find((t) => t.id === ticket.id)!.status, 'REVIEW', '--fake-script review must land the ticket in REVIEW');
+  return { projectId: project.id, ticketId: ticket.id };
+}
+
+test('--fake-script <id>=review lands a ticket in REVIEW, and approve then takes it to DONE (the real transition, not the refusal)', async () => {
+  await withTempDb('magarine-fake-script-review-approve-', async (dbFile) => {
+    const { ticketId } = await tickReview(dbFile, (id) => ['--fake-script', `${id}=review`]);
+    const approve = await run(['approve', '--ticket', ticketId, '--json', '--db', dbFile]);
+    assert.equal(approve.code, 0, approve.stderr);
+    assert.equal(JSON.parse(approve.stdout).status, 'DONE');
+  });
+});
+
+test('--fake-script <id>=review lands a ticket in REVIEW, and reject then returns it to READY (the real transition)', async () => {
+  await withTempDb('magarine-fake-script-review-reject-', async (dbFile) => {
+    const { ticketId } = await tickReview(dbFile, (id) => ['--fake-script', `${id}=review`]);
+    const reject = await run(['reject', '--ticket', ticketId, '--reason', 'needs another pass', '--json', '--db', dbFile]);
+    assert.equal(reject.code, 0, reject.stderr);
+    assert.equal(JSON.parse(reject.stdout).status, 'READY');
+  });
+});
+
+test('--fake-script <id>=progress:<message>, repeated, scripts an ordered burst; the gap flag is validated; an unknown kind still names every valid kind, review and progress included', async () => {
+  await withTempDb('magarine-fake-script-burst-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+    );
+
+    const tickRes = await run([
+      'tick', '--project', project.id,
+      '--fake-script', `${ticket.id}=progress:Write: first=step`,
+      '--fake-script', `${ticket.id}=progress:second`,
+      '--fake-script', `${ticket.id}=progress:third`,
+      '--fake-progress-gap', '5',
+      '--json', '--db', dbFile,
+    ]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+
+    const events = JSON.parse(
+      (await run(['activity', '--project', project.id, '--all', '--json', '--db', dbFile])).stdout
+    ) as Array<{ eventType: string; payload: { message?: string } }>;
+    const progress = events.filter((e) => e.eventType === 'worker_progress');
+    assert.deepEqual(
+      progress.map((e) => e.payload.message),
+      ['Write: first=step', 'second', 'third'],
+      'three progress rows, in the scripted order, message text kept verbatim (colons and equals signs included)'
+    );
+
+    // A non-negative INTEGER of milliseconds: `abc` (NaN), `-1`, `1.5` and a
+    // bare flag with no value all refuse naming the flag -- never a silent
+    // NaN (the `--max-parallel` lesson) -- while `0`, meaning no gap, is
+    // legitimate and accepted.
+    for (const bad of ['abc', '-1', '1.5']) {
+      const badGap = await run(['tick', '--project', project.id, '--fake-progress-gap', bad, '--db', dbFile]);
+      assert.notEqual(badGap.code, 0, `--fake-progress-gap ${bad} must be refused`);
+      assert.match(badGap.stderr, /--fake-progress-gap/);
+    }
+    const bareGap = await run(['tick', '--project', project.id, '--fake-progress-gap', '--db', dbFile]);
+    assert.notEqual(bareGap.code, 0, 'a bare --fake-progress-gap has no value and must be refused');
+    assert.match(bareGap.stderr, /--fake-progress-gap/);
+    const zeroGap = await run(['tick', '--project', project.id, '--fake-progress-gap', '0', '--db', dbFile]);
+    assert.equal(zeroGap.code, 0, `--fake-progress-gap 0 (no gap) is legitimate: ${zeroGap.stderr}`);
+
+    const badKind = await run(['tick', '--project', project.id, '--fake-script', `${ticket.id}=bogus`, '--db', dbFile]);
+    assert.notEqual(badKind.code, 0);
+    assert.match(badKind.stderr, /unknown kind "bogus"/);
+    assert.match(badKind.stderr, /\breview\b/);
+    assert.match(badKind.stderr, /\bprogress\b/);
+    assert.match(badKind.stderr, /\bsucceed\b/);
+  });
+});
+
 test('project set on an unknown project id fails by name, not with a silent no-op or a DB error', async () => {
   await withTempDb('magarine-projectset-unknown-', async (dbFile) => {
     await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile]);

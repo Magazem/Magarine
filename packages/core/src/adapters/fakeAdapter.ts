@@ -52,7 +52,11 @@ export type FakeScript =
   // run looks right up until the scheduler decides to stop it (see
   // scheduler.ts's budget-stop branch in applyWorkerEventInner's 'progress'
   // case).
-  | { kind: 'progress'; costUsd?: number; message?: string; delayMs?: number }
+  // Batch 16 Role A item 1: `messages` scripts a BURST -- one progress event
+  // per entry, in order, `gapMs` apart (default FAKE_PROGRESS_GAP_MS), the
+  // first at `delayMs`. Still never terminal. Absent, the script emits the
+  // single `message` event it always did (`costUsd` only rides that form).
+  | { kind: 'progress'; costUsd?: number; message?: string; messages?: string[]; gapMs?: number; delayMs?: number }
   // Batch 9: models a Manager ticket's run. Writes `proposal` (if given) to
   // the REAL workspace as `.orchestrator/proposal.json` before the terminal
   // event fires, the same file a real `claude` invocation is asked to
@@ -81,6 +85,8 @@ export type FakeScript =
       extraArtifacts?: WorkerResultArtifact[];
     }
   | { kind: 'hang' };
+
+export const FAKE_PROGRESS_GAP_MS = 20;
 
 interface HandleState {
   timers: NodeJS.Timeout[];
@@ -224,7 +230,13 @@ export class FakeAdapter implements AgentAdapter {
         break;
 
       case 'progress':
-        schedule({ type: 'progress', message: script.message ?? 'fake progress', costUsd: script.costUsd }, script.delayMs ?? 0);
+        if (script.messages && script.messages.length > 0) {
+          script.messages.forEach((message, i) => {
+            schedule({ type: 'progress', message }, (script.delayMs ?? 0) + i * (script.gapMs ?? FAKE_PROGRESS_GAP_MS));
+          });
+        } else {
+          schedule({ type: 'progress', message: script.message ?? 'fake progress', costUsd: script.costUsd }, script.delayMs ?? 0);
+        }
         break;
 
       case 'review':
