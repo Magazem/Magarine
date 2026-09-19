@@ -72,6 +72,42 @@ resolved-path artefact matching (`5f1e7f2`), unsafe project roots refused (`aa84
 **Sequence after 16:** 17 = the Windows window host. 18 = per-ticket discussion, tags, shortcuts,
 and the owner's second skin.
 
+## READ FIRST IF YOU ARE A FRESH ORCHESTRATOR
+
+The lead's context was reset here deliberately. Everything you need is this file, the task
+board, `docs/strategy/` and `docs/evidence/`. Do not ask the team to re-explain; the park
+section below is the resume point.
+
+**THE OWNER'S GOAL, in their words (2026-09-19):** *"i want to get finished with this project
+so we can move our workflow to magarine and be more effecient than the current one"*. Magarine
+is not a toy for them: they intend to run this team's own kind of work through it. Their
+deferred design research is about "these stuff" — the efficiency of agent workflows — which is
+why ruling 27 holds the second skin until they hand the research over, and why it may land as
+an update rather than a rebuild. Weigh every scope call against reaching a usable beta.
+
+**SESSION LIMITS ARE THE BINDING CONSTRAINT AND THEY ARE BEING SPENT TOO FAST.** The owner
+raised it, the measures below are theirs approved, and they are rules now, not suggestions:
+
+1. **The cost is the team talking, not the product running.** Test runs, daemons and Chrome
+   cost wall-clock, not session capacity. Long briefs, long reports and many round trips do.
+2. **Every message to a teammate re-feeds that teammate's whole accumulated context.** Three
+   agents are premium long-context: the lead (opus 1M), the Strategist (fable 1M) and the
+   Interface Designer (opus 1M). Clear a teammate's context with `team_clear_agent_context`
+   whenever their brief is durable on the board — it costs nothing to do and removes the
+   largest repeated charge. Done for both engineers at the park.
+3. **Batch dispatches.** Role A's six items cost six briefs, six reports and six verification
+   turns. Send two or three items per task unless one genuinely blocks the next.
+4. **Cap reports: ten lines, one line per mutation.** The engineers' rigour is why this works;
+   the prose is not what makes it work.
+5. **Point at the spec, do not restate it.** A brief names the section and the two or three
+   things the reader would otherwise get wrong.
+6. **Only wake the Liaison when the owner must decide something.** Status is not a decision.
+7. **Retire idle teammates.** The Butler ran the whole of batches 15 and 16 without a task and
+   was shut down at the park.
+8. **An option the owner approved and left to judgement:** Role B's remaining batch-16 item is
+   a text field on the page. It could go to the sonnet engineer instead of the opus Designer.
+   Weigh that against the Designer holding all the page context.
+
 ## PARKED 2026-09-19 — batch 16 mid-flight, exact resume point
 
 Parked on the owner's instruction: session limits are burning fast, so we stopped at a
