@@ -146,6 +146,15 @@ test('no daemon-shaped fixture ships inside ui/', () => {
   }
 });
 
+test('the page never raises a Web Notification and never registers beforeunload (batch 17 ruling 30, amended)', () => {
+  // Either one stops a window host's window from closing, and a toast click
+  // cannot focus the app window; ui/ELEMENT-FIELD-TABLE.md carries the reason.
+  for (const name of UI_ASSETS) {
+    if (name.endsWith('.woff2')) continue;
+    assert.doesNotMatch(asset(name), /new\s+Notification|beforeunload|Notification\.requestPermission/, `${name} uses a prohibited browser notification/unload API`);
+  }
+});
+
 test('the element-to-field table ships beside the page and covers the omissions', () => {
   const table = readFileSync(join(UI_DIR, 'ELEMENT-FIELD-TABLE.md'), 'utf8');
   assert.match(table, /OMITTED, NOT MOCKED/);

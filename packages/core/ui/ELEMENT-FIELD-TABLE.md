@@ -18,6 +18,19 @@ Anything in pass 3 with no field behind it is **omitted and listed** in section
 9, never mocked. `packages/core/ui/index.html` ships with every container
 empty; there is no fixture anywhere under `packages/core/ui/`.
 
+**PROHIBITED ON THIS PAGE: a Web Notification (`new Notification`) and a
+`beforeunload` handler.** Batch 17 ruling 30, amended
+(`docs/strategy/batch-17-addendum-1-ruling-30-amended.md`). The window host
+(`magarine app`) lives exactly as long as the browser window it spawned, and
+both of these break that. Measured in the batch 17 spike: clicking a Chromium
+toast cannot focus the app window (Windows launches a NEW browser on the
+owner's default profile and the page's `onclick` never fires), and while a
+Web Notification is live Edge ignores a graceful window close entirely — the
+process stayed alive past 60 seconds. The owner's Needs You signal reaches
+them from the host as an operating-system toast instead, and from this page as
+the `(N)` in the window title (see the document title row). Do not reintroduce
+either; `src/ui/page.test.ts` fails if a shipped page file names them.
+
 Routes used, and the page requests nothing else:
 
 | route | file that builds it |
