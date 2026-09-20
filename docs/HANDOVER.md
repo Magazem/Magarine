@@ -42,6 +42,47 @@ raised it, the measures below are theirs approved, and they are rules now, not s
    apply, and they held the page. Committed at `5f54292`. **Check a teammate's actual model
    before costing a decision on it.**
 
+## BATCH 17 IN FLIGHT — 2026-09-20, the Windows window host
+
+**Spec** `docs/strategy/batch-17-spec.md` (`e8a4d27`); **ruling 30 AMENDED**
+`batch-17-addendum-1-ruling-30-amended.md` (`51711ec`) — read the amendment, it changes the
+browser order, the lifecycle and where notifications live. Spike evidence:
+`docs/evidence/batch-17-walk/window-spike.md` (`15fe64c`).
+
+**SHIPPED:** `59ec2c2` a shutdown that cancelled work says so, and says the spend is paid again
+(the owner's own Ctrl+C finding) · `a16fbd4`+`d69dbd5` one-time launch codes, mint behind the
+token, exchange unauthenticated and single-use, identical 404 for every refusal so a burned
+code is not distinguishable from one that never existed · `07ade24` the page's favicon and the
+`(N)` taskbar title count · `4b5befa` the page signs itself in from `#launch=` and the code
+never survives in the address bar · `1bfd56a` the page is FORBIDDEN to raise a Web Notification
+or register `beforeunload`, enforced by a test, not a paragraph · `41e5ab1` a spent code takes
+you to the gate, proven in real headless Chrome · `d72cfa3` **`magarine app`**: owned mode
+enters `serve()`, attach mode never does, the host waits on the child's exit and nothing else,
+closing the window LEAVES THE DAEMON TICKING, Ctrl+C stops the daemon then closes the window.
+
+**IN FLIGHT:** item 4b, the host-side Needs You toast (PowerShell, stdin not argv, no launch
+action, `--no-notify`). **It is the designated drop if session limits bite** — the taskbar count
+is a usable beta alone. Then item 5: `doctor`'s `window host` line and README step 3 becoming
+`magarine app`. Then the closing walk (spec section 4, amended in addendum section 5).
+
+**WHY THE PAGE MAY NOT NOTIFY, so nobody re-adds it:** a Chromium toast click opens a NEW
+browser on the owner's DEFAULT profile instead of focusing the window (observed twice by the
+Engineer, once by the lead), and Edge IGNORES a graceful window close while a live Web
+Notification is up — which would break item 4's entire lifecycle.
+
+**NOT OBSERVED, carried:** a real Ctrl+C anywhere on Windows from a script, so the
+daemon-then-window ordering rests on `process.emit('SIGINT')` in tests; Edge never run for
+real; window-bounds persistence neither built nor claimed. **The owner closed the equivalent
+gap for batch 16 with one keystroke; this batch wants the same.**
+
+**A TIMING-SENSITIVE TEST TO WATCH:** `browser.test.ts`'s "the organism keeps animating across
+the re-render" failed once for the Designer and passed 2/2 for them and 3/3 for the lead
+immediately after. It samples animation frames across nine seconds while a second ticket
+reports every 500ms. Two live theories for the day's "load flakes": browser contention, and
+concurrent mutation windows (**one such flake was provably the lead's own fault** — a cold suite
+started BEFORE the mutation window was announced read a teammate's deliberately-broken file).
+**The window now covers verification RUNS, not just edits.**
+
 ## BATCH 16 IS CLOSED — 2026-09-20
 
 **Its closing condition was RUN (rule 20).** The owner walked it and reported:
