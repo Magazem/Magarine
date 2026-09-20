@@ -12,6 +12,7 @@ import { runUntilIdle, tick } from './scheduler.ts';
 import {
   addDependency,
   assertValidMaxParallelWorkers,
+  countTicketsByStatus,
   createProject,
   createTicket,
   getProject,
@@ -38,6 +39,7 @@ import { planWithMission, PlanError } from './commands/plan.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
+import { realAppSeams, runApp } from './commands/app.ts';
 import { formatShutdown, serve, ServeError } from './commands/serve.ts';
 import { runToken, TokenError } from './commands/token.ts';
 import {
@@ -562,6 +564,16 @@ function validFlagsText(key: string): string {
   return `${list} (plus --state-dir <dir> to choose the state directory, --db <file> to name one database file, and --json)`;
 }
 
+// `app` (batch 17) takes everything `serve` does -- it runs the daemon itself
+// in owned mode -- plus `--browser`. Derived, so the two cannot drift.
+FLAG_SPECS.app = [...FLAG_SPECS.serve, 'browser'];
+
+// One sentence some commands carry beyond their flag list, printed by
+// `<command> --help` after the flags.
+const COMMAND_NOTES: Record<string, string> = {
+  app: 'Opens the board in its own window (Chrome, else Edge; --browser or MAGARINE_BROWSER overrides), starting the daemon itself if none is running. Tested on Windows only. Closing the window never stops the daemon; Ctrl+C here does.',
+};
+
 function checkKnownFlags(key: string, flags: Flags): string | null {
   const known = FLAG_SPECS[key];
   if (!known) return null;
@@ -576,6 +588,16 @@ function checkKnownFlags(key: string, flags: Flags): string | null {
 // exist). cli.test.ts also checks every dispatched command is in the table.
 function usageText(): string {
   return `Usage: magarine <${Object.keys(FLAG_SPECS).join('|')}> [--flags] [--json]\nFor one command's flags: magarine <command> --help`;
+}
+
+// The daemon's listening line -- `serve` and `app` (owned mode) print the very
+// same one. Never includes the token.
+function announceListening(flags: Flags, info: { pid: number; port: number; stateDir: string }, machineCap: number): void {
+  output(
+    flags,
+    info,
+    `magarine daemon listening on 127.0.0.1:${info.port} (pid ${info.pid}) -- page: http://127.0.0.1:${info.port}/ -- token: run \`magarine token\` -- up to ${machineCap} workers at once (--max-parallel)`
+  );
 }
 
 function output(flags: Flags, data: unknown, humanLine: string): void {
@@ -600,7 +622,8 @@ async function main(): Promise<void> {
   }
   if (flags.help) {
     if (FLAG_SPECS[flagSpecKey]) {
-      process.stdout.write(`Usage: magarine ${flagSpecKey} [--flags]\nValid flags: ${validFlagsText(flagSpecKey)}\n`);
+      const note = COMMAND_NOTES[flagSpecKey];
+      process.stdout.write(`Usage: magarine ${flagSpecKey} [--flags]\nValid flags: ${validFlagsText(flagSpecKey)}\n${note ? `${note}\n` : ''}`);
     } else {
       process.stdout.write(`${usageText()}\n`);
     }
@@ -1104,14 +1127,65 @@ ${scopeLine}` : ''}`);
         // to authenticate against it. Ruling 20: the human line now names
         // the page address (not a secret) and the one command that puts the
         // token on the clipboard -- `--json` is unchanged, still no token.
-        onListening: (info) => {
-          output(
-            flags,
-            info,
-            `magarine daemon listening on 127.0.0.1:${info.port} (pid ${info.pid}) -- page: http://127.0.0.1:${info.port}/ -- token: run \`magarine token\` -- up to ${machineCap} workers at once (--max-parallel)`
-          );
-        },
+        onListening: (info) => announceListening(flags, info, machineCap),
       });
+    } catch (err) {
+      if (err instanceof ServeError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    return;
+  }
+
+  if (command === 'app') {
+    // Same validation-first rule as `serve` (ruling 23): a bad --max-parallel
+    // never starts anything.
+    const machineCap = parseMaxParallelFlag(flags) ?? 1;
+    const resolvedDbPath = dbPath(flags);
+    const resolvedStateDir = stateDir(flags);
+    // Opened and built LAZILY, only if this process ends up running the daemon
+    // (owned mode): attaching to a live daemon needs neither a database nor an
+    // adapter (which, for `claude`, must be installed).
+    let ownedDb: Db | undefined;
+    const getDb = (): Db => (ownedDb ??= openDb(resolvedDbPath));
+    try {
+      await runApp(
+        {
+          stateDir: resolvedStateDir,
+          browserFlag: typeof flags.browser === 'string' ? flags.browser : undefined,
+          serveOptions: () => {
+            const db = getDb();
+            return {
+              db,
+              dbPath: resolvedDbPath,
+              stateDir: resolvedStateDir,
+              adapter: buildAdapter(db, flags, ''),
+              maxParallelWorkers: machineCap,
+              runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
+              artifactsDir: artifactsDir(flags),
+              tickIntervalMs: typeof flags['tick-interval'] === 'string' ? Number(flags['tick-interval']) * 1000 : undefined,
+              port: typeof flags.port === 'string' ? Number(flags.port) : undefined,
+            };
+          },
+          onListening: (info) => announceListening(flags, info, machineCap),
+          onStopped: ({ cancelled }) => {
+            const line = formatShutdown(cancelled);
+            output(flags, line.json, line.human);
+          },
+        },
+        realAppSeams({
+          findLiveDaemon: () => liveDaemonFor(flags),
+          stateDir: resolvedStateDir,
+          countInFlight: () => countTicketsByStatus(getDb(), 'IN_PROGRESS'),
+          say: (human, data) => output(flags, data ?? { message: human }, human),
+          sayError: (line) => {
+            process.stderr.write(`${line}\n`);
+          },
+        })
+      );
     } catch (err) {
       if (err instanceof ServeError) {
         process.stderr.write(`${err.message}\n`);
