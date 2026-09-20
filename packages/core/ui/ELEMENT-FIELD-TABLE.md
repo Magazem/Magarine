@@ -178,6 +178,7 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | coverage notice | copy | "some text is outside the bundled font's coverage and is shown in a system font", from `ui/fontCoverage.js` over every string in this table marked **field** |
 | daemon notice | copy | "the daemon did not answer", plus the status and route |
 | token gate | copy | shown until the daemon accepts a token. No data exists before then and none is invented. |
+| launch link message | copy | shown at the gate when `POST /launch-code/exchange` refuses a `#launch=<code>` load: "this launch link has expired -- run `magarine app` again, or `magarine token` and paste it here" (ruling 30 item 4). A daemon that does not answer at all says so instead. The code is consumed before the view router reads the hash and replaced with `#board`, so it never sits in the address. Batch 17 |
 
 ## 8. The organism
 

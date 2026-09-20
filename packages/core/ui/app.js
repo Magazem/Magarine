@@ -1237,12 +1237,59 @@
     if (link && link.getAttribute('href') !== href) link.setAttribute('href', href);
   }
 
+  // THE ONE WAY A TOKEN BECOMES THE PAGE'S TOKEN. The gate's input box and the
+  // launch-code exchange both end here, so there is no second path into
+  // sessionStorage to drift from the first.
+  function storeToken(v) {
+    state.token = v;
+    try { window.sessionStorage.setItem('magarine.token', v); } catch (e) { /* private mode */ }
+  }
+
+  // BATCH 17 / RULING 30 ITEM 4. `magarine app` opens the window at
+  // `/#launch=<code>`: a single-use, sixty-second code, never the token
+  // (ruling 20 keeps the token out of every URL, and a command line is one).
+  //
+  // consumeLaunchHash() runs BEFORE setView(hashView()), for two reasons: the
+  // router must never see the code as though it were a view name, and the
+  // code must not survive in the address bar. Both are done here, in one
+  // synchronous step, before anything else reads the hash. The fragment is
+  // replaced with the view that would otherwise show, and hashchange does not
+  // fire for replaceState, so the router is not told anything happened.
+  var LAUNCH_EXPIRED = 'this launch link has expired -- run `magarine app` again, ' +
+    'or `magarine token` and paste it here';
+
+  function consumeLaunchHash() {
+    var m = /^#launch=([^&]*)/.exec(String((window.location && window.location.hash) || ''));
+    if (!m) return null;
+    try { window.history.replaceState(null, '', '#board'); } catch (e) { /* no history API */ }
+    return decodeURIComponent(m[1]);
+  }
+
+  // Trades the code for the token. Not api(): this call is unauthenticated by
+  // design (there is no token yet) and a refusal here is not "token refused".
+  function exchangeLaunchCode(code) {
+    return fetch('/launch-code/exchange', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code })
+    }).then(function (res) {
+      if (!res.ok) { showGate(LAUNCH_EXPIRED); return; }
+      return res.json().then(function (body) {
+        if (!body || typeof body.token !== 'string') { showGate(LAUNCH_EXPIRED); return; }
+        storeToken(body.token);
+        hideGate();
+        return refresh().then(function () { if (state.token) openStream(); });
+      });
+    }, function (err) {
+      showGate('the daemon did not answer the launch link: ' + String((err && err.message) || err));
+    });
+  }
+
   function wire() {
     $('saveToken').addEventListener('click', function () {
       var v = $('token').value.trim();
       if (!v) { $('token').focus(); return; }
-      state.token = v;
-      try { window.sessionStorage.setItem('magarine.token', v); } catch (e) { /* private mode */ }
+      storeToken(v);
       $('token').value = '';
       hideGate();
       refresh().then(function () { if (state.token) openStream(); });
@@ -1287,10 +1334,12 @@
     wire();
     setTheme(theme || 'oled');
     setBoardView('board');
+    var launchCode = consumeLaunchHash();   // before the router reads the hash
     setView(hashView());
     setLive(false, 'the page has not opened a stream yet');
     checkFonts();
 
+    if (launchCode !== null) { exchangeLaunchCode(launchCode); return; }
     if (!saved) { showGate(); return; }
     state.token = saved;
     hideGate();

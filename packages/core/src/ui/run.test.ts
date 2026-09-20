@@ -403,3 +403,70 @@ test('the page links its own favicon, and the daemon serves it as an image', asy
     assert.match(await res.text(), /^<svg /);
   });
 });
+
+// ------------------------------------------- Batch 17 item 2: the launch code
+
+const EXPIRED = 'this launch link has expired -- run `magarine app` again, or `magarine token` and paste it here';
+const storedToken = (page: ReturnType<typeof openPage>) =>
+  (page.window.sessionStorage as { getItem(k: string): string | null }).getItem('magarine.token');
+
+test('a launch code the daemon refuses shows the gate with the ruling\'s message, stores nothing, and leaves no code in the address', async () => {
+  await withDaemon(root, async (d) => {
+    await d.createProject('Alpha');
+    const page = openPage({ baseUrl: d.baseUrl, token: null, hash: '#launch=0123456789abcdef' });
+    await page.waitFor(() => page.byId('gate').hidden === false, 'the gate');
+    assert.equal(page.document.getElementById('notice-auth')?.textContent, EXPIRED);
+    assert.equal(storedToken(page), null, 'a token was stored although the exchange failed');
+    assert.ok(!page.hash().includes('launch'), `the code survived in the address: ${page.hash()}`);
+    assert.ok(!page.requests.some((r) => r.startsWith('/board')), 'the page fetched a board without a token');
+  });
+});
+
+test('the launch fragment is consumed BEFORE the router reads the hash: only the consumer ever sees the code', async () => {
+  await withDaemon(root, async (d) => {
+    const page = openPage({ baseUrl: d.baseUrl, token: null, hash: '#launch=0123456789abcdef' });
+    await page.waitFor(() => page.byId('gate').hidden === false, 'the gate');
+    const seen = page.hashReads.filter((h) => h.includes('launch='));
+    assert.equal(seen.length, 1, `the hash still carried the code on ${seen.length} reads; the router read it as a view name`);
+    assert.equal(page.document.documentElement.getAttribute('data-view'), 'board');
+  });
+});
+
+test('with no launch code the view opens on the hash it was given, and on board when it has none', async () => {
+  await withDaemon(root, async (d) => {
+    await d.createProject('Alpha');
+    const needs = openPage({ baseUrl: d.baseUrl, token: d.token, hash: '#needs-you' });
+    assert.equal(needs.document.documentElement.getAttribute('data-view'), 'needs-you');
+    assert.equal(needs.hash(), '#needs-you', 'the page rewrote a hash that was not a launch code');
+    const bare = openPage({ baseUrl: d.baseUrl, token: d.token });
+    assert.equal(bare.document.documentElement.getAttribute('data-view'), 'board');
+    assert.ok(!needs.requests.includes('/launch-code/exchange'), 'the page tried an exchange with no code');
+  });
+});
+
+/** Mints a real launch code, or null while the daemon has no such route (Role A item 3). */
+async function mintLaunchCode(d: { baseUrl: string; token: string }): Promise<string | null> {
+  const res = await fetch(`${d.baseUrl}/launch-code`, { method: 'POST', headers: { Authorization: `Bearer ${d.token}`, 'Content-Type': 'application/json' }, body: '{}' });
+  return res.ok ? ((await res.json()) as { code: string }).code : null;
+}
+
+test('a live launch code signs the page in: token stored, address cleaned, board fetched; the same code twice shows the gate', async (t) => {
+  await withDaemon(root, async (d) => {
+    const code = await mintLaunchCode(d);
+    // A SKIP, NOT A PASS: the exchange route is Role A's item 3. Until it
+    // lands there is no real code to spend, and a stub would be the fixture
+    // agreeing with the page.
+    if (code === null) { t.skip('the daemon has no POST /launch-code yet (batch 17 Role A item 3)'); return; }
+    await d.createProject('Alpha');
+    const page = openPage({ baseUrl: d.baseUrl, token: null, hash: `#launch=${code}` });
+    await page.waitFor(() => page.requests.some((r) => r.startsWith('/board')), 'the board to be fetched');
+    assert.equal(storedToken(page), d.token);
+    assert.equal(page.hash(), '#board');
+    assert.equal(page.byId('gate').hidden, true);
+
+    const again = openPage({ baseUrl: d.baseUrl, token: null, hash: `#launch=${code}` });
+    await again.waitFor(() => again.byId('gate').hidden === false, 'the gate on a reused code');
+    assert.equal(again.document.getElementById('notice-auth')?.textContent, EXPIRED);
+    assert.equal(storedToken(again), null);
+  });
+});

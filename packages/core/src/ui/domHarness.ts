@@ -225,6 +225,8 @@ export interface PageOptions {
   baseUrl: string;
   /** The real daemon token; seeded into sessionStorage, as the gate would. Pass null to open the page signed out. */
   token?: string | null;
+  /** The fragment the page loads with, e.g. `#launch=<code>`. Default: none. */
+  hash?: string;
   /** See pageFetch: changes a real JSON response before the page reads it. Off unless a test names it. */
   rewriteJson?: (path: string, body: any) => unknown;
 }
@@ -232,6 +234,10 @@ export interface PageOptions {
 export interface Page {
   document: FakeDocument;
   window: Record<string, unknown>;
+  /** Every value the page read from location.hash, in order: what proves the launch code was consumed before the router looked. */
+  hashReads: string[];
+  /** The current fragment. The page's history.replaceState writes it, as a browser's would. */
+  hash(): string;
   /** Every path fetch() was called with, in order. */
   requests: string[];
   /** Run the page's OWN four-second poll callback once, then wait for it to settle. */
@@ -275,6 +281,8 @@ export function openPage(opts: PageOptions): Page {
     doc.documentElement.setAttribute(a[1], a[2]);
   }
 
+  let currentHash = opts.hash ?? '';
+  const hashReads: string[] = [];
   const requests: string[] = [];
   const inFlight = new Set<Promise<unknown>>();
   const polls: (() => void)[] = [];
@@ -307,7 +315,16 @@ export function openPage(opts: PageOptions): Page {
     fetch: pageFetch,
     sessionStorage: fakeStorage(),
     localStorage: fakeStorage(),
-    location: { hash: '' },
+    location: {
+      get hash() { hashReads.push(currentHash); return currentHash; },
+    },
+    history: {
+      // Only a fragment-only URL is modelled, which is the only kind the page passes.
+      replaceState: (_s: unknown, _t: string, url: string) => {
+        if (!url.startsWith('#')) throw new Error(`domHarness: history.replaceState(${url}) is not implemented`);
+        currentHash = url;
+      },
+    },
     setTimeout: (fn: () => void, ms: number) => setTimeout(fn, Math.min(ms, 0)),
     setInterval: (fn: () => void) => { polls.push(fn); return polls.length; },
     addEventListener: () => undefined,
@@ -338,6 +355,8 @@ export function openPage(opts: PageOptions): Page {
   return {
     document: doc,
     window: win,
+    hashReads,
+    hash: () => currentHash,
     requests,
     async settle() {
       // Real network round trips, so this drains what is actually outstanding
