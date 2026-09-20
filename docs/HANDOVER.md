@@ -56,10 +56,28 @@ cannot produce; the test proves that before skipping).
 **NEXT: batch 17, the Windows window host.** Then 18 = per-ticket discussion, tags, shortcuts,
 and the owner's second skin.
 
-**IN FLIGHT AT CLOSE:** the stranger's-walk `--help` findings with the Invariants Engineer
-(task `01a0be2e-5e16-7652-b5aa-130ab8c1d28a`) — `magarine --help` omits `discuss` and `token`,
-per-command `--help` is rejected as an unknown flag, the error names `--db` where the README
-teaches `--state-dir`, and `ticket add` was missing from the worked example.
+**DONE SINCE THE CLOSE (`d7ad88a`):** the stranger's-walk `--help` findings. `magarine --help`
+now lists all 22 commands including `discuss` and `token`, **derived from `FLAG_SPECS`** so it
+cannot drift again; `<command> --help` works and reuses the unknown-flag error's own composer;
+the flag error names `--state-dir` before `--db`; `ticket add` is README step 7, every command
+in it run by the engineer. Suite 825/824 pass/1 skip, verified by the lead.
+
+**RULED FOR BATCH 17 (`a5f7f79`):** a shutdown that cancels work must say so —
+`docs/strategy/batch-17-item-shutdown-reports-cancelled-work.md`. From the owner's own walk.
+The key fact, which the Orchestrator's own framing had missed: `run_cancelled` returns tickets
+to READY with NO attempt consumed, so the next `serve` restarts them from scratch and the
+partial spend is paid twice. Silence when nothing is in flight is KEPT.
+
+**OPEN WITH THE OWNER, asked 2026-09-20, no answer yet:** start batch 17 as planned, or put a
+piece of their REAL work through Magarine first and let the friction set 17's contents? Their
+stated goal points at the second; batch 17 is a comfort batch and the product already works in
+a browser. Do not start 17 until they answer.
+
+**ALSO NOTED BY THE OWNER, no action taken:** `serve` prints instructions to run `magarine
+token` rather than the token itself. That is deliberate — a token on the start line lands in
+scrollback, redirected logs and screenshots — and it is the scar addendum 9 left. If they ask
+for the token itself, that is a security-shaped default and goes to the Strategist, not the
+lead.
 
 **WITH THE STRATEGIST, undecided:** Ctrl+C prints nothing while cancelling every live run
 (tickets roll back to READY). Nobody is misled, but a shutdown that cancels work says nothing
