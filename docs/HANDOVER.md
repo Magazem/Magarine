@@ -293,7 +293,20 @@ and the owner's second skin.
 21. **Delivered means in the product, not in the repository.** A committed design is an artefact;
     until the daemon serves it, the feature does not exist for the owner.
 
-22. **Owner-facing steps are run before they are written.** Walk instructions, recipes and any
+22. **A script that opens a GUI carries its own deadline and closes what it opened.** Earned
+    2026-09-20: a spike's PowerShell Forms timer outlived its parent when the environment
+    restarted, threw `PipelineStoppedException`, and put an unhandled-exception dialog on the
+    OWNER'S desktop while they were away, beside a stray browser window. Anything that can
+    outlive its parent on someone else's machine is not acceptable however good its evidence.
+
+23. **Two limits an agent must not cross to get a cleaner result, both held 2026-09-20.**
+    The Engineer discarded a capture that showed the owner's Microsoft account email rather
+    than commit it as evidence; and, asked whether a notification misbehaviour was inherent,
+    they declined to settle it by raising a toast from the OWNER'S OWN default browser
+    profile, and reported it SOFT instead. **A weaker claim honestly labelled beats a stronger
+    one bought with someone else's privacy.** Both were unprompted.
+
+24. **Owner-facing steps are run before they are written.** Walk instructions, recipes and any
     command handed to the owner are an artefact and get verified like one. Earned twice in one
     day: the lead told the owner to paste "the token serve printed" (serve never prints it,
     addendum 9), and wrote a demo recipe from the design's intent that ran every worker one at a
