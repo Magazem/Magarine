@@ -806,7 +806,7 @@ test('createRequestHandler().closeAllStreams() ends every open /events response 
   const db = openDb(':memory:');
   const stubLoop: DaemonLoop = {
     live: new Map(),
-    stop: async () => {},
+    stop: async () => ({ cancelled: [] }),
     forceTick: async () => ({ started: [] }),
     cancelTicket: async () => 'not_running',
   };

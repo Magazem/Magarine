@@ -38,7 +38,7 @@ import { planWithMission, PlanError } from './commands/plan.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
-import { serve, ServeError } from './commands/serve.ts';
+import { formatShutdown, serve, ServeError } from './commands/serve.ts';
 import { runToken, TokenError } from './commands/token.ts';
 import {
   artifactsDir as resolveArtifactsDir,
@@ -1093,6 +1093,12 @@ ${scopeLine}` : ''}`);
         artifactsDir: artifactsDir(flags),
         tickIntervalMs: typeof flags['tick-interval'] === 'string' ? Number(flags['tick-interval']) * 1000 : undefined,
         port: typeof flags.port === 'string' ? Number(flags.port) : undefined,
+        // Batch 17: once, after the daemon is down, and only when running work
+        // was cancelled -- through the same output path as the listening line.
+        onStopped: ({ cancelled }) => {
+          const line = formatShutdown(cancelled);
+          output(flags, line.json, line.human);
+        },
         // Never includes the token: only the CLI-facing shape a human or a
         // script watching stdout needs to find the daemon, not what it needs
         // to authenticate against it. Ruling 20: the human line now names

@@ -205,8 +205,8 @@ function computeProjectCap(db: Db, projectId: string, machineCap: number): numbe
 export interface DaemonLoop {
   /** Every run the daemon currently believes is in flight, keyed by run id. Exposed so a cancel handler (the API's cancelTicket, below) can look up a ticket's live run without a second bookkeeping structure -- iterate values() and match on ticketId. */
   live: Map<string, StartedRun>;
-  /** Stops the tick interval, then cancels every live run: adapter.stop() plus forcing the run/ticket back to a settled DB state (run_cancelled, no attempt consumed) -- never waits on a hung run's own `done` promise, which may never resolve on its own. Safe to call more than once. */
-  stop(): Promise<void>;
+  /** Stops the tick interval, then cancels every live run: adapter.stop() plus forcing the run/ticket back to a settled DB state (run_cancelled, no attempt consumed) -- never waits on a hung run's own `done` promise, which may never resolve on its own. Returns the ticket ids of the runs it cancelled (empty for a repeated call): they are back to READY with no attempt consumed, so the next `serve` restarts them from scratch and the spend so far is paid again -- `serve` says so (batch 17). Safe to call more than once. */
+  stop(): Promise<{ cancelled: string[] }>;
   /** The API's `POST /tick`: forces one scheduling pass for a single project, right now, outside the regular interval. Registers any newly-started runs into the same `live` map the periodic loop uses, so a run started this way is cancellable and gets swept up on shutdown exactly like any other. */
   forceTick(projectId: string): Promise<{ started: Array<{ ticketId: string; runId: string }> }>;
   /** The API's `POST /tickets/{id}/cancel`: stops the live run for `ticketId` (adapter.stop() + the `cancel` transition to the terminal CANCELLED, no attempt consumed -- not `run_cancelled`/READY, per the Strategist's batch 8 ruling: a person's cancel must not let the daemon's own next tick silently restart it) and removes it from `live`. Returns 'not_running' without touching anything if this daemon holds no live run for that ticket -- the caller (daemonApi.ts) turns that into a 409, not a silent no-op. */
@@ -281,17 +281,20 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
   return {
     live,
     async stop() {
-      if (stopped) return;
+      if (stopped) return { cancelled: [] };
       stopped = true;
       clearInterval(timer);
+      const cancelled: string[] = [];
       for (const sr of live.values()) {
         // The daemon's own decision (shutting down), not the ticket's fault
         // and not a person cancelling it -- run_cancelled, back to READY,
         // per the Strategist's batch 8 ruling (see scheduler.ts's
         // cancelTicketRun doc comment for the full distinction).
         await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'daemon_shutdown', 'run_cancelled');
+        cancelled.push(sr.ticketId);
       }
       live.clear();
+      return { cancelled };
     },
     async forceTick(projectId) {
       // Runs even while a periodic pass is in flight (no `ticking` guard):

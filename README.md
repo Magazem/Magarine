@@ -166,7 +166,11 @@ Run these from wherever `magarine` is on your PATH:
    "The inbox" below for what to do -- and `discuss` any time you want to
    change direction, correct something, or ask it to plan the next batch.
    When you're satisfied, go back to the terminal running `magarine serve`
-   and press `Ctrl+C` to stop it cleanly.
+   and press `Ctrl+C` to stop it. Any task running at that moment is
+   cancelled, goes back to READY, and starts over from scratch the next time
+   you run `serve` -- so what it had already spent is spent again; if any
+   were running, `serve` prints one line naming them, and prints nothing
+   when nothing was running.
 
 ## The board
 

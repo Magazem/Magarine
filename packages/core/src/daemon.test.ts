@@ -613,3 +613,40 @@ test('DaemonLoop.cancelTicket cancels a live run for the given ticket, and repor
   const again = await loop.cancelTicket(hangTicket.id);
   assert.equal(again, 'not_running');
 });
+
+// Batch 17 item (docs/strategy/batch-17-item-shutdown-reports-cancelled-work.md):
+// stop() reports WHAT it cancelled instead of throwing the count away, so
+// serve can tell the owner that running work was cancelled and will restart
+// from scratch (run_cancelled returns tickets to READY, no attempt consumed).
+test('DaemonLoop.stop() returns the ids of every run it cancelled, and a second stop() returns none', async (t) => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 3 });
+  const tickets = [1, 2].map((n) => createTicket(db, { projectId: project.id, title: `hangs ${n}`, workspaceType: 'NONE' }));
+  const adapter = new FakeAdapter();
+  for (const tk of tickets) adapter.setScript(tk.id, { kind: 'hang' });
+  const loop = startDaemonLoop({
+    db,
+    adapter,
+    maxParallelWorkers: 3,
+    artifactsDir: join(testRoot.root, 'artifacts-stop-report'),
+    tickIntervalMs: 20,
+    readiness: 'skip',
+  });
+  t.after(() => loop.stop());
+  const deadline = Date.now() + 2000;
+  while (loop.live.size < 2 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(loop.live.size, 2);
+
+  const first = await loop.stop();
+  assert.deepEqual([...first.cancelled].sort(), tickets.map((tk) => tk.id).sort());
+  for (const tk of tickets) assert.equal(getTicket(db, tk.id)!.status, 'READY', 'run_cancelled returns the ticket to READY');
+
+  assert.deepEqual((await loop.stop()).cancelled, [], 'a repeated stop cancels nothing and reports nothing');
+});
+
+test('DaemonLoop.stop() with nothing in flight returns an empty list', async () => {
+  const db = openDb(':memory:');
+  createProject(db, { name: 'p' });
+  const loop = startDaemonLoop({ db, adapter: new FakeAdapter(), maxParallelWorkers: 1, artifactsDir: join(testRoot.root, 'artifacts-stop-empty'), tickIntervalMs: 20, readiness: 'skip' });
+  assert.deepEqual((await loop.stop()).cancelled, []);
+});

@@ -32,6 +32,26 @@ export interface ServeOptions {
   port?: number;
   /** Called once the daemon is listening and daemon.json is written. Never receives the token's own value logged anywhere by a caller of this function -- see the module header comment on step 3's auth work for why that matters. */
   onListening?: (info: { pid: number; port: number; stateDir: string }) => void;
+  /** Called once, after the daemon has fully stopped, ONLY when the shutdown cancelled running work (never for a quiet shutdown with nothing in flight). `cancelled` is the ticket ids -- see `formatShutdown` for what the owner is told. */
+  onStopped?: (info: { cancelled: string[] }) => void;
+}
+
+// Batch 17 item (docs/strategy/batch-17-item-shutdown-reports-cancelled-work.md):
+// what a shutdown that cancelled work tells the owner. `run_cancelled` returns
+// those tickets to READY with no attempt consumed, so the next `serve` restarts
+// them FROM SCRATCH and the spend so far is paid again -- the line says so
+// rather than leaving "stopped cleanly" to suggest the opposite. Ids are named
+// while they fit one line; past a handful, or when they would not fit, it is
+// the count and a pointer to the board. `json` always carries every id.
+const SHUTDOWN_MAX_LISTED_IDS = 4;
+const SHUTDOWN_MAX_LINE = 200;
+export function formatShutdown(cancelled: string[]): { human: string; json: { stopped: true; cancelled: string[] } } {
+  const n = cancelled.length;
+  const what = n === 1 ? '1 running task was cancelled' : `${n} running tasks were cancelled`;
+  const tail = ' -- they are READY again and will restart from scratch on the next serve';
+  const withIds = `stopped; ${what} (${cancelled.join(', ')})${tail}`;
+  const human = n <= SHUTDOWN_MAX_LISTED_IDS && withIds.length <= SHUTDOWN_MAX_LINE ? withIds : `stopped; ${what} (see \`magarine board\`)${tail}`;
+  return { human, json: { stopped: true, cancelled } };
 }
 
 const DEFAULT_TICK_INTERVAL_MS = 2000;
@@ -125,8 +145,11 @@ export async function serve(opts: ServeOptions): Promise<void> {
     // stops" -- a client sees a normal end of stream, not a hang or a raw
     // socket abort).
     requestHandler.closeAllStreams();
-    await loop.stop();
+    const { cancelled } = await loop.stop();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     removeDaemonFile(opts.stateDir);
+    // After everything is down, and only when work was actually cancelled:
+    // a quiet shutdown stays quiet.
+    if (cancelled.length > 0) opts.onStopped?.({ cancelled });
   }
 }
