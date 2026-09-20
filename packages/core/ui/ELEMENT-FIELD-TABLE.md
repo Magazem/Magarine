@@ -44,6 +44,8 @@ Routes used, and the page requests nothing else:
 | project id under the selector | field | `ProjectListEntry.id` |
 | nav links | copy | anchors to the six region ids. Not data. |
 | "Needs you" count badge | derived | `InboxItem[]` length. Hidden at zero rather than showing "0". |
+| document title | derived | `Magarine`, or `(N) Magarine` with the same `InboxItem[]` length as the badge when N is above zero, so a window host's taskbar entry shows it while the window is behind another. Reset to `Magarine` at the gate. Batch 17 |
+| favicon | asset | `ui/favicon.svg`, linked from `index.html`: one 5x5 organism (ring family, quad symmetry, hollow middle) in the active-blue on black. Fixed colour, because a favicon has no ticket status to take one from. Batch 17 |
 | spend figure | field | `BoardResult.projectSpendUsd`, formatted to 2dp |
 | "at least" prefix on spend | field | shown when `BoardResult.projectSpendIsEstimate` |
 | "of $X" after spend | field | `BoardResult.projectMaxSpendUsd`; absent when null |

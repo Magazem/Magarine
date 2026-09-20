@@ -353,3 +353,53 @@ test('a cap the daemon did not measure (null) is not given a denominator', async
     assert.doesNotMatch(text, /of \d/, `an M was invented: "${text}"`);
   });
 });
+
+// ------------------------------------------- Batch 17 item 1: the window's title
+
+/** A daemon with one project and one ticket scripted to stop and ask the owner something. */
+async function withNeedsYouMachine(body: (d: { baseUrl: string; token: string }) => Promise<void>): Promise<void> {
+  const stateDir = mkdtempSync(join(root.root, 'needs-'));
+  const dir = mkdtempSync(join(root.root, 'work-'));
+  const project = JSON.parse((await runCli(['project', 'create', '--name', 'Asks', '--dir', dir,
+    '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  const t = JSON.parse((await runCli(['ticket', 'add', '--project', project.id, '--title', 'needs an answer',
+    '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '0.1', '--json',
+    '--fake-script', `${t.id}=needs_user_decision`]);
+  try {
+    const { port } = await handle.waitForListening();
+    const token = (JSON.parse(readFileSync(join(stateDir, 'daemon.json'), 'utf8')) as { token: string }).token;
+    await body({ baseUrl: `http://127.0.0.1:${port}`, token });
+  } finally {
+    await handle.kill();
+  }
+}
+
+test('the window title carries the Needs You count, so the taskbar says it while the window is behind another', async () => {
+  await withNeedsYouMachine(async (d) => {
+    const page = openPage({ baseUrl: d.baseUrl, token: d.token });
+    await pollUntil(page, () => page.text('needsCount') === '1', 'the daemon to hold one Needs You item', 60);
+    assert.equal(page.document.title, '(1) Magarine');
+  });
+});
+
+test('with nothing waiting, the title is just the product name', async () => {
+  await withDaemon(root, async (d) => {
+    await d.createProject('Quiet');
+    const page = openPage({ baseUrl: d.baseUrl, token: d.token });
+    await page.waitFor(() => optionValues(page).length === 1, 'the project to load');
+    await page.settle();
+    assert.equal(page.document.title, 'Magarine');
+  });
+});
+
+test('the page links its own favicon, and the daemon serves it as an image', async () => {
+  const html = readFileSync(join(UI_DIR, 'index.html'), 'utf8');
+  assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/ui\/favicon\.svg">/);
+  await withDaemon(root, async (d) => {
+    const res = await fetch(`${d.baseUrl}/ui/favicon.svg`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('content-type'), 'image/svg+xml');
+    assert.match(await res.text(), /^<svg /);
+  });
+});

@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 // packages/core/src/ui/page.ts -> packages/core/ui
 export const UI_DIR: string = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'ui');
 
-/** The five files the page is built from, plus the two fonts it loads. The
+/** The five files the page is built from, plus the two fonts it loads and its favicon. The
  *  daemon serves each at `GET /ui/<name>` and `doctor` checks every one. The
  *  page requests nothing outside this list -- see ui/ELEMENT-FIELD-TABLE.md. */
 export const UI_ASSETS: readonly string[] = [
@@ -47,6 +47,7 @@ export const UI_ASSETS: readonly string[] = [
   'app.js',
   'JetBrainsMono.woff2',
   'IBMPlexSans.woff2',
+  'favicon.svg',
 ];
 
 export const INDEX_HTML_PATH: string = join(UI_DIR, 'index.html');

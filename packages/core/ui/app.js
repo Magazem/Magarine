@@ -702,12 +702,19 @@
     return ask;
   }
 
+  function setTitle(waiting) {
+    document.title = waiting > 0 ? '(' + waiting + ') Magarine' : 'Magarine';
+  }
+
   function renderNeeds() {
     var items = state.inbox || [];
     $('needsSub').textContent = items.length + ' \u00B7 autonomous work has stopped and handed back';
     var badge = $('needsCount');
     badge.textContent = String(items.length);
     badge.hidden = items.length === 0;
+    // The window's title carries the same count, so a taskbar entry says a
+    // decision is waiting even while the window is behind another one.
+    setTitle(items.length);
 
     var list = $('needsList');
     clear(list);
@@ -1157,6 +1164,7 @@
     state.token = null;
     try { window.sessionStorage.removeItem('magarine.token'); } catch (e) { /* private mode */ }
     $('gate').hidden = false;
+    setTitle(0);
     $('projectSelect').hidden = true;
     setNotice('notice-auth', why || 'this page needs the daemon token before it can show anything', null);
     REGIONS.forEach(function (id) { $(id).hidden = true; });
