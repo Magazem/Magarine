@@ -184,6 +184,63 @@ test('ruling 18 requirement 4: the organism keeps animating across the re-render
   });
 });
 
+
+// ------------------------------------------- batch 17 item 4: the launch code, in a real browser
+//
+// The DOM harness proves the page's script; only a browser can say what the
+// ADDRESS BAR holds and what a person sees when they open a spent link. The
+// code is minted against the real daemon through the real route.
+
+test('a launch code signs a real browser in, leaves no code in the address, and a second load of the same code reaches the gate', async () => {
+  await withDaemon(root, async (d) => {
+    await d.createProject('Alpha');
+    const mint = await fetch(`${d.baseUrl}/launch-code`, {
+      method: 'POST', headers: { Authorization: `Bearer ${d.token}`, 'Content-Type': 'application/json' }, body: '{}',
+    });
+    assert.equal(mint.status, 200, 'the daemon would not mint a launch code');
+    const { code } = (await mint.json()) as { code: string };
+    const browser = await launchBrowser(chrome.executable, mkdtempSync(join(root.root, 'chrome-')));
+    const until = async (expr: string, what: string) => {
+      for (let i = 0; i < 100; i++) {
+        if (await browser.cdp.eval<boolean>(expr)) return;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`the browser never reached: ${what}`);
+    };
+    try {
+      // FIRST LOAD: no token anywhere, only the code in the fragment.
+      await browser.cdp.send('Page.navigate', { url: `${d.baseUrl}/#launch=${code}` });
+      await until(`document.querySelectorAll('#projectSelect option').length === 1`, 'the board, with its project');
+      const first = await browser.cdp.eval<{ href: string; gate: boolean; board: boolean; stored: string | null }>(`({
+        href: location.href, gate: document.getElementById('gate').hidden,
+        board: !document.getElementById('board').hidden, stored: sessionStorage.getItem('magarine.token') })`);
+      assert.equal(first.gate, true, 'the gate is showing after a good launch code');
+      assert.equal(first.board, true, 'the board is not shown after a good launch code');
+      assert.equal(first.stored, d.token, 'the exchanged token is not the daemon\'s');
+      assert.ok(!first.href.includes(code) && !first.href.includes('launch'), `the code survived in the address: ${first.href}`);
+      assert.equal(first.href, `${d.baseUrl}/#board`);
+
+      // SECOND LOAD: the same code, as from a bookmark or a re-opened window.
+      // A window would start with empty sessionStorage; it is cleared here to
+      // say so, and the tab goes through about:blank because a same-document
+      // navigation between two fragments would not run the page again.
+      await browser.cdp.eval(`sessionStorage.clear()`);
+      await browser.cdp.send('Page.navigate', { url: 'about:blank' });
+      await browser.cdp.send('Page.navigate', { url: `${d.baseUrl}/#launch=${code}` });
+      await until(`!document.getElementById('gate').hidden`, 'the gate, for a spent code');
+      const second = await browser.cdp.eval<{ href: string; notice: string; board: boolean; stored: string | null }>(`({
+        href: location.href, notice: document.getElementById('notice-auth').textContent,
+        board: !document.getElementById('board').hidden, stored: sessionStorage.getItem('magarine.token') })`);
+      assert.equal(second.notice, 'this launch link has expired -- run `magarine app` again, or `magarine token` and paste it here');
+      assert.equal(second.board, false, 'a spent code showed the board');
+      assert.equal(second.stored, null, 'a spent code left a token behind');
+      assert.ok(!second.href.includes(code), `the spent code sits in the address: ${second.href}`);
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 }
 
 /** withDaemon, but on a state directory the caller has already seeded. */
