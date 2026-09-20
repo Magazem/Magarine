@@ -566,12 +566,12 @@ function validFlagsText(key: string): string {
 
 // `app` (batch 17) takes everything `serve` does -- it runs the daemon itself
 // in owned mode -- plus `--browser`. Derived, so the two cannot drift.
-FLAG_SPECS.app = [...FLAG_SPECS.serve, 'browser'];
+FLAG_SPECS.app = [...FLAG_SPECS.serve, 'browser', 'no-notify'];
 
 // One sentence some commands carry beyond their flag list, printed by
 // `<command> --help` after the flags.
 const COMMAND_NOTES: Record<string, string> = {
-  app: 'Opens the board in its own window (Chrome, else Edge; --browser or MAGARINE_BROWSER overrides), starting the daemon itself if none is running. Tested on Windows only. Closing the window never stops the daemon; Ctrl+C here does.',
+  app: 'Opens the board in its own window (Chrome, else Edge; --browser or MAGARINE_BROWSER overrides), starting the daemon itself if none is running. Tested on Windows only. Closing the window never stops the daemon; Ctrl+C here does. Needs You also raises a Windows toast (sender: "Windows PowerShell"; clicking it does nothing) -- Windows only, off with --no-notify.',
 };
 
 function checkKnownFlags(key: string, flags: Flags): string | null {
@@ -1156,6 +1156,7 @@ ${scopeLine}` : ''}`);
         {
           stateDir: resolvedStateDir,
           browserFlag: typeof flags.browser === 'string' ? flags.browser : undefined,
+          notify: !('no-notify' in flags),
           serveOptions: () => {
             const db = getDb();
             return {

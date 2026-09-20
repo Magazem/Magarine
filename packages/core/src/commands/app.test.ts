@@ -9,6 +9,7 @@ import { FakeAdapter } from '../adapters/fakeAdapter.ts';
 import { checkDaemonFile, daemonFilePath, type DaemonFileInfo } from '../daemon.ts';
 import { probeDaemonHealth } from '../daemonClient.ts';
 import { createProject, createTicket, getTicket } from '../store.ts';
+import { buildInbox } from './inbox.ts';
 import { testTempRoot } from '../testSupport.ts';
 import {
   closeWindowGracefully,
@@ -119,9 +120,10 @@ interface Rig {
   settled(): boolean;
   daemon(): DaemonFileInfo;
   listening(): { port: number };
+  toasts: Array<{ title: string; body: string }>;
 }
 
-async function ownedRig(configure: { seams?: Partial<AppSeams>; inFlight?: number; adapter?: FakeAdapter } = {}): Promise<Rig> {
+async function ownedRig(configure: { seams?: Partial<AppSeams>; inFlight?: number; adapter?: FakeAdapter; notify?: boolean } = {}): Promise<Rig> {
   const stateDir = mkdtempSync(join(testRoot.root, 'owned-'));
   const db = openDb(':memory:');
   const events: string[] = [];
@@ -129,8 +131,10 @@ async function ownedRig(configure: { seams?: Partial<AppSeams>; inFlight?: numbe
   const errors: string[] = [];
   const spawned: WindowSpec[] = [];
   const child = fakeChild();
+  const toasts: Array<{ title: string; body: string }> = [];
   let listening: { port: number } | undefined;
   const base = realAppSeams({
+    raiseToast: async (t) => (toasts.push(t), true),
     findLiveDaemon: async () => undefined,
     stateDir,
     countInFlight: () => configure.inFlight ?? 0,
@@ -174,6 +178,7 @@ async function ownedRig(configure: { seams?: Partial<AppSeams>; inFlight?: numbe
     },
     onStopped: () => {},
     closeTimeoutMs: 300,
+    notify: configure.notify,
   };
   let isSettled = false;
   const done = runApp(opts, seams).finally(() => (isSettled = true));
@@ -185,6 +190,7 @@ async function ownedRig(configure: { seams?: Partial<AppSeams>; inFlight?: numbe
     settled: () => isSettled,
     daemon: () => JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo,
     listening: () => listening!,
+    toasts,
   };
 }
 
@@ -341,6 +347,7 @@ async function elsewhereDaemon(): Promise<{ stateDir: string; info: DaemonFileIn
 
 function attachSeams(stateDir: string, extra: Partial<AppSeams>, log: { said: string[]; errors: string[]; spawned: WindowSpec[]; events: string[] }, child: ReturnType<typeof fakeChild>): AppSeams {
   const base = realAppSeams({
+    raiseToast: async () => true,
     findLiveDaemon: async () => {
       const check = await checkDaemonFile(stateDir, probeDaemonHealth);
       return check.status === 'live' ? check.info : undefined;
@@ -431,6 +438,94 @@ test('attach mode with no browser: prints the address, `magarine token` and wher
     assert.deepEqual(log.spawned, []);
     assert.match(log.said[0]!, new RegExp(`no browser found .*http://127\\.0\\.0\\.1:${d.info.port}/.*magarine token`));
     assert.deepEqual(log.events, [], 'serve() was not entered');
+  } finally {
+    await d.stop();
+  }
+});
+
+// ---- item 4b: the host raises the Needs You toast ---------------------------------------
+
+async function needsYouTicket(r: Rig, title: string): Promise<string> {
+  const dir = join(r.stateDir, 'project');
+  mkdirSync(dir, { recursive: true });
+  const project = createProject(r.db, { name: 'p', workspaceRoot: dir, scopePath: join(dir, 'SCOPE.md') });
+  return createTicket(r.db, { projectId: project.id, title, workspaceType: 'NONE' }).id;
+}
+
+test('owned mode raises ONE toast, off the real /events stream, when a run needs the owner -- with the ticket title, and none for a run that just succeeds', async () => {
+  const adapter = new FakeAdapter();
+  const r = await ownedRig({ adapter });
+  try {
+    await waitFor(() => r.spawned.length === 1, 'the window spawn');
+    const okTicket = await needsYouTicket(r, 'a task that just succeeds');
+    adapter.setScript(okTicket, { kind: 'succeed' });
+    const blocked = createTicket(r.db, { projectId: getTicket(r.db, okTicket)!.projectId, title: 'Pick the platform', workspaceType: 'NONE' });
+    adapter.setScript(blocked.id, { kind: 'needs_user_decision', blockers: ['ios or android?'] });
+    await waitFor(() => r.toasts.length >= 1, 'a toast', 8000);
+    await new Promise((resolve) => setTimeout(resolve, 400)); // let any wrongly-raised second toast land
+    assert.equal(r.toasts.length, 1, 'one qualifying event, one toast; the successful run raised none');
+    assert.equal(r.toasts[0]!.title, 'Magarine needs you');
+    assert.ok(r.toasts[0]!.body.startsWith('Pick the platform\n'), r.toasts[0]!.body);
+    // The toast says exactly what the inbox says about the same request.
+    const inboxLine = buildInbox(r.db, getTicket(r.db, blocked.id)!.projectId).find((i) => i.ticketId === blocked.id)!.message;
+    assert.equal(r.toasts[0]!.body, `Pick the platform
+${inboxLine}`);
+    assert.ok(!JSON.stringify(r.toasts).includes(r.daemon().token), 'the token is never in a toast');
+  } finally {
+    await stopOwned(r);
+  }
+});
+
+test('--no-notify: the same needs-you run raises no toast, and the notifier is never started', async () => {
+  let started = 0;
+  const adapter = new FakeAdapter();
+  const r = await ownedRig({ adapter, notify: false, seams: { startNotifications: async () => void started++ } });
+  try {
+    await waitFor(() => r.spawned.length === 1, 'the window spawn');
+    const id = await needsYouTicket(r, 'Pick the platform');
+    adapter.setScript(id, { kind: 'needs_user_decision', blockers: ['x'] });
+    await waitFor(() => getTicket(r.db, id)!.status === 'BLOCKED', 'the run to block', 8000);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(started, 0);
+    assert.deepEqual(r.toasts, []);
+  } finally {
+    await stopOwned(r);
+  }
+});
+
+test('by default the notifier starts in BOTH modes (one code path), and stops with the host', async () => {
+  const r = await ownedRig();
+  let ownedSignal: AbortSignal | undefined;
+  const owned = await ownedRig({ seams: { startNotifications: async (signal) => void (ownedSignal = signal) } });
+  try {
+    await waitFor(() => ownedSignal !== undefined, 'the owned-mode notifier start');
+    assert.equal(ownedSignal!.aborted, false);
+  } finally {
+    await stopOwned(owned);
+    await stopOwned(r);
+  }
+  assert.equal(ownedSignal!.aborted, true, 'the notifier is stopped when the daemon stops');
+
+  const d = await elsewhereDaemon();
+  try {
+    const log = { said: [] as string[], errors: [] as string[], spawned: [] as WindowSpec[], events: [] as string[] };
+    const child = fakeChild();
+    let attachSignal: AbortSignal | undefined;
+    const done = runApp(attachOpts(d.stateDir), attachSeams(d.stateDir, { startNotifications: async (signal) => void (attachSignal = signal) }, log, child));
+    await waitFor(() => attachSignal !== undefined, 'the attach-mode notifier start');
+    child.exit();
+    await done;
+    assert.equal(attachSignal!.aborted, true, 'attach mode stops the notifier when the window closes');
+
+    const off = attachOpts(d.stateDir);
+    off.notify = false;
+    let startedAgain = 0;
+    const child2 = fakeChild();
+    const done2 = runApp(off, attachSeams(d.stateDir, { startNotifications: async () => void startedAgain++ }, log, child2));
+    await waitFor(() => log.spawned.length === 2, 'the second window spawn');
+    child2.exit();
+    await done2;
+    assert.equal(startedAgain, 0, '--no-notify in attach mode starts nothing');
   } finally {
     await d.stop();
   }

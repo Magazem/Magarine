@@ -34,6 +34,8 @@ export interface ServeOptions {
   onListening?: (info: { pid: number; port: number; stateDir: string }) => void;
   /** Called once, after the daemon has fully stopped, ONLY when the shutdown cancelled running work (never for a quiet shutdown with nothing in flight). `cancelled` is the ticket ids -- see `formatShutdown` for what the owner is told. */
   onStopped?: (info: { cancelled: string[] }) => void;
+  /** Called first thing when shutdown begins, before anything is closed -- so a host that holds its own `/events` consumer (the `app` notifier) can let go of it before the server waits for its connections. */
+  onShuttingDown?: () => void;
 }
 
 // Batch 17 item (docs/strategy/batch-17-item-shutdown-reports-cancelled-work.md):
@@ -133,6 +135,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
   } finally {
     process.off('SIGINT', onSignal);
     process.off('SIGTERM', onSignal);
+    opts.onShuttingDown?.();
     // Order matters: stop every live worker and force its run/ticket to a
     // settled state BEFORE closing the listener or removing daemon.json, so
     // a client racing the shutdown never observes a daemon.json that still
@@ -146,6 +149,11 @@ export async function serve(opts: ServeOptions): Promise<void> {
     // socket abort).
     requestHandler.closeAllStreams();
     const { cancelled } = await loop.stop();
+    // Again, AFTER the loop has stopped: a client that opened `/events` while
+    // the runs were being cancelled registered after the first call above, and
+    // `server.close()` waits for every open connection -- a stream nobody ended
+    // would hang the shutdown forever.
+    requestHandler.closeAllStreams();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     removeDaemonFile(opts.stateDir);
     // After everything is down, and only when work was actually cancelled:

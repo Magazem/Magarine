@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { checkDaemonFile, type DaemonFileInfo } from '../daemon.ts';
 import { daemonRequest, probeDaemonHealth } from '../daemonClient.ts';
+import { realNotifierSeams, runNotifier, type Toast } from './notify.ts';
 import { serve, type ServeOptions } from './serve.ts';
 
 // `magarine app` (batch 17, ruling 30 as amended by
@@ -58,6 +59,8 @@ export interface AppSeams {
   spawnWindow: (spec: WindowSpec) => WindowChild;
   /** Asks the window to close the way a person does (PowerShell `CloseMainWindow()` on Windows). */
   askWindowClose: (pid: number) => Promise<void>;
+  /** Batch 17 item 4b: raises Needs You toasts for the life of the host (until `signal` aborts). Never throws; a no-op off Windows. */
+  startNotifications: (signal: AbortSignal) => Promise<void>;
   /** Attach mode's Ctrl+C. Returns a disposer. (Owned mode's Ctrl+C is `serve()`'s own.) */
   onInterrupt: (handler: () => void) => () => void;
   /** How many tasks are running right now, for the "window closed" line. */
@@ -76,10 +79,12 @@ export interface AppOptions {
   /** `--browser <path>`. */
   browserFlag?: string;
   /** What `serve` was given (flags, adapter, db) for owned mode -- a thunk, evaluated ONLY when the daemon is actually started here, so attach mode never opens a database or resolves an adapter (e.g. `claude`) it does not need. `onListening`/`onStopped` are the host's to compose. */
-  serveOptions: () => Omit<ServeOptions, 'onListening' | 'onStopped'>;
+  serveOptions: () => Omit<ServeOptions, 'onListening' | 'onStopped' | 'onShuttingDown'>;
   /** Prints the daemon's listening line exactly as `serve` does. */
   onListening: (info: { pid: number; port: number; stateDir: string }) => void;
   onStopped: (info: { cancelled: string[] }) => void;
+  /** `--no-notify` sets this false; anything else leaves the Needs You toast on. */
+  notify?: boolean;
   /** Graceful-close patience before the kill (spec: 5 s). */
   closeTimeoutMs?: number;
 }
@@ -229,6 +234,8 @@ export async function runApp(opts: AppOptions, seams: AppSeams): Promise<void> {
     }
     const child = await openWindow(opts, seams, resolution.found, live.port);
     if (!child) return;
+    const notifying = new AbortController();
+    if (opts.notify !== false) void seams.startNotifications(notifying.signal);
     let interruption: Promise<void> | undefined;
     const dispose = seams.onInterrupt(() => {
       if (interruption) return;
@@ -237,6 +244,7 @@ export async function runApp(opts: AppOptions, seams: AppSeams): Promise<void> {
       });
     });
     const result = await child.exited;
+    notifying.abort();
     // The window going away because WE closed it: finish saying so first.
     if (interruption) await interruption;
     dispose();
@@ -248,11 +256,17 @@ export async function runApp(opts: AppOptions, seams: AppSeams): Promise<void> {
   // OWNED: the daemon runs in this process, and its lifetime is the host's.
   let child: WindowChild | undefined;
   let daemonDown = false;
+  const notifying = new AbortController();
   await seams.serve({
     ...opts.serveOptions(),
     onStopped: opts.onStopped,
+    // The notifier's /events stream must be let go BEFORE serve() waits for
+    // its connections to end, not after serve() returns.
+    onShuttingDown: () => notifying.abort(),
     onListening: (info) => {
       opts.onListening(info);
+      // Needs You toasts run for the daemon's whole life, window or no window.
+      if (opts.notify !== false) void seams.startNotifications(notifying.signal);
       if (!('found' in resolution)) {
         seams.say(noBrowserLine(info.port, resolution.looked));
         return;
@@ -271,6 +285,7 @@ export async function runApp(opts: AppOptions, seams: AppSeams): Promise<void> {
   // serve() returns only after Ctrl+C has stopped the daemon: the window is
   // closed AFTER the daemon, never before.
   daemonDown = true;
+  notifying.abort();
   if (child) await closeWindowGracefully(child, seams, closeTimeout);
 }
 
@@ -315,6 +330,8 @@ export function realAppSeams(deps: {
   countInFlight: () => number;
   say: AppSeams['say'];
   sayError: AppSeams['sayError'];
+  /** Overridable so a test observes toasts without a desktop; PowerShell in production. */
+  raiseToast?: (toast: Toast) => Promise<boolean>;
 }): AppSeams {
   return {
     serve,
@@ -328,6 +345,18 @@ export function realAppSeams(deps: {
       const res = await daemonRequest<{ code?: string }>(check.info, 'POST', '/launch-code', {});
       if (res.status !== 200 || typeof res.body?.code !== 'string') throw new Error(`the daemon refused to mint a launch code (status ${res.status})`);
       return res.body.code;
+    },
+    async startNotifications(signal) {
+      if (process.platform !== 'win32' && !deps.raiseToast) return; // Windows-only in production
+      try {
+        // The token comes from daemon.json, like the launch-code mint: it is
+        // used as a bearer header on the loopback stream and goes no further.
+        const check = await checkDaemonFile(deps.stateDir, probeDaemonHealth);
+        if (check.status !== 'live' || !check.info) return;
+        await runNotifier(realNotifierSeams(check.info, deps.sayError, deps.raiseToast), signal);
+      } catch (err) {
+        deps.sayError(`notifications stopped: ${err instanceof Error ? err.message : String(err)}`);
+      }
     },
     spawnWindow: spawnRealWindow,
     askWindowClose: askRealWindowClose,

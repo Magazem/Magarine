@@ -86,3 +86,42 @@ test('past a handful (or when the ids would not fit one line) it says the count 
   assert.match(formatShutdown(long).human, /see `magarine board`/, 'ids that do not fit one line fall back to the count');
   assert.deepEqual(formatShutdown(many).json.cancelled, many, '--json always carries every id');
 });
+
+// The shutdown must not hang on an /events stream that connects WHILE the runs
+// are being cancelled (after the first closeAllStreams, before server.close):
+// `server.close()` waits for every open connection. The `app` notifier holds
+// exactly such a stream, and a slow-stopping worker widens the window.
+test('a client that opens /events during shutdown (while a slow run is being cancelled) does not hang serve()', async () => {
+  class SlowStopAdapter extends FakeAdapter {
+    override async stop(handle: Parameters<FakeAdapter['stop']>[0]): Promise<void> {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      return super.stop(handle);
+    }
+  }
+  const stateDir = join(testRoot.root, `state-late-stream-${Math.random().toString(36).slice(2, 8)}`);
+  const projectDir = join(stateDir, 'project');
+  mkdirSync(projectDir, { recursive: true });
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', workspaceRoot: projectDir, scopePath: join(projectDir, 'SCOPE.md') });
+  const adapter = new SlowStopAdapter();
+  const tk = createTicket(db, { projectId: project.id, title: 'hangs', workspaceType: 'NONE' });
+  adapter.setScript(tk.id, { kind: 'hang' });
+  let port = 0;
+  let token = '';
+  const done = serve({
+    db, dbPath: ':memory:', stateDir, adapter, maxParallelWorkers: 1, artifactsDir: join(stateDir, 'artifacts'), tickIntervalMs: 20,
+    onListening: (info) => (port = info.port),
+  });
+  const deadline = Date.now() + 5000;
+  while ((!port || getTicket(db, tk.id)!.status !== 'IN_PROGRESS') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(port);
+  token = (JSON.parse((await import('node:fs')).readFileSync(join(stateDir, 'daemon.json'), 'utf8')) as { token: string }).token;
+
+  process.emit('SIGINT');
+  await new Promise((resolve) => setTimeout(resolve, 250)); // inside the slow stop: first closeAllStreams is behind us
+  const late = await fetch(`http://127.0.0.1:${port}/events`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(late.status, 200, 'the stream opened during shutdown');
+
+  const outcome = await Promise.race([done.then(() => 'stopped'), new Promise((resolve) => setTimeout(() => resolve('HUNG'), 6000))]);
+  assert.equal(outcome, 'stopped', 'serve() must finish, not wait forever on the late stream');
+});
