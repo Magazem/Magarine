@@ -42,6 +42,40 @@ raised it, the measures below are theirs approved, and they are rules now, not s
    apply, and they held the page. Committed at `5f54292`. **Check a teammate's actual model
    before costing a decision on it.**
 
+## BATCH 16 IS CLOSED — 2026-09-20
+
+**Its closing condition was RUN (rule 20).** The owner walked it and reported:
+*"did the steps all good, ctrl + c produced no output just closed the daemon, verefied by
+runnung status again and it said no daemon running"*. Full record, including the five other
+walks and what each proved: `docs/strategy/batch-16-closeout.md` and
+`docs/evidence/batch-16-walk/`. Read the close-out before claiming anything about batch 16.
+
+Suite at close: **819 pass, 0 fail, 1 skip** (the skip is an EACCES case this Windows machine
+cannot produce; the test proves that before skipping).
+
+**NEXT: batch 17, the Windows window host.** Then 18 = per-ticket discussion, tags, shortcuts,
+and the owner's second skin.
+
+**IN FLIGHT AT CLOSE:** the stranger's-walk `--help` findings with the Invariants Engineer
+(task `01a0be2e-5e16-7652-b5aa-130ab8c1d28a`) — `magarine --help` omits `discuss` and `token`,
+per-command `--help` is rejected as an unknown flag, the error names `--db` where the README
+teaches `--state-dir`, and `ticket add` was missing from the worked example.
+
+**WITH THE STRATEGIST, undecided:** Ctrl+C prints nothing while cancelling every live run
+(tickets roll back to READY). Nobody is misled, but a shutdown that cancels work says nothing
+about it. Batch 17 candidate at most; a quiet exit is a real convention and declining is a
+legitimate answer.
+
+**THE OWNER'S GOAL IS UNCHANGED and is the measure of everything:** *"i want to get finished
+with this project so we can move our workflow to magarine and be more effecient than the
+current one"*. Batch 16 removed what would have stopped them trying. **The interview has been
+seen exactly once, by the lead, on a toy word-count project** — their real work is the actual
+test.
+
+**A CORRECTION WORTH KEEPING:** the owner's daemon pid 31044, which the previous handover said
+was running and untouchable, was already gone when checked on 2026-09-19. Verify a claimed
+process before acting on it.
+
 ## STATE 2026-09-19 (updated after the park) — batch 16, items 5 and 6 in flight
 
 The park below was resumed and is now history. **Committed since, each mutation re-run by the
