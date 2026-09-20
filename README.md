@@ -83,19 +83,28 @@ Run these from wherever `magarine` is on your PATH:
    names a different folder instead of the one you're in; `project set --dir
    <path>` moves it later.)
 
-3. **Start the daemon.** This is the background process that actually reads
-   your scope, talks back to you, and runs your tasks, using the real
-   `claude` tool. Every one of these is a real run with an equivalent API
-   cost -- typically cents for a single reply or a small task, shown on the
-   board as it happens. Leave this terminal open -- it prints the port it's
-   listening on and the page's address, and keeps running until you stop it.
+3. **Open the window.** This starts the background process that actually
+   reads your scope, talks back to you, and runs your tasks, using the real
+   `claude` tool -- and opens the board in a window of its own. Every task is
+   a real run with an equivalent API cost -- typically cents for a single
+   reply or a small task, shown on the board as it happens. Leave this
+   terminal open -- it prints the port the daemon is listening on and the
+   page's address, and keeps running until you stop it. Do step 2 first: the
+   window shows the projects that already exist, and cannot create one yet.
    ```sh
-   magarine serve --adapter claude --max-parallel 4
+   magarine app --adapter claude --max-parallel 4
    ```
+   The window is Chrome's (or Edge's, if there is no Chrome; `magarine doctor`
+   names which, or says none was found). **Closing the window does not stop
+   the daemon or the work** -- the terminal says so, and `magarine app` opens
+   the window again; `Ctrl+C` in the terminal is what stops it. If you would
+   rather use a plain browser tab, `magarine serve --adapter claude
+   --max-parallel 4` runs the same daemon with no window.
+
    This is the one number that decides how many tasks run at once: the most
    workers the daemon runs at once across every project (a project only runs
-   fewer if you gave it a smaller cap of its own in step 2). The line `serve`
-   prints ends "up to 4 workers at once" so you can see the number you're
+   fewer if you gave it a smaller cap of its own in step 2). The line it
+   prints says "up to 4 workers at once" so you can see the number you're
    running under; leave the flag off and it is 1. Each worker is a real
    session against your subscription's limits, so the number is your choice:
    start lower if you'd rather it spend more slowly.
@@ -138,11 +147,12 @@ Run these from wherever `magarine` is on your PATH:
    it have built together) -- edit `SCOPE.md` directly, or keep using
    `discuss` to add to the conversation.
 
-6. **Watch it work.** Either open the page `magarine serve` printed and run
-   `magarine token` in another terminal (it copies the token to your
-   clipboard -- paste it into the page, pick your project) to see the board,
-   inbox, and the whole conversation in one place, refreshing live -- or,
-   from a second terminal:
+6. **Watch it work.** The window from step 3 shows the board, inbox, and the
+   whole conversation in one place, refreshing live, already signed in. (In a
+   plain browser tab -- `magarine serve`, or a window that did not open --
+   run `magarine token` in another terminal: it copies the token to your
+   clipboard, and you paste it into the page and pick your project.) Or, from
+   a second terminal:
    ```sh
    magarine board --project <projectId>
    magarine inbox --project <projectId>
@@ -165,12 +175,12 @@ Run these from wherever `magarine` is on your PATH:
 8. **Respond when it needs you, then stop.** If `inbox` shows something, see
    "The inbox" below for what to do -- and `discuss` any time you want to
    change direction, correct something, or ask it to plan the next batch.
-   When you're satisfied, go back to the terminal running `magarine serve`
-   and press `Ctrl+C` to stop it. Any task running at that moment is
-   cancelled, goes back to READY, and starts over from scratch the next time
-   you run `serve` -- so what it had already spent is spent again; if any
-   were running, `serve` prints one line naming them, and prints nothing
-   when nothing was running.
+   When you're satisfied, go back to the terminal running `magarine app`
+   (or `serve`) and press `Ctrl+C` to stop it. Any task running at that
+   moment is cancelled, goes back to READY, and starts over from scratch the
+   next time you start it -- so what it had already spent is spent again; if
+   any were running, it prints one line naming them, and prints nothing when
+   nothing was running.
 
 ## The board
 

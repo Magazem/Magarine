@@ -481,3 +481,37 @@ test('formatDoctor prints one PASS/FAIL/SKIP line per check with the exact detai
   );
   assert.equal(rows[2], `SKIP  ${'claude login shape'.padEnd(20)} unknown -- see above.`);
 });
+
+// Batch 17 item 5: doctor names the window host -- which browser `magarine app`
+// would open -- using the resolver `app` itself uses. Nothing found is a SKIP,
+// never a FAIL: no window is degraded, not broken.
+async function doctorWithHost(host: ReturnType<NonNullable<Parameters<typeof runDoctor>[0]['resolveWindowHostFn']>>) {
+  return runDoctor({
+    stateDir: tempStateDir(),
+    nodeVersion: '24.1.0',
+    resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
+    runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
+    checkDaemonFileFn: notLive,
+    resolveWindowHostFn: () => host,
+  });
+}
+
+test('doctor names the window host: Chrome by name and path, Edge with the sign-in and sync note', async () => {
+  const chrome = (await doctorWithHost({ found: { executable: 'C:\\Chrome\\chrome.exe', kind: 'chrome', strategy: 'chrome' } })).find((l) => l.name === 'window host')!;
+  assert.equal(chrome.status, 'pass');
+  assert.match(chrome.detail, /chrome/);
+  assert.ok(chrome.detail.includes('C:\\Chrome\\chrome.exe'));
+
+  const edge = (await doctorWithHost({ found: { executable: 'C:\\Edge\\msedge.exe', kind: 'edge', strategy: 'edge, with sign-in and sync disabled' } })).find((l) => l.name === 'window host')!;
+  assert.equal(edge.status, 'pass');
+  assert.ok(edge.detail.startsWith('edge, with sign-in and sync disabled'), edge.detail);
+});
+
+test('no window host is a SKIP with the page-still-opens sentence -- never a FAIL, and it does not change doctor\'s exit code', async () => {
+  const lines = await doctorWithHost({ none: true, looked: ['C:\\PF\\Google\\Chrome\\Application\\chrome.exe', 'C:\\PF\\Microsoft\\Edge\\Application\\msedge.exe'] });
+  const line = lines.find((l) => l.name === 'window host')!;
+  assert.equal(line.status, 'skip');
+  assert.ok(line.detail.includes('none found -- the page still opens in any browser at the address serve prints'), line.detail);
+  assert.match(line.detail, /looked for: .*chrome\.exe.*msedge\.exe/);
+  assert.equal(doctorExitCode(lines), 0, 'a missing nicety must not fail doctor');
+});

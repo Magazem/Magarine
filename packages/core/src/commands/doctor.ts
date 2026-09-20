@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { checkDaemonFile, type DaemonFileCheck } from '../daemon.ts';
 import { probeDaemonHealth } from '../daemonClient.ts';
 import { STATIC_CONTENT_TYPES, UI_DIR } from '../daemonApi.ts';
 import { resolveCommand, type ResolvedCommand } from '../process.ts';
+import { resolveWindowBrowser, type BrowserResolution } from './app.ts';
 
 // `magarine doctor`: the owner's own first stop when something is wrong.
 // Every line is PASS, FAIL, or SKIP with one plain sentence -- no stack
@@ -47,6 +48,8 @@ export interface DoctorOptions {
   runProbeFn?: (exe: string, args: string[]) => ProbeResult;
   /** Test-only seam: overrides the daemon-file staleness check (daemon.ts/daemonClient.ts). Defaults to the real `checkDaemonFile` + `probeDaemonHealth`. */
   checkDaemonFileFn?: (stateDir: string) => Promise<DaemonFileCheck>;
+  /** Batch 17 item 5: test-only seam, overrides how the window host (the browser `magarine app` would open) is resolved. Defaults to the very resolver `app` uses -- `MAGARINE_BROWSER`, then Chrome, then Edge -- against this machine's real paths. */
+  resolveWindowHostFn?: () => BrowserResolution;
   /** Batch 15 rulings 11/12: test-only seam, overrides which real filenames under packages/core/ui/ this check enumerates. Defaults to a real `readdirSync` of `UI_DIR`, filtered to `STATIC_CONTENT_TYPES`' own known extensions -- so this list and the daemon's own serving table can never drift apart from each other. */
   listAssetNamesFn?: () => string[];
   /** Test-only seam: overrides how one asset route is actually fetched. Defaults to a real `fetch()` against the live daemon's own port. */
@@ -246,6 +249,23 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
       name: 'state directory',
       status: 'fail',
       detail: `cannot write to ${options.stateDir}: ${err instanceof Error ? err.message : String(err)}. Check its permissions, or pass --state-dir to use a different one.`,
+    });
+  }
+
+  // Batch 17 item 5: which browser `magarine app` would open its window in --
+  // the same resolver `app` itself uses, so this line can never disagree with
+  // what `app` actually does. Not finding one is a SKIP, never a FAIL:
+  // Magarine without a window is degraded, not broken (`app` still runs the
+  // daemon and the page opens in any browser), and doctor must not cry
+  // failure over a nicety.
+  const windowHost = (options.resolveWindowHostFn ?? (() => resolveWindowBrowser({}, { exists: existsSync, env: process.env, platform: process.platform })))();
+  if ('found' in windowHost) {
+    lines.push({ name: 'window host', status: 'pass', detail: `${windowHost.found.strategy} -- ${windowHost.found.executable}` });
+  } else {
+    lines.push({
+      name: 'window host',
+      status: 'skip',
+      detail: `none found -- the page still opens in any browser at the address serve prints (looked for: ${windowHost.looked.join(', ') || 'nothing'})`,
     });
   }
 
