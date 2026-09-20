@@ -607,15 +607,16 @@ not asserted from a comment. All JSON, all behind the token
 `node:crypto`'s `timingSafeEqual`): a wrong or missing token gets a fixed
 `{"error": "unauthorized"}`, `401`, on every route including `/health`,
 before any other work happens. Node's built-in `http`/`fetch` only — no
-dependency was added for this. **Two deliberate exceptions: `GET /` and
-`GET /ui/<name>`**, neither behind a token check — `GET /` serves the
+dependency was added for this. **Three deliberate exceptions: `GET /`,
+`GET /ui/<name>` and `POST /launch-code/exchange`** (Batch 17, below), none behind a token check — `GET /` serves the
 browser page (`ui/page.ts`), the page the owner types the token INTO in the
 first place, so it cannot be gated behind that same token; `GET /ui/<name>`
 (ruling 12) serves the page's own static assets (`<script src>`,
 `<link>`, `@font-face`), which the browser loads natively and never attaches
 a custom `Authorization` header to, so gating them would just break the page
-that requests them. Every other route, including `/events`, stays behind
-`isAuthorized` exactly as before.
+that requests them. `POST /launch-code/exchange` cannot take a token either: it
+is how a page that has none yet gets one (see the route table). Every other
+route, including `/events`, stays behind `isAuthorized` exactly as before.
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -630,6 +631,8 @@ that requests them. Every other route, including `/events`, stays behind
 | `GET` | `/tickets/{id}/progress` | Batch 15 ruling 7: one entry per run for that ticket — `{runId, runStatus, latest}`, where `latest` is that run's most recent `worker_progress` event (`{message, tool, state, costUsd, at, sequence}`) or `null` if none yet. 404 for an unknown ticket id. |
 | `GET` | `/events?since=<sequence>` | Batch 15 ruling 7: `text/event-stream`. `since` (default `0`) is exclusive — replays every event with `sequence` greater than it, then keeps streaming new ones as they land. Each SSE frame's `id` is the event's `sequence`, `event` is its `eventType`, `data` is the full JSON event row; only `worker_progress` events and non-`internal`-visibility events are streamed. A `: heartbeat` comment line every ~15s keeps a quiet connection provably alive (not a real frame). A wrong or missing token gets the same `401 {"error":"unauthorized"}` as every other route, not a stream. Every open stream is ended when the daemon shuts down, ahead of the HTTP server itself closing. |
 | `GET` | `/ui/<name>` | Batch 15 ruling 12: static assets from `packages/core/ui/` — **no token required** (see above). Serves only `.html`/`.css`/`.js`/`.woff2`/`.svg` by extension, with the matching `Content-Type`; no fallback, no sniffing. A name containing a path separator or a dot-segment (decoded first, so an encoded traversal is caught too) is refused with `400`; an unrecognized extension or a missing file answers `404`. |
+| `POST` | `/launch-code` | Batch 17 (ruling 30 item 4): mints a one-time launch code, **behind the token** like every data route. Answers `{code, expiresAt}` — a 32-byte random hex code and an ISO timestamp sixty seconds ahead. Held in the daemon's memory only; at most sixteen live codes, the oldest dropped past that. The code is not the token.
+| `POST` | `/launch-code/exchange` | Batch 17: body `{code}`. **No token required — the third and last unauthenticated route** (the page calling it has no token yet). A live, unused code answers `{token}` once and is burned before the response is written; anything else — unknown, expired, already used, malformed body — answers `404` `{"error": "launch code expired or already used"}` and nothing about whether the code ever existed. **This response body is the ONLY place the token reaches a client outside `daemon.json`**; ruling 20's rest (never stdout, stderr, logs, `--json`, a command-line argument, a URL) is unchanged, and `launchCode.test.ts` greps a real daemon's whole flow for the real token. |
 | `POST` | `/tickets` | Body mirrors `ticket add`'s flags (`project`, `title`, `description`, `maxAttempts`, `priority`, `workspaceType`, `acceptanceCriteria`, `model`, `budget`, `dependsOn`, `expectedArtifacts`). Attaches every `dependsOn` before resolving readiness, never before — same ordering guarantee as the CLI. `expectedArtifacts` carries the full `{kind, path?}` entry shape (same validation as the Manager's `create_ticket`/`update_ticket`), not the CLI's path-only `--expected-artifact` shorthand; omit it for no expectations, a non-empty array to verify DONE against, never `[]` (refused with 400). |
 | `POST` | `/deps` | `{project, ticket, dependsOn, type?}`. |
 | `POST` | `/tickets/{id}/decide` | `{answer}`. |
