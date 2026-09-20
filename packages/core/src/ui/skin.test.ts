@@ -386,6 +386,15 @@ test('the three views are hash links, so keyboard, deep links and back/forward w
   assert.match(APP, /addEventListener\('hashchange'/);
 });
 
+test('the tab that reaches the Manager says Manager, and #scope still routes to the same view', () => {
+  // The conversation composer lives under this view; a tab named Scope hid it
+  // from the owner. The label is the word; the hash is the route and stays.
+  const nav = PAGE_HTML.slice(PAGE_HTML.indexOf('<nav class="nav"'), PAGE_HTML.indexOf('</nav>'));
+  assert.match(nav, /<a href="#scope">Manager<\/a>/, 'the #scope tab is not labelled Manager');
+  assert.equal(/<a href="#scope">Scope<\/a>/.test(nav), false, 'the old Scope label is back');
+  assert.match(PAGE_HTML, /<h2 id="scopeHead">Scope<\/h2>/, 'the scope panel head must keep saying Scope');
+});
+
 test('the view defaults to board, and an unknown hash does not blank the page', () => {
   // REQUIREMENT 1's default, and the case a deep link makes reachable: someone
   // arrives at #nonsense. A view nothing styles would leave the centre empty.
