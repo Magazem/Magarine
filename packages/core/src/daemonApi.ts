@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join as joinPath } from 'node:path';
@@ -72,7 +72,18 @@ export interface DaemonApiDeps {
   machineCap?: number;
   /** Magarine's state directory: `GET /projects` needs it for the readiness rules (batch 16 ruling 24). */
   stateDir: string;
+  /** The clock launch codes expire against (epoch milliseconds). Injectable so a test proves the sixty seconds without sleeping; `Date.now` in production. */
+  now?: () => number;
 }
+
+// Batch 17 Role A item 3 (ruling 30 item 4): launch codes. `magarine app` opens
+// the window already signed in WITHOUT the token ever being a command-line
+// argument, a URL, a log line or terminal output (ruling 20), by minting a
+// one-time code the page trades for the token. Held in the request handler's
+// memory only -- a daemon restart forgets them, which is the right failure.
+const LAUNCH_CODE_TTL_MS = 60_000;
+const LAUNCH_CODE_CAP = 16;
+const LAUNCH_CODE_REFUSED = 'launch code expired or already used';
 
 export class ApiError extends Error {
   status: number;
@@ -545,6 +556,36 @@ export interface RequestHandler {
 
 export function createRequestHandler(deps: DaemonApiDeps): RequestHandler {
   const activeStreams = new Map<ServerResponse, () => void>();
+  const now = deps.now ?? Date.now;
+  // code -> expiry (epoch ms). A Map iterates in insertion order, so the
+  // oldest live code is always the first key: the cap drops it.
+  const launchCodes = new Map<string, number>();
+
+  // Mints a fresh 32-byte hex code, single use, sixty seconds. Expired codes
+  // are swept first so they never count against the cap; past the cap the
+  // OLDEST live code is dropped (its holder simply gets the refusal below).
+  function mintLaunchCode(): { code: string; expiresAt: string } {
+    const t = now();
+    for (const [code, expiresAt] of launchCodes) if (expiresAt <= t) launchCodes.delete(code);
+    while (launchCodes.size >= LAUNCH_CODE_CAP) launchCodes.delete(launchCodes.keys().next().value as string);
+    const code = randomBytes(32).toString('hex');
+    const expiresAt = t + LAUNCH_CODE_TTL_MS;
+    launchCodes.set(code, expiresAt);
+    return { code, expiresAt: new Date(expiresAt).toISOString() };
+  }
+
+  // Trades a live, unused code for the token. The code is BURNED before the
+  // token is returned, so a second exchange (or a race) can never succeed. Any
+  // failure -- unknown, expired, already used, malformed body -- is the same
+  // refusal, revealing nothing about whether a code ever existed.
+  function exchangeLaunchCode(body: unknown): string | null {
+    const code = typeof body === 'object' && body !== null ? (body as { code?: unknown }).code : undefined;
+    if (typeof code !== 'string') return null;
+    const expiresAt = launchCodes.get(code);
+    if (expiresAt === undefined) return null;
+    launchCodes.delete(code);
+    return expiresAt > now() ? deps.token : null;
+  }
 
   function handleEventsStream(req: IncomingMessage, res: ServerResponse, url: URL): void {
     const sinceRaw = Number(url.searchParams.get('since'));
@@ -603,8 +644,29 @@ export function createRequestHandler(deps: DaemonApiDeps): RequestHandler {
         serveStaticAsset(res, url.pathname.slice('/ui/'.length));
         return;
       }
+      // The THIRD and last unauthenticated route (beside `GET /` and `GET
+      // /ui/*`): the page has no token yet -- that is what it is asking for.
+      // Its response body is the ONLY place the token ever reaches a client
+      // outside `daemon.json`; ruling 20's rest (never stdout, stderr, logs,
+      // `--json`, a command-line argument or a URL) is unchanged.
+      if (req.method === 'POST' && url.pathname === '/launch-code/exchange') {
+        let body: unknown;
+        try {
+          body = await readBody(req);
+        } catch {
+          body = undefined;
+        }
+        const token = exchangeLaunchCode(body);
+        if (token === null) sendJson(res, 404, { error: LAUNCH_CODE_REFUSED });
+        else sendJson(res, 200, { token });
+        return;
+      }
       if (!isAuthorized(req, deps.token)) {
         sendJson(res, 401, { error: 'unauthorized' });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/launch-code') {
+        sendJson(res, 200, mintLaunchCode());
         return;
       }
       if ((req.method ?? 'GET') === 'GET' && url.pathname === '/events') {
