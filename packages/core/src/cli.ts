@@ -552,14 +552,30 @@ function buildAdapter(db: Db, flags: Flags, projectId: string): AgentAdapter {
   throw new Error(`Unknown adapter: ${kind}`);
 }
 
+// The ONE composition of a command's valid-flag list: the unknown-flag error
+// and `<command> --help` both print exactly this, so the two cannot drift.
+// Both spellings for locating state are named (the README teaches
+// `--state-dir`; `--db` is the other accepted way), never only one of them.
+function validFlagsText(key: string): string {
+  const own = FLAG_SPECS[key] ?? [];
+  const list = own.length > 0 ? own.map((k) => `--${k}`).join(', ') : '(none of its own)';
+  return `${list} (plus --state-dir <dir> to choose the state directory, --db <file> to name one database file, and --json)`;
+}
+
 function checkKnownFlags(key: string, flags: Flags): string | null {
   const known = FLAG_SPECS[key];
   if (!known) return null;
   const unknown = Object.keys(flags).filter((k) => !COMMON_FLAGS.includes(k) && !known.includes(k));
   if (unknown.length === 0) return null;
-  return `Unknown flag(s) for '${key}': ${unknown.map((k) => `--${k}`).join(', ')}. Valid flags: ${known
-    .map((k) => `--${k}`)
-    .join(', ')} (plus --db, --json).`;
+  return `Unknown flag(s) for '${key}': ${unknown.map((k) => `--${k}`).join(', ')}. Valid flags: ${validFlagsText(key)}.`;
+}
+
+// The usage line is GENERATED from FLAG_SPECS -- the same table that validates
+// every command's flags -- so a command cannot exist without being listed
+// (a command the product does not admit to having reads as one that does not
+// exist). cli.test.ts also checks every dispatched command is in the table.
+function usageText(): string {
+  return `Usage: magarine <${Object.keys(FLAG_SPECS).join('|')}> [--flags] [--json]\nFor one command's flags: magarine <command> --help`;
 }
 
 function output(flags: Flags, data: unknown, humanLine: string): void {
@@ -575,6 +591,21 @@ async function main(): Promise<void> {
   const { positionals, flags } = parseFlags(rest);
   const subcommand = positionals[0];
   const flagSpecKey = subcommand ? `${command} ${subcommand}` : command;
+
+  // `--help` is a request, not a flag to validate: answered before anything
+  // else (never opens a database, never starts a daemon), to stdout, exit 0.
+  if (command === '--help' || command === '-h' || command === 'help') {
+    process.stdout.write(`${usageText()}\n`);
+    return;
+  }
+  if (flags.help) {
+    if (FLAG_SPECS[flagSpecKey]) {
+      process.stdout.write(`Usage: magarine ${flagSpecKey} [--flags]\nValid flags: ${validFlagsText(flagSpecKey)}\n`);
+    } else {
+      process.stdout.write(`${usageText()}\n`);
+    }
+    return;
+  }
 
   const flagError = checkKnownFlags(flagSpecKey, flags);
   if (flagError) {
@@ -1383,9 +1414,7 @@ ${scopeLine}` : ''}`);
     return;
   }
 
-  process.stderr.write(
-    'Usage: magarine <doctor|project create|project set|project list|ticket add|dep add|plan|tick|run --until-idle|serve|cancel|status|board|inbox|activity|decide|retry|approve|reject|resume> [--flags] [--json]\n'
-  );
+  process.stderr.write(`${usageText()}\n`);
   process.exitCode = 1;
 }
 

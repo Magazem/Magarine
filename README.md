@@ -150,7 +150,19 @@ Run these from wherever `magarine` is on your PATH:
    Run these again any time to see current status -- they don't refresh on
    their own.
 
-7. **Respond when it needs you, then stop.** If `inbox` shows something, see
+7. **Add a task yourself, any time.** The Manager normally proposes the
+   tasks, but you can also add one by hand:
+   ```sh
+   magarine ticket add --project <projectId> --title "Write hello.py that prints hello" --workspace DIRECTORY --expected-artifact hello.py
+   ```
+   `--workspace DIRECTORY` makes the task work in your project's folder (so
+   `hello.py` lands next to your `SCOPE.md`); `--workspace NONE` gives it a
+   throwaway folder instead. The flag is `--workspace` -- there is no
+   `--kind` -- and `magarine ticket add --help` lists every flag it takes.
+   `magarine board --project <projectId>` shows the new task; with `magarine
+   serve` running, it is picked up on the daemon's next pass.
+
+8. **Respond when it needs you, then stop.** If `inbox` shows something, see
    "The inbox" below for what to do -- and `discuss` any time you want to
    change direction, correct something, or ask it to plan the next batch.
    When you're satisfied, go back to the terminal running `magarine serve`
