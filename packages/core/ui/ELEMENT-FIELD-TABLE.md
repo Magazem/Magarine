@@ -83,7 +83,7 @@ roster and no idle worker, so the fleet is exactly the set of running tickets.
 | activity line | field | `BoardTicket.latestActivity.state` and `.tool` |
 | activity line when absent | copy | "no progress event recorded yet" — never a guessed state |
 | empty fleet | copy | "no ticket is IN_PROGRESS" |
-| legend | copy | — |
+| Manager turn's name | field | `BoardTicket.kind` is `manager`: the row's name reads "Manager" instead of a model tier |
 
 ## 3. Board
 
@@ -111,7 +111,9 @@ terminal lane with `DONE`, struck through, rather than being dropped.
 | CANCELLED strike-through | field | `BoardTicket.status` |
 | list view columns | field | the same fields; `BoardTicket.id` in full |
 | list view order | copy | `commands/board.ts`'s own `STATUS_ORDER`, so the page and CLI agree |
-| legend | copy | — |
+| Manager turn's tag | field | `BoardTicket.kind` is `manager`: the id line reads "Manager · <id>" |
+| empty board | copy | "No tickets yet. Open the Manager tab ..." shown only while `BoardResult.tickets` is empty |
+| cost note | copy | the equivalent-API-cost sentence, once, under the board |
 
 ### Pause banner (inside the board region)
 
@@ -173,12 +175,11 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 |---|---|---|
 | events | field | `GET /activity?project=` → `EventRow[]`, which excludes `visibility === 'internal'` |
 | time | field | `EventRow.createdAt` |
-| event type | field | `EventRow.eventType`, raw |
+| event type | field | `EventRow.eventType` through the page's copy map; a name with no entry is shown raw, and a mapped one keeps the raw name as its tooltip |
 | entity | field | `EventRow.entityId`, shortened |
 | tone (bad / attention / good) | copy | a fixed map over event type in `app.js`; an unmapped type gets no tone |
 | header timestamp | field | the newest event's `createdAt` |
 | empty | copy | "no events recorded for this project" |
-| legend: worker_progress is absent | copy | true by construction: those rows are `internal`, so `/activity` never returns them |
 
 ### The live/polling word, and the notices
 

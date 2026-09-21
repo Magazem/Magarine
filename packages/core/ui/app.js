@@ -175,6 +175,49 @@
     ]
   };
 
+  // WHAT AN EVENT OR ENTRY KIND IS CALLED ON SCREEN. Keyed on the daemon's own
+  // spelling. A name with no entry is shown as the daemon spelled it (rule 9:
+  // an unrecognised state is never dropped or blanked), and a mapped name keeps
+  // the raw one in its tooltip. Only names whose meaning is certain are mapped.
+  var EVENT_LABEL = {
+    worker_failed_final: 'Stopped for good',
+    worker_failed_retryable: 'Failed, will retry',
+    worker_retryable_failure: 'Failed, will retry',
+    worker_needs_user_decision: 'Asked you a question',
+    worker_needs_review: 'Waiting for your review',
+    worker_done: 'Finished',
+    run_started: 'Started running',
+    dependencies_resolved: 'Ready to run',
+    workspace_preparation_failed: 'Could not prepare its folder',
+    adapter_unavailable: 'The AI tool is unavailable',
+    project_spend_cap_reached: 'Spending limit reached',
+    project_resume: 'Project resumed',
+    project_not_ready: 'Project not ready to run',
+    manager_proposal_applied: 'Manager’s proposal applied',
+    manager_daily_cap_reached: 'Manager reached its daily limit',
+    scope_updated: 'Scope updated',
+    discuss: 'You wrote to the Manager',
+    owner_message: 'You',
+    question: 'Question',
+    manager_reply: 'Manager',
+    manager_assessment: 'Manager’s assessment',
+    manager_proposal: 'Manager’s proposal'
+  };
+
+  function labelFor(name) {
+    return Object.prototype.hasOwnProperty.call(EVENT_LABEL, name) ? EVENT_LABEL[name] : String(name);
+  }
+
+  // A label carrying the raw name as its tooltip, when the name was translated.
+  function labelNode(cls, name) {
+    var n = el('span', cls, labelFor(name));
+    if (labelFor(name) !== String(name)) n.title = String(name);
+    return n;
+  }
+
+  // Manager turns are tickets in the daemon but are the Manager on screen.
+  function isManager(t) { return !!t && t.kind === 'manager'; }
+
   var EVENT_TONE = {
     worker_failed_final: 'bad', worker_failed_retryable: 'bad',
     project_spend_cap_reached: 'bad', adapter_unavailable: 'bad',
@@ -516,7 +559,7 @@
       r.appendChild(makeOrg(t.model, t.status));
       var who = el('span', 'who');
       var model = seedFor(t.model);
-      who.appendChild(el('span', 'name', model ? ORG.tierOf(model) : 'no model recorded'));
+      who.appendChild(el('span', 'name', isManager(t) ? 'Manager' : (model ? ORG.tierOf(model) : 'no model recorded')));
       who.appendChild(el('span', 'tier', model || 'tickets.model is null and the project has no default'));
       var doing = doingText(t);
       var line = el('span', 'doing', doing || 'no progress event recorded yet');
@@ -549,7 +592,8 @@
   function ticketCard(t) {
     var card = el('div', 'ticket');
     card.setAttribute('data-status', t.status);
-    card.appendChild(el('span', 'tid', shortId(t.id)));
+    if (isManager(t)) card.setAttribute('data-kind', 'manager');
+    card.appendChild(el('span', 'tid', (isManager(t) ? 'Manager · ' : '') + shortId(t.id)));
     card.appendChild(el('div', 'title', t.title));
 
     var meta = el('div', 'meta');
@@ -582,6 +626,11 @@
     $('boardCount').textContent = tickets.length + (tickets.length === 1 ? ' ticket' : ' tickets') +
       ' \u00B7 ' + running + ' running';
 
+    var emptyLine = $('boardEmpty');
+    emptyLine.hidden = tickets.length > 0;
+    emptyLine.textContent = tickets.length ? '' :
+      'No tickets yet. Open the Manager tab and describe what you want built, or add one from a terminal with magarine ticket add.';
+
     STATUS_LANES.forEach(function (spec) {
       var mine = tickets.filter(function (t) { return spec.statuses.indexOf(t.status) >= 0; });
       var lane = el('div', 'lane');
@@ -609,7 +658,7 @@
       tr.setAttribute('data-status', t.status);
       var first = el('td');
       first.appendChild(el('div', 'title', t.title));
-      first.appendChild(el('span', 'tid mono', t.id));
+      first.appendChild(el('span', 'tid mono', (isManager(t) ? 'Manager · ' : '') + t.id));
       tr.appendChild(first);
       tr.appendChild(el('td', 'num', t.status));
       tr.appendChild(el('td', 'num', t.attemptCount + '/' + t.maxAttempts));
@@ -740,7 +789,7 @@
     head.appendChild(makeOrg(t && t.model, status, 'lg'));
     var who = el('span', 'who');
     var model = seedFor(t && t.model);
-    who.appendChild(el('span', 'name', (model ? ORG.tierOf(model) : 'project') + ' \u00B7 ' + item.eventType));
+    who.appendChild(el('span', 'name', (isManager(t) ? 'Manager' : (model ? ORG.tierOf(model) : 'project')) + ' \u00B7 ' + labelFor(item.eventType)));
     who.appendChild(el('span', 'tid', item.ticketId || item.projectId || ''));
     head.appendChild(who);
     ask._when = el('span', 'when', ago(item.createdAt) + ' ago');
@@ -817,7 +866,7 @@
     events.slice(0, 60).forEach(function (e) {
       var r = el('div', 'ev');
       r.appendChild(el('span', 't', hhmmss(e.createdAt)));
-      var k = el('span', 'k', e.eventType);
+      var k = labelNode('k', e.eventType);
       if (EVENT_TONE[e.eventType]) k.setAttribute('data-tone', EVENT_TONE[e.eventType]);
       r.appendChild(k);
       r.appendChild(el('span', 'e', shortId(e.entityId)));
@@ -887,7 +936,7 @@
     if (e.kind !== 'owner_message' && e.kind !== 'scope_updated') {
       who.appendChild(makeOrg(t && t.model, t && t.status, 'sm'));
     }
-    who.appendChild(el('span', 'name', e.kind === 'owner_message' ? 'You' : e.kind));
+    who.appendChild(labelNode('name', e.kind));
     who.appendChild(el('span', 'at', e.createdAt));
     art.appendChild(who);
     art.appendChild(el('div', 'text', e.text));

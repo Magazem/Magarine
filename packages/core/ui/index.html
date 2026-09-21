@@ -167,17 +167,6 @@
   <div class="panel-head"><h2 id="fleetHead">Fleet</h2><span class="count" id="fleetCount"></span><span class="count" id="fleetSlots"></span></div>
   <div id="fleetList"></div>
 
-  <p class="legend">
-    <b>Identity is generated, not drawn.</b> Each organism comes from a
-    deterministic function seeded by the worker's <b>model tier</b>, derived from
-    <b>BoardTicket.model</b> — or from the project's <b>defaultModel</b> when the
-    ticket carries no override. Same tier, same creature, every time, on every
-    machine. Colour is the ticket's status and is never part of identity.
-    <br><br>
-    <b>This is every worker that is actually running.</b> A row is a ticket in
-    IN_PROGRESS. The daemon has no roster, no idle agent and no per-agent name,
-    so this list has none either.
-  </p>
 </section>
 
 <!-- ===================================================== REGION: board === -->
@@ -201,6 +190,7 @@
   <!-- Six lanes, eight statuses, NOTHING HIDDEN: CANCELLED shares the terminal
        lane with DONE, struck through, rather than being dropped. Lanes are
        built by app.js from STATUS_LANES. -->
+  <div class="empty" id="boardEmpty" hidden></div>
   <div class="lanes" id="lanes"></div>
 
   <!-- The approved pass-2 table, kept as the list view behind the toggle. -->
@@ -212,21 +202,8 @@
     </table>
   </div>
 
-  <p class="legend">
-    <b>Every element here names the field it is drawn from</b>, line by line, in
-    <span class="mono">ui/ELEMENT-FIELD-TABLE.md</span>. The live line under a
-    running ticket is <b>latestActivity</b>, the most recent
-    <b>worker_progress</b> event mapped to a state by the daemon. Costs are ticket
-    <b>costUsd</b>, and "at least" appears when a run is still live, which makes
-    the figure a lower bound.
-    <br><br>
-    <b>Equivalent API cost</b> — what the tool would have billed at metered rates.
-    On a subscription this is not money leaving your account; the real constraint
-    is session limits.
-    <br><br>
-    <b>Nothing on this page is invented.</b> There are no progress percentages,
-    because nothing measures completion.
-  </p>
+  <p class="cost-note">Costs are the equivalent API cost: what the tool would have billed at metered rates. On a subscription this is not money leaving your account; the real constraint is session limits.</p>
+
 </section>
 
 <!-- ================================================= REGION: needs-you === -->
@@ -238,15 +215,6 @@
   <div class="panel-head"><h2 id="needsHead">Needs you</h2><span class="count" id="needsSub"></span></div>
   <div id="needsList"></div>
 
-  <p class="legend">
-    <b>Who, what they were doing, why they stopped, what is needed, what happens
-    next.</b> "Doing" is <b>latestActivity</b>, the last <b>worker_progress</b>
-    event before the worker handed back. The reason is <b>InboxItem.message</b>,
-    shown <b>in full and never truncated</b>; a half-shown reason is useless,
-    which is this panel's whole point. "Then" is fixed copy keyed on
-    <b>InboxItem.eventType</b> — it describes what the daemon will do, and is
-    listed as copy rather than as a measurement in the element-field table.
-  </p>
 </section>
 
 <!-- ===================================================== REGION: scope === -->
@@ -278,26 +246,12 @@
     <button class="btn btn-go" type="button" id="send">Send</button>
   </div>
 
-  <p class="legend">
-    <b>A filter, not a thread.</b> The conversation is project-scoped in the data
-    and entries carry a <b>ticketId</b>, so filtering by ticket is real where
-    threading is not. Only a still-unanswered <b>question</b> carries a live
-    answer box, matching the daemon's own rule that only a BLOCKED ticket has
-    anything to answer.
-  </p>
 </section>
 
 <!-- ================================================== REGION: activity === -->
 <section id="activity" aria-labelledby="actHead" tabindex="0">
   <div class="panel-head"><h2 id="actHead">Activity</h2><span class="count" id="activityCount"></span></div>
   <div class="feed" id="feed"></div>
-  <p class="legend">
-    <b>worker_progress stays out of this feed.</b> There are hundreds in a single
-    run and they would drown it; the daemon records them with internal
-    visibility, so this feed — <span class="mono">GET /activity</span>, which
-    returns every non-internal event — never sees them. They reach the screen as
-    the live line on a card instead.
-  </p>
 </section>
 
 <!-- THE GENERATOR, ONE FILE (ruling 11). The daemon serves this route from
