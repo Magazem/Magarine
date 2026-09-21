@@ -14,6 +14,48 @@ plain commands, or from a small browser page that shows the same board,
 inbox, and conversation this file describes, refreshed live. This one page
 is everything you need in order to use it today.
 
+## Setting up a new machine
+
+Start here on a computer that has never run Magarine. If it already has the
+code, Node.js, pnpm and a logged-in Claude Code, skip to "Install" below.
+`magarine doctor` (the last Install command) checks all of these -- **when in
+doubt, run it: every line marked `FAIL` says what is still missing.**
+
+1. **Get the code.** The repository is private and its address is an SSH one,
+   so the machine needs `git` and an SSH key that has been added to your
+   GitHub account -- GitHub's own steps are here:
+   <https://docs.github.com/en/authentication/connecting-to-github-with-ssh>.
+   Then:
+   ```sh
+   git clone git@github.com:Magazem/Magarine.git
+   cd Magarine
+   ```
+2. **Node.js 24 or newer**, from <https://nodejs.org/>. Check it:
+   ```sh
+   node --version
+   ```
+   (`doctor`'s `Node.js version` line.)
+3. **pnpm**, from <https://pnpm.io/installation>. Check it:
+   ```sh
+   pnpm --version
+   ```
+   (`doctor`'s `pnpm` line.)
+4. **The Claude Code CLI -- installed AND logged in.** Install it by the
+   steps at <https://docs.claude.com/en/docs/claude-code/setup>, check it,
+   then run `claude` once and log in when it asks:
+   ```sh
+   claude --version
+   ```
+   Installed-but-not-logged-in looks fine now and fails later, in the middle
+   of a real run -- which is why `doctor` has two lines for it, `claude CLI`
+   (is it there) and `claude login` (is it signed in).
+5. **Chrome or Edge**, only if you want `magarine app` to open its own
+   window (`doctor`'s `window host` line says which it found). Without either,
+   Magarine still works: `magarine serve` plus any browser you already have
+   (see step 3 of "Your first project"); that line reads `SKIP`, not `FAIL`.
+
+Now carry on with "Install" below, from the `Magarine` folder you just cloned.
+
 ## Install (four commands)
 
 Open a terminal in the folder where this project's code lives, then run:
