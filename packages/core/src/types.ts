@@ -196,6 +196,8 @@ export interface TicketEnvelope {
   runKind?: RunKind;
   /** Only on a verifier envelope: what it is judging. */
   verification?: VerificationSubject;
+  /** Batch 18 ruling 32: why the ticket's previous attempt did not stand -- the verifier's (or owner's) rejection, or the worker's own failure. Absent on a first attempt, always. */
+  previousAttempt?: { status: 'rejected' | 'failed'; reason: string };
 }
 
 /** Ruling 31: everything a verifier is shown about the work it judges, and nothing else. */

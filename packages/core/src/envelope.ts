@@ -22,6 +22,15 @@ export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: strin
 
   sections.push(`Ticket: ${envelope.title}\n${envelope.description}`);
 
+  // Batch 18 ruling 32: a retry is told why the last attempt did not stand,
+  // ahead of the criteria it must now meet. A first attempt has none.
+  if (envelope.previousAttempt) {
+    sections.push(
+      `Previous attempt ${envelope.previousAttempt.status}: ${envelope.previousAttempt.reason}\n` +
+        'Do not repeat it: fix exactly what is named above, and do not present anything as finished that it names as missing.'
+    );
+  }
+
   sections.push(
     `Acceptance criteria:\n${
       envelope.acceptanceCriteria.length > 0

@@ -18,6 +18,7 @@ import {
   setProjectVerifierModel,
 } from './store.ts';
 import { buildManagerBriefing } from './managerEnvelope.ts';
+import { buildWorkerPrompt } from './envelope.ts';
 import { testTempRoot } from './testSupport.ts';
 import type { TicketEnvelope } from './types.ts';
 import {
@@ -312,5 +313,71 @@ test('a REVIEW ticket with no verifier running (a restart between done and verif
   const result = await tick(deps);
   assert.equal(result.started.length, 1);
   await result.started[0]!.done;
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+});
+
+// ---- ruling 32: a retry is told why it failed --------------------------------------------
+
+const workerEnvelopes = (a: RecordingAdapter) => a.envelopes.filter((e) => e.runKind !== 'verify');
+
+test('RULING 32: a retried worker RENDERED prompt carries the verdict, before the acceptance criteria; a first attempt does not', async () => {
+  const { db, ticket, adapter, deps } = setUp();
+  adapter.setScript(ticket.id, { kind: 'verify_fail', times: 1, reason: 'parse() returns a hardcoded sample at src/parse.js:4' });
+
+  await runUntilIdle(deps);
+
+  const [first, second] = workerEnvelopes(adapter);
+  assert.ok(first && second, 'two worker attempts expected');
+  const firstPrompt = buildWorkerPrompt(first, '/ws');
+  const secondPrompt = buildWorkerPrompt(second, '/ws');
+  assert.equal(first.previousAttempt, undefined);
+  assert.ok(!firstPrompt.includes('Previous attempt'), 'a first attempt must see nothing about a previous one');
+  assert.ok(!firstPrompt.includes('hardcoded sample'));
+  assert.match(secondPrompt, /Previous attempt rejected: verifier rejected the work:/);
+  assert.ok(secondPrompt.includes('parse() returns a hardcoded sample at src/parse.js:4'), 'the verdict text must be in the rendered retry prompt');
+  assert.ok(secondPrompt.indexOf('Previous attempt') < secondPrompt.indexOf('Acceptance criteria:'), 'it comes before the acceptance criteria');
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+});
+
+test('RULING 32: another ticket rejection never leaks into a FIRST attempt rendered prompt', async () => {
+  const { db, project, ticket, adapter, deps } = setUp({ maxAttempts: 1 });
+  adapter.setScript(ticket.id, { kind: 'verify_fail', reason: 'sibling verdict: SECRET-MARKER-42' });
+  await runUntilIdle(deps);
+  assert.equal(getTicket(db, ticket.id)!.status, 'FAILED');
+
+  const other = createTicket(db, { projectId: project.id, title: 'unrelated', workspaceType: 'NONE' });
+  await runUntilIdle(deps);
+  const otherEnvelope = workerEnvelopes(adapter).find((e) => e.ticketId === other.id)!;
+  assert.ok(otherEnvelope, 'the unrelated ticket must have run');
+  assert.equal(otherEnvelope.previousAttempt, undefined);
+  const prompt = buildWorkerPrompt(otherEnvelope, '/ws');
+  assert.ok(!prompt.includes('SECRET-MARKER-42') && !prompt.includes('Previous attempt'));
+});
+
+test('RULING 32: a worker own failure is what its retry is told, as "failed"', async () => {
+  const { db, ticket, adapter, deps } = setUp();
+  adapter.setScript(ticket.id, { kind: 'retryable_failure', message: 'tool crashed while writing out.txt' });
+  const first = await tick(deps);
+  await first.started[0]!.done;
+  assert.equal(getTicket(db, ticket.id)!.status, 'READY');
+  adapter.setScript(ticket.id, { kind: 'succeed' });
+  const second = await tick(deps);
+  await second.started[0]!.done;
+
+  const [a, b] = workerEnvelopes(adapter);
+  assert.equal(a!.previousAttempt, undefined);
+  assert.equal(b!.previousAttempt!.status, 'failed');
+  assert.match(buildWorkerPrompt(b!, '/ws'), /Previous attempt failed: tool crashed while writing out.txt/);
+});
+
+test('RULING 32: the previous attempt a retry is told about is the MOST RECENT one', async () => {
+  const { db, ticket, adapter, deps } = setUp({ maxAttempts: 4 });
+  adapter.setScript(ticket.id, { kind: 'verify_fail', times: 2, reason: 'verdict-two' });
+  await runUntilIdle(deps);
+  const envs = workerEnvelopes(adapter);
+  assert.equal(envs.length, 3);
+  assert.equal(envs[0]!.previousAttempt, undefined);
+  assert.match(envs[1]!.previousAttempt!.reason, /verdict-two/);
+  assert.match(envs[2]!.previousAttempt!.reason, /verdict-two/);
   assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
 });

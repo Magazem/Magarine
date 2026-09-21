@@ -393,6 +393,11 @@ reason, one attempt consumed (at max attempts the final failure carries it).
 - A verifier that cannot answer (fails, malformed) is retried on the next tick,
   three times per attempt; then the ticket stays in REVIEW and the inbox asks the
   owner to approve or reject it by hand. That consumes no attempt.
+- A retry is told why (ruling 32): the worker envelope carries
+  `previousAttempt: {status, reason}` from the ticket's most recent
+  `review_rejected` or worker failure, and the prompt renders "Previous attempt
+  rejected: ..." (or "failed: ...") before the acceptance criteria. A first
+  attempt's prompt never carries it.
 - Cost: verification roughly doubles the runs per ticket.
 - Testing without spend: the fake adapter's `verify_pass` / `verify_fail`
   (`reason`, `times`) / `verify_malformed` / `verify_failure` / `verify_hang`

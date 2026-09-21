@@ -107,6 +107,23 @@ function dependencyInputRelativePath(dependsOnTicketId: string, sourcePathOrUri:
   return join('.orchestrator', 'inputs', dependsOnTicketId, basename(sourcePathOrUri));
 }
 
+// Batch 18 ruling 32: the ticket's most recent `review_rejected` or worker
+// failure, as what a retried worker is told. Only a ticket that has consumed an
+// attempt has one -- a first attempt must see nothing of a previous one.
+function previousAttemptFor(db: Db, ticket: Ticket): TicketEnvelope['previousAttempt'] {
+  if (ticket.attemptCount === 0) return undefined;
+  const last = listEventsForEntity(db, 'ticket', ticket.id)
+    .filter((e) => e.eventType === 'review_rejected' || e.eventType === 'worker_failed_retryable' || e.eventType === 'worker_failed_final')
+    .at(-1);
+  if (!last) return undefined;
+  const p = (last.payload && typeof last.payload === 'object' ? last.payload : {}) as Record<string, unknown>;
+  const errors = Array.isArray(p.errors) ? p.errors.filter((x): x is string => typeof x === 'string').join('; ') : '';
+  const reason =
+    typeof p.reason === 'string' && p.reason.length > 0 ? p.reason : typeof p.message === 'string' && p.message.length > 0 ? p.message : errors;
+  if (reason.length === 0) return undefined;
+  return { status: last.eventType === 'review_rejected' ? 'rejected' : 'failed', reason };
+}
+
 function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope {
   const completedDependencies = getDependencies(db, ticket.id)
     .filter((d) => d.dependencyType === 'blocks')
@@ -159,6 +176,7 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
     // that distinction, not just "empty vs non-empty," is what decides
     // whether a section is rendered.
     ...(ticket.expectedArtifacts != null ? { expectedArtifacts: ticket.expectedArtifacts } : {}),
+    ...(previousAttemptFor(db, ticket) ? { previousAttempt: previousAttemptFor(db, ticket) } : {}),
   };
 }
 
