@@ -152,6 +152,8 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | element | kind | source |
 |---|---|---|
 | scope text | field | `GET /projects/{id}/scope` → `scopeText` |
+| scope collapsed strip: preview | derived | the first non-empty line of `scopeText`, leading `#` marks removed. Shown only while the scope is collapsed. |
+| Show scope / Hide scope | copy | a page-local toggle. Collapsed by default; not remembered between visits (persisted layout is a later batch). |
 | when empty | copy | three sentences, because the page can now tell them apart (ruling 29): `status: 'absent'` → "(this project has no scope file yet)"; present but empty → "(the scope file is empty)"; a **400** from the route → "(this project’s scope file exists but could not be read: <the daemon’s error>)". A 400 is caught on this one read only, so it neither blanks the board nor renders as emptiness; any other failure still fails the refresh. `project list` also carries `scope: { path, status }`, which the page does not need |
 | "read-only here" | copy | true: the page has no scope write route |
 

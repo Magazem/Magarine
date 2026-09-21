@@ -9,7 +9,7 @@
 
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { testTempRoot } from '../testSupport.ts';
 import { withDaemon, runCli } from './testDaemon.ts';
@@ -87,4 +87,32 @@ test('an event name the page has no copy for is shown as the daemon spelled it, 
     await pollUntil(page, () => page.text('needsList').includes('some_future_event'), 'the unmapped name on screen', 80);
     assert.match(page.text('needsList'), /Manager · some_future_event/);
   }, ['--adapter', 'fake']);
+});
+
+// ------------------------------------------------ batch 18 item 4: the Manager tab's layout
+
+test('the scope is a collapsed strip with a one-line preview, and one control opens and closes it', async () => {
+  await withDaemon(root, async (d) => {
+    const dir = mkdtempSync(join(root.root, 'scope-'));
+    writeFileSync(join(dir, 'SCOPE.md'), '# Recipe box\n\nA small web app for keeping recipes.\n');
+    await d.createProject('Scoped', ['--dir', dir]);
+    const page = openPage({ baseUrl: d.baseUrl, token: d.token });
+    await pollUntil(page, () => page.text('scopeText').includes('small web app'), 'the scope text');
+
+    assert.equal(page.byId('scopeBody').hidden, true, 'the scope is open by default: it must ship collapsed');
+    assert.equal(page.byId('scopeToggle').getAttribute('aria-expanded'), 'false');
+    assert.equal(page.text('scopePreview'), 'Recipe box', 'the collapsed strip does not say what the scope is about');
+
+    page.byId('scopeToggle').click();
+    assert.equal(page.byId('scopeBody').hidden, false);
+    assert.equal(page.byId('scopeToggle').getAttribute('aria-expanded'), 'true');
+    assert.equal(page.text('scopeToggle'), 'Hide scope');
+    assert.equal(page.document.documentElement.getAttribute('data-scope'), 'open');
+    assert.match(page.text('scopeText'), /A small web app for keeping recipes\./, 'opening it did not show the whole scope');
+
+    page.byId('scopeToggle').click();
+    assert.equal(page.byId('scopeBody').hidden, true);
+    assert.equal(page.text('scopeToggle'), 'Show scope');
+    assert.equal(page.document.documentElement.getAttribute('data-scope'), 'closed');
+  });
 });

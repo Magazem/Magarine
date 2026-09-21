@@ -219,12 +219,17 @@
 
 <!-- ===================================================== REGION: scope === -->
 <section id="scope" aria-labelledby="scopeHead" tabindex="0">
+  <!-- Collapsed by default: the conversation is what the owner came to the
+       Manager tab for, and the scope is what they open when they want to read
+       it. The one-line preview says what is in there without opening it. -->
   <div class="panel-head">
     <h2 id="scopeHead">Scope</h2><span class="count">SCOPE.md</span>
+    <span class="count scope-preview" id="scopePreview"></span>
     <span class="spacer"></span>
-    <span class="count">read-only here · edited on disk or by asking the Manager</span>
+    <button class="btn" type="button" id="scopeToggle" aria-expanded="false" aria-controls="scopeBody">Show scope</button>
   </div>
-  <div class="scope-wrap">
+  <div class="scope-wrap" id="scopeBody" hidden>
+    <p class="scope-note">read-only here · edited on disk or by asking the Manager</p>
     <pre class="scope" id="scopeText" tabindex="0"></pre>
   </div>
 </section>

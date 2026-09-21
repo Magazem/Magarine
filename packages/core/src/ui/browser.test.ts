@@ -21,7 +21,7 @@
 
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { testTempRoot } from '../testSupport.ts';
 import { withDaemon, runCli } from './testDaemon.ts';
@@ -380,6 +380,49 @@ test('ruling 35: Chrome accepts the re-subset fonts and draws an arrow and a che
       assert.equal(r.sans, 1, 'Chrome did not select the bundled sans for an arrow and a check mark');
       assert.equal(r.mono, 1, 'Chrome did not select the bundled mono for an arrow and a check mark');
       assert.ok(r.states.every((s) => s.endsWith(':loaded')), `a bundled font failed to load: ${r.states.join(', ')}`);
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
+
+test('batch 18 item 4: on the Manager tab the conversation takes the height and the scope opens to full height on request', async () => {
+  // Layout is only a browser's to say. The owner's words: "the scope height
+  // panel is bothering, neither the scope is easily readable and neither the chat".
+  await withDaemon(root, async (d) => {
+    const dir = mkdtempSync(join(root.root, 'scope-'));
+    writeFileSync(join(dir, 'SCOPE.md'), ['# Recipe box', ''].concat(
+      Array.from({ length: 40 }, (_, i) => `- Requirement ${i + 1}: the app must handle case ${i + 1}.`)).join('\n'));
+    const project = await d.createProject('Layout', ['--dir', dir]);
+    for (const m of ['one', 'two', 'three']) {
+      await runCli(['discuss', '--project', project.id, '--message', m, '--state-dir', d.stateDir]);
+    }
+    const browser = await launchBrowser(chrome.executable, mkdtempSync(join(root.root, 'chrome-')));
+    const measure = () => browser.cdp.eval<{ h: number; scope: number; conv: number; composerBottom: number; list: number; open: boolean }>(`(() => {
+      const r = (id) => document.getElementById(id).getBoundingClientRect();
+      return { h: innerHeight, scope: r('scope').height, conv: r('conversation').height,
+               composerBottom: document.querySelector('#conversation .composer').getBoundingClientRect().bottom,
+               list: r('convList').height, open: !document.getElementById('scopeBody').hidden };
+    })()`);
+    try {
+      await browser.openPage(d.baseUrl, d.token);
+      await browser.cdp.eval(`location.hash = '#scope'`);
+      await new Promise((r) => setTimeout(r, 2500));
+
+      const closed = await measure();
+      assert.equal(closed.open, false, 'the scope ships open');
+      assert.ok(closed.scope < 130, `the collapsed scope is still ${closed.scope}px tall`);
+      assert.ok(closed.conv > closed.h * 0.6, `the conversation has only ${closed.conv}px of a ${closed.h}px window`);
+      assert.ok(closed.composerBottom <= closed.h, 'the composer is below the fold');
+      assert.ok(closed.list > 200, `the thread itself has only ${closed.list}px`);
+
+      await browser.cdp.eval(`document.getElementById('scopeToggle').click()`);
+      await new Promise((r) => setTimeout(r, 400));
+      const open = await measure();
+      assert.equal(open.open, true);
+      assert.ok(open.scope > open.h * 0.5, `the open scope has only ${open.scope}px of a ${open.h}px window`);
+      assert.ok(open.composerBottom <= open.h, 'opening the scope pushed the composer off the screen');
     } finally {
       await browser.close();
     }

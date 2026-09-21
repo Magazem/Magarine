@@ -239,10 +239,40 @@
       "notices      notices      notices"
       "gate         gate         gate"
       "fleet        scope        needs-you"
+      "fleet        conversation needs-you"
       "fleet        conversation activity";
-    grid-template-rows: auto auto auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto minmax(0, 1fr) minmax(0, 1fr);
   }
   html[data-view="scope"] #board { display: none; }
+
+  /* THE MANAGER TAB (batch 18 item 4, the owner's answer: "the scope height
+     panel is bothering, neither the scope is easily readable and neither the
+     chat"). The conversation takes the centre's height; the scope is a
+     collapsed strip that opens to the height when the owner wants to read it.
+     The proportion once open is the owner's taste and is one row line below. */
+  html[data-view="scope"] #scope { overflow-y: visible; padding-bottom: 0; }
+  html[data-view="scope"] #conversation {
+    display: flex; flex-direction: column; overflow-y: hidden;
+  }
+  html[data-view="scope"] #conversation .panel-head,
+  html[data-view="scope"] #conversation .tabs,
+  html[data-view="scope"] #conversation .composer { flex: 0 0 auto; }
+  html[data-view="scope"] #convList { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  @media (min-width: 1181px) {
+    html[data-view="scope"][data-scope="open"] body {
+      grid-template-areas:
+        "top          top          top"
+        "notices      notices      notices"
+        "gate         gate         gate"
+        "fleet        scope        needs-you"
+        "fleet        scope        needs-you"
+        "fleet        conversation activity";
+      grid-template-rows: auto auto auto minmax(0, 1fr) minmax(0, 1fr) minmax(22rem, 0.9fr);
+    }
+    html[data-view="scope"][data-scope="open"] #scope { overflow-y: auto; }
+    html[data-view="scope"][data-scope="open"] .scope { max-height: none; }
+    html[data-view="scope"][data-scope="open"] .scope-wrap::after { display: none; }
+  }
 
   /* Below 1180px the rail drops beneath the centre — and once it is not a
      column, there is nothing left to scroll independently, so the page goes
@@ -599,6 +629,12 @@
 
   /* ===================================================== scope + talk ===== */
   .scope-wrap { position: relative; }
+  .scope-wrap[hidden] { display: none; }
+  .scope-note { margin: 0 0 var(--s2); font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); }
+  .scope-preview {
+    min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  html[data-scope="open"] .scope-preview { display: none; }
   .scope {
     font-family: var(--font-mono); font-size: var(--t-2xs); line-height: 1.8;
     white-space: pre-wrap; overflow-wrap: anywhere;

@@ -884,6 +884,11 @@
     else if (!text) text = '(the scope file is empty)';
     // Untouched when unchanged, so a selection in it survives the poll.
     if ($('scopeText').textContent !== text) $('scopeText').textContent = text;
+    // The collapsed strip's one line: the first line that says anything.
+    var lines = text.split('\n').map(function (l) { return l.replace(/^\s*#+\s*/, '').trim(); })
+      .filter(function (l) { return l.length > 0; });
+    var preview = lines.length ? lines[0] : '';
+    if ($('scopePreview').textContent !== preview) $('scopePreview').textContent = preview;
   }
 
   function renderConversation() {
@@ -915,6 +920,11 @@
       reconcileList(list, [{ key: 'empty', sig: '', build: function () { return el('div', 'empty', 'no entries for this filter'); } }]);
       return;
     }
+    // The thread reads oldest first with the newest at the foot, so a list that
+    // is already at (or near) the foot follows new entries, and one the owner
+    // has scrolled up to read is left exactly where it is.
+    var atFoot = typeof list.scrollHeight !== 'number' || !list._placed ||
+      list.scrollHeight - list.scrollTop - list.clientHeight < 48;
     var seen = {};
     reconcileList(list, shown.map(function (e) {
       var base = ['row', e.kind, e.ticketId || '', e.createdAt].join('');
@@ -926,6 +936,8 @@
         build: function () { return conversationEntry(e); }
       };
     }));
+    if (atFoot && typeof list.scrollHeight === 'number') list.scrollTop = list.scrollHeight;
+    list._placed = true;
   }
 
   function conversationEntry(e) {
@@ -1471,6 +1483,15 @@
     $('boardToggle').addEventListener('click', function (e) {
       var t = e.target.closest('[data-board-view]');
       if (t) setBoardView(t.getAttribute('data-board-view'));
+    });
+
+    // The scope is a collapsed strip until the owner asks to read it.
+    $('scopeToggle').addEventListener('click', function () {
+      var open = $('scopeBody').hidden;
+      $('scopeBody').hidden = !open;
+      $('scopeToggle').setAttribute('aria-expanded', String(open));
+      $('scopeToggle').textContent = open ? 'Hide scope' : 'Show scope';
+      document.documentElement.setAttribute('data-scope', open ? 'open' : 'closed');
     });
 
     $('send').addEventListener('click', function () {
