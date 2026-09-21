@@ -147,3 +147,23 @@ Three things they can do today, through the Liaison, with no build:
 - Start the daemon with `magarine serve --max-parallel N` for more workers at once; `magarine project set --project <id> --max-parallel N` caps one project.
 - `magarine project set --project <id> --manager-model claude-opus-5` puts the Manager on a stronger model now.
 - Ask for a research worker in the Manager tab in plain words; the Manager can create that ticket. Workers do not talk to each other; a ticket that depends on another receives that one's summary and artefacts.
+
+## 6. The owner's answers to section 5 -- 2026-09-21, verbatim then as ruled
+
+> *"manager chosen per project unless configured default, zou have permission to read the
+> requested data,the real project was on a different machine, cost is fine don't worry"*
+
+1. **Cost consent: GIVEN.** Verification's extra runs and the automatic Manager turns (capped at
+   20 a day per project) are accepted. The closing walk may run them for real.
+2. **Manager model: per project, with a configurable default.** Not "top tier for everyone"
+   and not "per project only": a project may set its Manager's model, and absent that, a
+   configured default applies. Today `project set --manager-model` covers the per-project
+   half; **a configurable default does not exist yet** and is batch 19 scope. Until then the
+   fallback is the project's own default model, as now.
+3. **Permission to read `~/.magarine`: GIVEN -- but it cannot reach the run that failed.**
+   The real project ran on a DIFFERENT machine. This machine's `~/.magarine` holds only earlier
+   walks and demos (checked by the lead: My First Project, Walk A1/B, Run B replay, Adversarial,
+   Live demo, Paid Run, and three empty test projects). So the Manager-stall diagnosis in
+   section 0 stays SOFT until the other machine's `magarine.db` is available.
+4. **The closing walk's project:** the real project is on the other machine, so the closing walk
+   either happens there or on a fresh project here. Not yet answered.
