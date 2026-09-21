@@ -49,6 +49,8 @@ export interface Project {
   managerModel: string | null;
   /** Batch 11: the scope document's filesystem path, read fresh into the Manager's envelope on every invocation and hand-editable by the owner between turns. Null means no scope file has been set yet -- see manager.ts's readScopeText, which treats that as empty text rather than inventing a default location. */
   scopePath: string | null;
+  /** Batch 18 ruling 31: the model the verifier runs on; null falls back to `defaultModel` (see store.ts's resolveVerifierModel). */
+  verifierModel: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,6 +107,8 @@ export interface TicketDependency {
 
 export type RunStatus = 'running' | 'succeeded' | 'review' | 'blocked' | 'failed' | 'cancelled';
 
+export type RunKind = 'work' | 'verify';
+
 export interface Run {
   id: string;
   ticketId: string;
@@ -116,6 +120,8 @@ export interface Run {
   startedAt: string;
   finishedAt: string | null;
   failureClass: string | null;
+  /** Batch 18 ruling 31: 'work' (a worker or a Manager) or 'verify' (the second run that decides whether a worker's `done` is DONE). */
+  kind: RunKind;
   // Raw JSON reported by the adapter for this run: token counts, cache
   // hit/miss, cost, etc. Shape is adapter-defined; the daemon does not
   // validate it, only stores and displays it.
@@ -186,6 +192,20 @@ export interface TicketEnvelope {
   model: string;
   /** Batch 15 item 4: the ticket's own declared expectation, carried through so the worker sees what it is expected to produce. Absent (not an empty array) when the ticket has no such list -- see envelope.ts's buildWorkerPrompt for the rendering rule this distinction drives. */
   expectedArtifacts?: ExpectedArtifact[];
+  /** Batch 18 ruling 31: absent or 'work' is an ordinary worker; 'verify' asks the adapter for a VERIFIER run -- a different prompt (verifier.ts) and a different result schema (a verdict per acceptance criterion, never artefacts). */
+  runKind?: RunKind;
+  /** Only on a verifier envelope: what it is judging. */
+  verification?: VerificationSubject;
+}
+
+/** Ruling 31: everything a verifier is shown about the work it judges, and nothing else. */
+export interface VerificationSubject {
+  /** The worker's own `summary` (its claim). */
+  workerSummary: string;
+  /** What the worker declared it delivered: files by path, other kinds by their text. */
+  artifacts: TicketEnvelopeArtifact[];
+  /** The ticket's acceptance criteria as written -- the standing placeholder criterion is added by the prompt builder, never stored on the ticket. */
+  acceptanceCriteria: string[];
 }
 
 export interface WorkerHandle {

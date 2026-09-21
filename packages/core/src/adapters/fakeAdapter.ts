@@ -84,7 +84,23 @@ export type FakeScript =
       usage?: unknown;
       extraArtifacts?: WorkerResultArtifact[];
     }
-  | { kind: 'hang' };
+  | { kind: 'hang' }
+  // Batch 18 ruling 31: what a VERIFIER run does. Only a verify run (envelope
+  // `runKind: 'verify'`) reads these; a work run ignores them, and a verify
+  // run with no verify script passes. `setScript` files any `verify_*` script
+  // under the ticket's verifier slot, so `--fake-script` can carry both a
+  // worker script and a verifier script for one ticket.
+  //  - verify_pass: every criterion passes, with evidence.
+  //  - verify_fail: the ticket's first own criterion fails, its evidence being
+  //    `reason`; `times` fails only the first N verifier runs of the ticket
+  //    (default: every one), then passes -- what a retry-then-pass test needs.
+  //  - verify_malformed / verify_failure / verify_hang: a result the daemon
+  //    rejects, an adapter failure, and a verifier that never answers.
+  | { kind: 'verify_pass'; delayMs?: number; usage?: unknown }
+  | { kind: 'verify_fail'; delayMs?: number; reason?: string; times?: number; usage?: unknown }
+  | { kind: 'verify_malformed'; delayMs?: number }
+  | { kind: 'verify_failure'; delayMs?: number; message?: string }
+  | { kind: 'verify_hang' };
 
 export const FAKE_PROGRESS_GAP_MS = 20;
 
@@ -96,6 +112,8 @@ interface HandleState {
   postStopTimer?: NodeJS.Timeout;
   /** Batch 9: the real workspace path this handle's ticket was given, captured from startWorker's `input.workspace` -- needed so a `manager_proposal` script can write a real proposal.json into it. Undefined if no workspace was given (never true in production; only a hand-written test calling startWorker without one could hit this). */
   workspacePath?: string;
+  /** Batch 18 ruling 31: set when this handle is a verifier run; carries the criteria it was asked to rule on. */
+  verify?: { criteria: string[] };
 }
 
 // Batch 13 ruling 1c: writes a real file into `workspacePath` and declares
@@ -119,10 +137,13 @@ export class FakeAdapter implements AgentAdapter {
   readonly id = 'fake';
 
   private readonly scripts = new Map<string, FakeScript>();
+  private readonly verifyScripts = new Map<string, FakeScript>();
+  private readonly verifyRunsStarted = new Map<string, number>();
   private readonly handles = new Map<string, HandleState>();
 
   setScript(ticketId: string, script: FakeScript): void {
-    this.scripts.set(ticketId, script);
+    if (script.kind.startsWith('verify_')) this.verifyScripts.set(ticketId, script);
+    else this.scripts.set(ticketId, script);
   }
 
   async capabilities(): Promise<AgentAdapterCapabilities> {
@@ -135,7 +156,11 @@ export class FakeAdapter implements AgentAdapter {
       ticketId: input.ticket.ticketId,
       runId: `fakerun_${randomUUID()}`,
     };
-    this.handles.set(handle.id, { timers: [], stopped: false, listeners: [], workspacePath: input.workspace?.path });
+    const verify =
+      input.ticket.runKind === 'verify'
+        ? { criteria: input.ticket.verification?.acceptanceCriteria ?? input.ticket.acceptanceCriteria }
+        : undefined;
+    this.handles.set(handle.id, { timers: [], stopped: false, listeners: [], workspacePath: input.workspace?.path, verify });
     return handle;
   }
 
@@ -152,7 +177,11 @@ export class FakeAdapter implements AgentAdapter {
     // the CLI's `tick`/`run --until-idle` usable for manual smoke-testing
     // without a real adapter; tests that want other behaviour always set an
     // explicit script.
-    const script = this.scripts.get(handle.ticketId) ?? { kind: 'succeed' };
+    const verifyOrdinal = state.verify ? (this.verifyRunsStarted.get(handle.ticketId) ?? 0) + 1 : 0;
+    if (state.verify) this.verifyRunsStarted.set(handle.ticketId, verifyOrdinal);
+    const script = state.verify
+      ? (this.verifyScripts.get(handle.ticketId) ?? { kind: 'verify_pass' })
+      : (this.scripts.get(handle.ticketId) ?? { kind: 'succeed' });
     const schedule = (event: WorkerEvent, delayMs: number) => {
       const timer = setTimeout(() => {
         if (!state.stopped) this.publish(state, event);
@@ -316,6 +345,31 @@ export class FakeAdapter implements AgentAdapter {
         break;
       }
 
+      case 'verify_pass':
+      case 'verify_fail': {
+        const criteria = state.verify?.criteria ?? [];
+        const failing = script.kind === 'verify_fail' && (script.times === undefined || verifyOrdinal <= script.times);
+        const results = criteria.map((criterion, i) =>
+          failing && i === 0
+            ? { criterion, verdict: 'fail', evidence: script.kind === 'verify_fail' ? (script.reason ?? 'fake verifier: criterion not met') : '' }
+            : { criterion, verdict: 'pass', evidence: 'fake verifier evidence' }
+        );
+        schedule(
+          { type: 'result_raw', raw: { verdict: failing ? 'fail' : 'pass', criteria: results, notes: 'fake verifier' }, usage: script.usage },
+          script.delayMs ?? 0
+        );
+        break;
+      }
+
+      case 'verify_malformed':
+        schedule({ type: 'result_raw', raw: { verdict: 'maybe' } }, script.delayMs ?? 0);
+        break;
+
+      case 'verify_failure':
+        schedule({ type: 'failure', message: script.message ?? 'fake verifier failure', retryable: true }, script.delayMs ?? 0);
+        break;
+
+      case 'verify_hang':
       case 'hang':
         // Never emit anything; the run only ends when stop()/destroy() is called.
         break;

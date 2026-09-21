@@ -660,7 +660,7 @@ async function tickReview(dbFile: string, kindSpec: (ticketId: string) => string
 
 test('--fake-script <id>=review lands a ticket in REVIEW, and approve then takes it to DONE (the real transition, not the refusal)', async () => {
   await withTempDb('magarine-fake-script-review-approve-', async (dbFile) => {
-    const { ticketId } = await tickReview(dbFile, (id) => ['--fake-script', `${id}=review`]);
+    const { ticketId } = await tickReview(dbFile, (id) => ['--fake-script', `${id}=review`, '--fake-script', `${id}=verify_failure`]);
     const approve = await run(['approve', '--ticket', ticketId, '--json', '--db', dbFile]);
     assert.equal(approve.code, 0, approve.stderr);
     assert.equal(JSON.parse(approve.stdout).status, 'DONE');
@@ -669,7 +669,7 @@ test('--fake-script <id>=review lands a ticket in REVIEW, and approve then takes
 
 test('--fake-script <id>=review lands a ticket in REVIEW, and reject then returns it to READY (the real transition)', async () => {
   await withTempDb('magarine-fake-script-review-reject-', async (dbFile) => {
-    const { ticketId } = await tickReview(dbFile, (id) => ['--fake-script', `${id}=review`]);
+    const { ticketId } = await tickReview(dbFile, (id) => ['--fake-script', `${id}=review`, '--fake-script', `${id}=verify_failure`]);
     const reject = await run(['reject', '--ticket', ticketId, '--reason', 'needs another pass', '--json', '--db', dbFile]);
     assert.equal(reject.code, 0, reject.stderr);
     assert.equal(JSON.parse(reject.stdout).status, 'READY');
@@ -1291,6 +1291,11 @@ test('--fake-outcome review lands a ticket in REVIEW through a real tick, and ap
       'fake',
       '--fake-outcome',
       `${ticket.id}=review`,
+      // Batch 18 ruling 31: a REVIEW ticket is now verified automatically. These tests
+      // are about the OWNER's approve/reject on a ticket that sits in REVIEW, so the
+      // verifier is scripted to be unavailable (the ticket stays put, awaiting the owner).
+      '--fake-script',
+      `${ticket.id}=verify_failure`,
       '--json',
       '--db',
       dbFile,
@@ -1329,6 +1334,11 @@ test('--fake-outcome review lands a ticket in REVIEW through a real tick, and re
       'fake',
       '--fake-outcome',
       `${ticket.id}=review`,
+      // Batch 18 ruling 31: a REVIEW ticket is now verified automatically. These tests
+      // are about the OWNER's approve/reject on a ticket that sits in REVIEW, so the
+      // verifier is scripted to be unavailable (the ticket stays put, awaiting the owner).
+      '--fake-script',
+      `${ticket.id}=verify_failure`,
       '--json',
       '--db',
       dbFile,
@@ -1378,6 +1388,11 @@ test('batch 5 item 6: the inbox line for a review item shows the worker\'s summa
       'fake',
       '--fake-outcome',
       `${ticket.id}=review`,
+      // Batch 18 ruling 31: a REVIEW ticket is now verified automatically. These tests
+      // are about the OWNER's approve/reject on a ticket that sits in REVIEW, so the
+      // verifier is scripted to be unavailable (the ticket stays put, awaiting the owner).
+      '--fake-script',
+      `${ticket.id}=verify_failure`,
       '--json',
       '--db',
       dbFile,
@@ -1856,5 +1871,20 @@ test('a manager ticket sitting at the daily Manager-invocation cap reaches the i
     assert.equal(item!.eventType, 'manager_daily_cap_reached');
     assert.match(item!.message, /no action needed/, 'unlike a spend cap or an adapter pause, there is no command to run -- the line must say so');
     assert.match(item!.message, new RegExp(String(MANAGER_DAILY_CAP_DEFAULT)));
+  });
+});
+
+test('project create --verifier-model and project set --verifier-model store the verifier model (batch 18 ruling 31); absent, it is null', async () => {
+  await withTempDb('magarine-verifier-model-', async (dbFile) => {
+    const plain = JSON.parse((await run(['project', 'create', '--name', 'A', '--json', '--db', dbFile])).stdout) as { verifierModel: string | null };
+    assert.equal(plain.verifierModel, null);
+    const created = JSON.parse(
+      (await run(['project', 'create', '--name', 'B', '--verifier-model', 'claude-opus-5', '--json', '--db', dbFile])).stdout
+    ) as { id: string; verifierModel: string | null };
+    assert.equal(created.verifierModel, 'claude-opus-5');
+    const set = JSON.parse(
+      (await run(['project', 'set', '--project', created.id, '--verifier-model', 'claude-haiku-4-5-20251001', '--json', '--db', dbFile])).stdout
+    ) as { verifierModel: string | null };
+    assert.equal(set.verifierModel, 'claude-haiku-4-5-20251001');
   });
 });

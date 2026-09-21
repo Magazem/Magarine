@@ -22,6 +22,7 @@ import {
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
+  setProjectVerifierModel,
   setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
@@ -286,8 +287,8 @@ const FLAG_SPECS: Record<string, string[]> = {
   // replaces `--workspace-root` and `--scope <file>`, both retired. Defaults
   // to the current working directory; see the handler below for why that
   // default, not the state dir.
-  'project create': ['name', 'description', 'max-parallel', 'brief', 'dir', 'max-spend', 'model', 'manager-model'],
-  'project set': ['project', 'max-spend', 'model', 'manager-model', 'dir', 'max-parallel'],
+  'project create': ['name', 'description', 'max-parallel', 'brief', 'dir', 'max-spend', 'model', 'manager-model', 'verifier-model'],
+  'project set': ['project', 'max-spend', 'model', 'manager-model', 'verifier-model', 'dir', 'max-parallel'],
   // Batch 10 (Role Q), item 2: no flags of its own -- lists every project in
   // this state directory's database. See commands/projectList.ts.
   'project list': [],
@@ -410,6 +411,13 @@ const FAKE_SCRIPT_KINDS = new Set<FakeScript['kind']>([
   // Batch 16 Role A item 1: lands the ticket in REVIEW under `--fake-script`'s
   // own spelling too (`--fake-outcome review` has done so since batch 5).
   'review',
+  // Batch 18 ruling 31: what the VERIFIER run does (fakeAdapter.ts's FakeScript
+  // doc). A ticket's worker script and verifier script are independent.
+  'verify_pass',
+  'verify_fail',
+  'verify_malformed',
+  'verify_failure',
+  'verify_hang',
 ]);
 
 // Batch 5 item 5: the daemon's own outcome vocabulary, mapped onto
@@ -672,6 +680,8 @@ async function main(): Promise<void> {
       brief: typeof flags.brief === 'string' ? flags.brief : null,
       workspaceRoot: dir,
       managerModel: typeof flags['manager-model'] === 'string' ? flags['manager-model'] : null,
+      // Batch 18 ruling 31: absent, the verifier runs on the project's default model.
+      verifierModel: typeof flags['verifier-model'] === 'string' ? flags['verifier-model'] : null,
       scopePath: join(dir, 'SCOPE.md'),
     });
     // Ruling 29: never silent about a scope document that is not there yet.
@@ -720,11 +730,12 @@ ${scopeLine}` : ''}`);
 
     const live = await liveDaemonFor(flags);
     if (live) {
-      const body: { maxSpend?: number; model?: string; managerModel?: string; dir?: string; maxParallel?: number | null } = {};
+      const body: { maxSpend?: number; model?: string; managerModel?: string; verifierModel?: string; dir?: string; maxParallel?: number | null } = {};
       if (maxParallel !== undefined) body.maxParallel = maxParallel;
       if (typeof flags['max-spend'] === 'string') body.maxSpend = Number(flags['max-spend']);
       if (typeof flags.model === 'string') body.model = flags.model;
       if (typeof flags['manager-model'] === 'string') body.managerModel = flags['manager-model'];
+      if (typeof flags['verifier-model'] === 'string') body.verifierModel = flags['verifier-model'];
       if (resolvedDir !== undefined) body.dir = resolvedDir;
       await routeMutation(flags, live, 'POST', `/projects/${projectId}/set`, body, () => `Updated project ${projectId}`);
       return;
@@ -741,6 +752,9 @@ ${scopeLine}` : ''}`);
     }
     if (typeof flags['manager-model'] === 'string') {
       setProjectManagerModel(db, projectId, flags['manager-model']);
+    }
+    if (typeof flags['verifier-model'] === 'string') {
+      setProjectVerifierModel(db, projectId, flags['verifier-model']);
     }
     if (resolvedDir !== undefined) {
       setProjectDir(db, projectId, resolvedDir);

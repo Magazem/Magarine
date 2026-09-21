@@ -105,6 +105,7 @@ test('a database migrated only to 0001+0002 picks up 0003 (budget fields) on nex
     '0009_pause_reason',
     '0010_backfill_workspace_root_from_scope_path', '0011_ticket_model_reason', '0012_artifact_text_column', '0013_ticket_expected_artifacts',
  '0014_max_parallel_workers_nullable',
+ '0015_verifier_run_kind',
   ]);
   assert.equal(
     snapshot.projectMaxBudgetUsd,

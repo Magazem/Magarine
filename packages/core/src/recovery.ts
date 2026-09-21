@@ -39,6 +39,10 @@ export function recoverOrphanedRuns(
   for (const run of orphaned) {
     const ticket = getTicket(db, run.ticketId);
     finishRun(db, run.id, { status: 'failed', failureClass: 'orphaned_on_restart' });
+    // Batch 18 ruling 31: an orphaned VERIFIER run is not the ticket's worker
+    // dying. The ticket is still in REVIEW (nothing was decided); tick's REVIEW
+    // scan verifies it again. No worker_failure, no attempt consumed.
+    if (run.kind === 'verify') continue;
     const result = recordTicketTransition(db, {
       ticketId: run.ticketId,
       event: 'worker_failure',

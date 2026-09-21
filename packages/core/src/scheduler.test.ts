@@ -58,6 +58,7 @@ class TestAdapter implements AgentAdapter {
   private readonly stopped = new Set<string>();
   private readonly postStopTimers = new Map<string, NodeJS.Timeout>();
   readonly startedWith = new Map<string, { ticket: TicketEnvelope; workspace?: Workspace }>();
+  private readonly verifierHandles = new Map<string, string[]>();
 
   async capabilities(): Promise<AgentAdapterCapabilities> {
     return { supportsFiles: true, supportsShell: false, supportsStreaming: true, supportsResume: false };
@@ -71,6 +72,7 @@ class TestAdapter implements AgentAdapter {
     };
     this.listeners.set(handle.id, []);
     this.startedWith.set(handle.id, { ticket: input.ticket, workspace: input.workspace });
+    if (input.ticket.runKind === 'verify') this.verifierHandles.set(handle.id, input.ticket.verification?.acceptanceCriteria ?? []);
     return handle;
   }
 
@@ -80,6 +82,19 @@ class TestAdapter implements AgentAdapter {
     const list = this.listeners.get(handle.id);
     if (!list) throw new Error(`unknown handle: ${handle.id}`);
     list.push(onEvent);
+    // Batch 18 ruling 31: a worker's done now sends the ticket to a VERIFIER
+    // run. These tests drive the WORKER by hand, so the verifier answers on its
+    // own -- every criterion passes -- and the tests keep asserting what they
+    // always did (the dependency/artefact/envelope behaviour), one step later.
+    const criteria = this.verifierHandles.get(handle.id);
+    if (criteria) {
+      setImmediate(() =>
+        onEvent({
+          type: 'result_raw',
+          raw: { verdict: 'pass', criteria: criteria.map((criterion) => ({ criterion, verdict: 'pass', evidence: 'test verifier' })) },
+        })
+      );
+    }
     return () => {
       const idx = list.indexOf(onEvent);
       if (idx >= 0) list.splice(idx, 1);

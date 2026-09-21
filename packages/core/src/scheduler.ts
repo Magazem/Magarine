@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
+import { beginVerifyRun, startVerification } from './verifier.ts';
 import { isManagerDailyCapReached, MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
 import { classifyProgressMessage, parseProgressTool, type ActivityState } from './commands/activity.ts';
 import { applyManagerProposal } from './managerApply.ts';
@@ -76,6 +77,23 @@ export interface StartedRun {
   done: Promise<void>;
 }
 
+/**
+ * Batch 18 ruling 31: starts the verifier for a REVIEW work ticket, unless one
+ * is already running for it (beginVerifyRun's synchronous claim is the dedupe
+ * between the worker's inline chaining and tick's scan). The returned
+ * StartedRun's `done` settles when the verdict has been applied or discarded.
+ */
+async function verifyReviewTicket(deps: SchedulerDeps, ticketId: string): Promise<StartedRun | undefined> {
+  const run = beginVerifyRun(deps.db, deps.adapter.id, ticketId);
+  if (!run) return undefined;
+  const started = await startVerification(
+    { db: deps.db, adapter: deps.adapter, runTimeoutMs: deps.runTimeoutMs, workspaceBaseDir: deps.workspaceBaseDir },
+    ticketId,
+    run
+  );
+  return started ? { ticketId, runId: run.id, handle: started.handle, done: started.done } : undefined;
+}
+
 export interface TickResult {
   started: StartedRun[];
 }
@@ -96,7 +114,7 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
       const dep = getTicket(db, d.dependsOnTicketId);
 
       const doneEvents = listEventsForEntity(db, 'ticket', d.dependsOnTicketId).filter(
-        (e) => e.eventType === 'worker_done'
+        (e) => e.eventType === 'worker_done' || e.eventType === 'worker_done_for_verification'
       );
       const lastDone = doneEvents[doneEvents.length - 1];
       const summary =
@@ -799,15 +817,17 @@ async function applyWorkerEventInner(
             applyManagerTicketDone(db, ticket, run, ctx);
             break;
           }
+          // Batch 18 ruling 31: a work ticket's worker `done` is a claim, not
+          // a verdict. The ticket enters REVIEW and a verifier run decides
+          // (verifier.ts); DONE is reached only through `review_approved`.
           finishRun(db, run.id, { status: 'succeeded' });
           recordTicketTransition(db, {
             ticketId: ticket.id,
-            event: 'worker_done',
+            event: 'worker_done_for_verification',
             idempotencyKey: `worker_done:${run.id}`,
             payload: result,
             visibility: 'activity',
           });
-          resolveReadiness(db, ticket.projectId);
           break;
 
         case 'review':
@@ -915,20 +935,30 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     }
   }
 
+  // Batch 18 ruling 31: a ticket sitting in REVIEW with no verifier running
+  // (the worker's own `review` status, or a daemon restart between a worker's
+  // done and its verifier) is verified here. Verifier runs do not count
+  // against maxParallelWorkers: they are the tail of a slot already spent.
+  const verifying: StartedRun[] = [];
+  for (const t of listTicketsByStatus(deps.db, deps.projectId, 'REVIEW')) {
+    const v = await verifyReviewTicket(deps, t.id);
+    if (v) verifying.push(v);
+  }
+
   const inProgressCount = listTicketsByStatus(deps.db, deps.projectId, 'IN_PROGRESS').length;
   const available = Math.max(0, deps.maxParallelWorkers - inProgressCount);
   if (available === 0) {
-    return { started: [] };
+    return { started: verifying };
   }
 
   const project = getProject(deps.db, deps.projectId);
   if (!project) {
-    return { started: [] };
+    return { started: verifying };
   }
 
   const artifactsDir = deps.artifactsDir ?? join(process.cwd(), '.magarine', 'artifacts');
   const readyTickets = listTicketsByStatus(deps.db, deps.projectId, 'READY').slice(0, available);
-  const started: StartedRun[] = [];
+  const started: StartedRun[] = [...verifying];
   // Batch 11 item 3: one fixed instant for the whole tick, so every
   // manager-kind ticket considered in this pass is measured against the
   // exact same daily-cap window.
@@ -1172,7 +1202,17 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         try {
           const current = getTicket(deps.db, ticket.id)!;
           const terminal = await applyWorkerEvent(deps.db, current, run, event, ctx);
-          if (terminal) finishNormally();
+          if (terminal) {
+            // Batch 18 ruling 31: a worker that landed the ticket in REVIEW
+            // (its `done` on a work ticket, or its own `review`) is checked
+            // by a verifier before this run's `done` settles.
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            try {
+              await (await verifyReviewTicket(deps, ticket.id))?.done;
+            } finally {
+              finishNormally();
+            }
+          }
         } catch (err) {
           try {
             schedulerErrorSeq.n += 1;
@@ -1256,6 +1296,13 @@ export async function runUntilIdle(deps: SchedulerDeps): Promise<void> {
 
   if (signalled) {
     for (const sr of live.values()) {
+      if (getRun(deps.db, sr.runId)?.kind === 'verify') {
+        // A verifier is not the ticket's worker: stopping it leaves the ticket
+        // in REVIEW (the next tick verifies it again) and touches no attempt.
+        await deps.adapter.stop(sr.handle);
+        finishRun(deps.db, sr.runId, { status: 'cancelled', failureClass: 'interrupted' });
+        continue;
+      }
       await cancelRun(deps, sr, 'interrupted', 'run_cancelled');
     }
   }

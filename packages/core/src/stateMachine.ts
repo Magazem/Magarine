@@ -15,6 +15,14 @@ export type TransitionEvent =
   | 'dependency_not_satisfied'
   | 'run_started'
   | 'worker_done'
+  // Batch 18 ruling 31: a WORK ticket's worker says `done`, and the ticket
+  // enters REVIEW to be verified by a second run instead of landing on DONE.
+  // Its own event type (not `worker_needs_review`) because the policy table
+  // decides visibility per type: a ticket waiting on the VERIFIER must not
+  // put an approve/reject prompt in the owner's inbox the way a worker's own
+  // request for review does. The verdict then arrives as `review_approved`
+  // (DONE) or `review_rejected` (READY, one attempt consumed).
+  | 'worker_done_for_verification'
   | 'worker_needs_review'
   // Batch 4, per docs/strategy/batch-4-spec.md section 1 ruling 4: replaces
   // `worker_retryable_failure`, which could not tell an ordinary retry from
@@ -124,6 +132,7 @@ const TRANSITIONS: Record<TicketStatus, Partial<Record<StaticTransitionEvent, Ti
   },
   IN_PROGRESS: {
     worker_done: 'DONE',
+    worker_done_for_verification: 'REVIEW',
     worker_needs_review: 'REVIEW',
     worker_question: 'IN_PROGRESS',
     worker_needs_user_decision: 'BLOCKED',

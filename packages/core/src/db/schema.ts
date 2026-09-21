@@ -367,4 +367,18 @@ export const MIGRATIONS: Migration[] = [
       db.exec('ALTER TABLE projects_rebuilt RENAME TO projects;');
     },
   },
+  {
+    // Batch 18 ruling 31 (docs/strategy/batch-18-replan-owner-walk.md): a work
+    // ticket's `done` is no longer DONE -- a SECOND run, a verifier, decides.
+    // `runs.kind` says which a run is ('work', the default and what every
+    // existing row is, or 'verify'); `projects.verifier_model` is the model
+    // the verifier runs on (NULL: the project's default model). Both are plain
+    // ADD COLUMNs -- no table rebuild -- with a default/nullable that leaves
+    // every existing row exactly as it was.
+    id: '0015_verifier_run_kind',
+    sql: `
+      ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'work';
+      ALTER TABLE projects ADD COLUMN verifier_model TEXT;
+    `,
+  },
 ];

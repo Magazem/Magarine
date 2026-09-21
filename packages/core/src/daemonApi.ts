@@ -29,6 +29,7 @@ import {
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
+  setProjectVerifierModel,
   setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
@@ -257,11 +258,12 @@ function handleAddDependency(db: Db, body: unknown): RouteResult {
 function handleSetProject(db: Db, projectId: string, body: unknown): RouteResult {
   const project = getProject(db, projectId);
   if (!project) throw new ApiError(404, `no such project: ${projectId}`);
-  const b = body as { maxSpend?: number | null; model?: string; managerModel?: string | null; dir?: string; maxParallel?: number | null };
+  const b = body as { maxSpend?: number | null; model?: string; managerModel?: string | null; verifierModel?: string | null; dir?: string; maxParallel?: number | null };
   if (typeof b.maxParallel !== 'undefined') setProjectMaxParallelWorkers(db, projectId, b.maxParallel);
   if (typeof b.maxSpend !== 'undefined') setProjectMaxSpendUsd(db, projectId, b.maxSpend);
   if (typeof b.model === 'string') setProjectDefaultModel(db, projectId, b.model);
   if (typeof b.managerModel !== 'undefined') setProjectManagerModel(db, projectId, b.managerModel);
+  if (typeof b.verifierModel !== 'undefined') setProjectVerifierModel(db, projectId, b.verifierModel);
   // Batch 12 ruling 1: `dir` is already resolved to an absolute path by the
   // CLI before it reaches this route (cli.ts's project set handler) --
   // resolving it again here, against the DAEMON's own cwd rather than the

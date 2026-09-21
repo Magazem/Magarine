@@ -67,7 +67,11 @@ function setUp(): { db: ReturnType<typeof openDb>; projectId: string; ticketId: 
   return { db, projectId: project.id, ticketId: ticket.id };
 }
 
-test('done: a real spawned process reporting status done lands the work ticket on DONE via worker_done', async () => {
+// Batch 18 ruling 31: a worker's done no longer lands DONE -- it enters REVIEW
+// for a verifier. The spawned stub answers the verifier run too, with the same
+// recorded worker stream, which is not a verdict, so the ticket stays in REVIEW
+// here; the verdict paths are verifier.test.ts's.
+test('done: a real spawned process reporting status done lands the work ticket in REVIEW for verification (worker_done_for_verification)', async () => {
   const { db, projectId, ticketId } = setUp();
   const adapter = buildAdapter({
     stdoutFile: recordedStreamStdout,
@@ -89,11 +93,11 @@ test('done: a real spawned process reporting status done lands the work ticket o
   assert.equal(result.started.length, 1);
   await Promise.all(result.started.map((s) => s.done));
 
-  assert.equal(getTicket(db, ticketId)!.status, 'DONE');
+  assert.equal(getTicket(db, ticketId)!.status, 'REVIEW');
   const run = getRun(db, result.started[0].runId)!;
   assert.equal(run.status, 'succeeded');
-  const doneEvent = listEventsForEntity(db, 'ticket', ticketId).find((e) => e.eventType === 'worker_done');
-  assert.ok(doneEvent, 'expected a worker_done transition from the real spawned pipeline');
+  const doneEvent = listEventsForEntity(db, 'ticket', ticketId).find((e) => e.eventType === 'worker_done_for_verification');
+  assert.ok(doneEvent, 'expected a worker_done_for_verification transition from the real spawned pipeline');
 
   // MUTATION CHECK: in scheduler.ts's applyWorkerEventInner, the `case
   // 'done':` branch (non-manager path) reads `finishRun(db, run.id, {

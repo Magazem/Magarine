@@ -369,6 +369,35 @@ worker's self-stop (mechanism 1) is the expected first stop in production.
 
 All nine accept `--json`.
 
+### A second pair of eyes: the verifier (batch 18 ruling 31)
+
+A work ticket is not DONE because its worker says so. When a worker reports
+`done` (or its own `review`), the ticket enters REVIEW and a **verifier run**
+on the same ticket decides: its own envelope, prompt and result schema, the run
+row marked `kind: 'verify'`. `review_approved` lands DONE; `review_rejected`
+returns the ticket to READY with the failed criteria and their evidence as the
+reason, one attempt consumed (at max attempts the final failure carries it).
+
+- The verifier rules on **every** acceptance criterion with evidence (a file and
+  line, or a command and its output), plus a standing criterion no ticket can
+  drop: no TODO/FIXME, stub, "implement later", empty function body or
+  fabricated data. A ticket with no criteria is judged on "the description is
+  fulfilled". `pass` requires every criterion to pass; a criterion without
+  evidence, or one the verifier never ruled on, is a fail. A verifier may not
+  write files.
+- Model: `project create/set --verifier-model <model>`, else the project's
+  default model. The ticket's spend ceiling applies and the spend counts on the
+  ticket. Manager tickets are never verified. There is no off switch.
+- The owner's `approve`/`reject` stay the human override. A verdict arriving for
+  a ticket no longer in REVIEW is discarded (internal `verdict_discarded`).
+- A verifier that cannot answer (fails, malformed) is retried on the next tick,
+  three times per attempt; then the ticket stays in REVIEW and the inbox asks the
+  owner to approve or reject it by hand. That consumes no attempt.
+- Cost: verification roughly doubles the runs per ticket.
+- Testing without spend: the fake adapter's `verify_pass` / `verify_fail`
+  (`reason`, `times`) / `verify_malformed` / `verify_failure` / `verify_hang`
+  scripts, also accepted by `--fake-script`.
+
 ### Notification policy (`policy.ts`)
 
 `policy.ts` implements `technical-architecture-weekend-mvp.md`'s

@@ -113,6 +113,10 @@ const POLICY: Record<string, EventPolicy> = {
   // "Worker completed", the review-needed half (Internal: No, Activity:
   // Yes, Inbox: Yes).
   worker_needs_review: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'REVIEW' } },
+  // Batch 18 ruling 31: a worker's `done` on a work ticket, on its way to the
+  // verifier. Activity only -- the owner is asked nothing while a second run is
+  // checking the work; the verdict (review_approved / review_rejected) follows.
+  worker_done_for_verification: { visibility: 'activity', requiresUser: false },
 
   // "User decision required" (Internal: No, Activity: Yes, Inbox: Yes).
   worker_needs_user_decision: { visibility: 'inbox', requiresUser: true, resolvesWhen: { ticketLeaves: 'BLOCKED' } },

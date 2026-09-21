@@ -4,6 +4,7 @@ import { join, resolve as resolvePath, sep } from 'node:path';
 import { spawnManaged, type ManagedProcess } from '../process.ts';
 import { WORKER_RESULT_JSON_SCHEMA, validateWorkerResult } from '../resultContract.ts';
 import { buildWorkerPrompt } from '../envelope.ts';
+import { buildVerifierPrompt, VERIFIER_RESULT_JSON_SCHEMA } from '../verifier.ts';
 import { prepareWorkspace, resolveDeclaredArtifactPath } from '../workspace.ts';
 import { isKnownModel, priceUsage, type Usage } from '../pricing.ts';
 import type {
@@ -130,6 +131,9 @@ function mapWorkerStatus(status: unknown): WorkerResultStatus | null {
 
 export type ClaudeCliOutcome =
   | { kind: 'success'; result: WorkerResult }
+  // Batch 18 ruling 31: a VERIFIER run's raw structured answer. Not validated
+  // here -- verifier.ts validates it against the criteria the run was given.
+  | { kind: 'verifier_raw'; raw: unknown }
   | { kind: 'retryable'; reason: string }
   | { kind: 'budget_exceeded'; reason: string }
   | { kind: 'adapter_unavailable'; reason: string };
@@ -191,6 +195,8 @@ export function classifyOutcome(input: {
   exitCode: number | null;
   stderr: string;
   timedOut: boolean;
+  /** Batch 18 ruling 31: this run is a verifier; its answer is a verdict object, not a WorkerResult. */
+  verify?: boolean;
 }): ClaudeCliOutcome {
   if (input.timedOut) {
     return { kind: 'retryable', reason: 'timed out before completion' };
@@ -211,7 +217,10 @@ export function classifyOutcome(input: {
   // file first, per the architecture doc, but never trusts it blindly (see
   // verifyArtifacts below) and falls back to the stream envelope's
   // structured_output only if the file was never written.
-  const raw = input.fileResult ?? extractStructured(input.resultLine);
+  // A verifier never writes files, so a result.json in its workspace (the
+  // worker's, in a shared directory) is not its answer: only the structured
+  // output of its own run counts.
+  const raw = input.verify ? extractStructured(input.resultLine) : (input.fileResult ?? extractStructured(input.resultLine));
   if (raw === undefined) {
     const stderrSnippet = input.stderr.trim().slice(0, 500);
     return {
@@ -225,6 +234,8 @@ export function classifyOutcome(input: {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     return { kind: 'retryable', reason: 'result is not a JSON object' };
   }
+
+  if (input.verify) return { kind: 'verifier_raw', raw };
 
   const rawRecord = raw as Record<string, unknown>;
   const mapped = mapWorkerStatus(rawRecord.status);
@@ -314,6 +325,8 @@ function outcomeToEvent(outcome: ClaudeCliOutcome, usage: unknown, unknownModel:
   switch (outcome.kind) {
     case 'success':
       return { type: 'result_raw', raw: outcome.result, usage, unknownModel };
+    case 'verifier_raw':
+      return { type: 'result_raw', raw: outcome.raw, usage, unknownModel };
     case 'retryable':
       return { type: 'failure', message: outcome.reason, retryable: true, usage, unknownModel };
     case 'budget_exceeded':
@@ -522,7 +535,8 @@ export class ClaudeCliAdapter implements AgentAdapter {
           retryDelayMs: this.options.workspaceRetryDelayMs,
         });
 
-    const prompt = buildWorkerPrompt(input.ticket, ws.path);
+    const isVerifier = input.ticket.runKind === 'verify';
+    const prompt = isVerifier ? buildVerifierPrompt(input.ticket, ws.path) : buildWorkerPrompt(input.ticket, ws.path);
 
     const args = [
       ...(this.options.argsPrefix ?? []),
@@ -532,7 +546,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       'stream-json',
       '--verbose',
       '--json-schema',
-      JSON.stringify(WORKER_RESULT_JSON_SCHEMA),
+      JSON.stringify(isVerifier ? VERIFIER_RESULT_JSON_SCHEMA : WORKER_RESULT_JSON_SCHEMA),
       '--permission-mode',
       this.options.permissionMode ?? 'bypassPermissions',
       '--max-budget-usd',
@@ -680,6 +694,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
           exitCode: waitResult.code,
           stderr: stderrBuf,
           timedOut: waitResult.timedOut,
+          verify: isVerifier,
         });
       }
 

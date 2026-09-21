@@ -12,6 +12,7 @@ import type {
   ExpectedArtifact,
   Project,
   Run,
+  RunKind,
   RunStatus,
   Ticket,
   TicketDependency,
@@ -63,6 +64,7 @@ interface ProjectRow {
   adapter_paused_at: string | null;
   manager_model: string | null;
   scope_path: string | null;
+  verifier_model: string | null;
   pause_reason: string | null;
   created_at: string;
   updated_at: string;
@@ -83,6 +85,7 @@ function rowToProject(row: ProjectRow): Project {
     adapterPausedAt: row.adapter_paused_at,
     managerModel: row.manager_model,
     scopePath: row.scope_path,
+    verifierModel: row.verifier_model,
     pauseReason:
       row.pause_reason === 'spend_cap' || row.pause_reason === 'adapter_unavailable' || isReadinessRule(row.pause_reason)
         ? row.pause_reason
@@ -107,6 +110,8 @@ export function createProject(
     workspaceRoot?: string | null;
     managerModel?: string | null;
     scopePath?: string | null;
+    /** Batch 18 ruling 31: the model the verifier runs on; absent or null falls back to the project's default model. */
+    verifierModel?: string | null;
   }
 ): Project {
   const maxBudgetUsd = input.maxBudgetUsd ?? 2.0;
@@ -126,8 +131,8 @@ export function createProject(
   const now = new Date().toISOString();
   const id = newId('proj');
   db.prepare(
-    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, default_model, brief, workspace_root, manager_model, scope_path, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, description, default_adapter, max_parallel_workers, max_budget_usd, max_spend_usd, default_model, brief, workspace_root, manager_model, scope_path, verifier_model, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.name,
@@ -141,6 +146,7 @@ export function createProject(
     input.workspaceRoot ?? null,
     input.managerModel ?? null,
     input.scopePath ?? null,
+    input.verifierModel ?? null,
     now,
     now
   );
@@ -210,6 +216,10 @@ export function setProjectMaxParallelWorkers(db: Db, projectId: string, maxParal
 // Setter for a future `project set --manager-model` to call, matching
 // setProjectDefaultModel's shape exactly. `null` clears the override (falls
 // back to the project's own default_model -- see resolveManagerModel).
+export function setProjectVerifierModel(db: Db, projectId: string, verifierModel: string | null): void {
+  db.prepare('UPDATE projects SET verifier_model = ?, updated_at = ? WHERE id = ?').run(verifierModel, new Date().toISOString(), projectId);
+}
+
 export function setProjectManagerModel(db: Db, projectId: string, managerModel: string | null): void {
   db.prepare('UPDATE projects SET manager_model = ?, updated_at = ? WHERE id = ?').run(
     managerModel,
@@ -312,6 +322,13 @@ export function resolveMaxBudgetUsd(project: Project, ticket: Ticket): number {
 // Same shape as resolveMaxBudgetUsd above, for the model to pin this run to.
 export function resolveModel(project: Project, ticket: Ticket): string {
   return ticket.model ?? project.defaultModel;
+}
+
+// Batch 18 ruling 31: the model a VERIFIER run uses -- the project's own
+// `verifier_model` if set, else its `default_model`. Read from the project like
+// resolveManagerModel (a verifier is a project-level role, not a per-ticket one).
+export function resolveVerifierModel(project: Project): string {
+  return project.verifierModel ?? project.defaultModel;
 }
 
 // Batch 9: the model a Manager ticket runs on -- the project's own
@@ -648,6 +665,7 @@ interface RunRow {
   finished_at: string | null;
   failure_class: string | null;
   usage_json: string | null;
+  kind: string;
 }
 
 function rowToRun(row: RunRow): Run {
@@ -663,19 +681,20 @@ function rowToRun(row: RunRow): Run {
     finishedAt: row.finished_at,
     failureClass: row.failure_class,
     usageJson: row.usage_json,
+    kind: row.kind === 'verify' ? 'verify' : 'work',
   };
 }
 
 export function createRun(
   db: Db,
-  input: { ticketId: string; attempt: number; adapter: string; workspaceRef?: string | null }
+  input: { ticketId: string; attempt: number; adapter: string; workspaceRef?: string | null; kind?: RunKind }
 ): Run {
   const now = new Date().toISOString();
   const id = newId('run');
   db.prepare(
-    `INSERT INTO runs (id, ticket_id, attempt, adapter, worker_session_ref, workspace_ref, status, started_at, finished_at, failure_class)
-     VALUES (?, ?, ?, ?, NULL, ?, 'running', ?, NULL, NULL)`
-  ).run(id, input.ticketId, input.attempt, input.adapter, input.workspaceRef ?? null, now);
+    `INSERT INTO runs (id, ticket_id, attempt, adapter, worker_session_ref, workspace_ref, status, started_at, finished_at, failure_class, kind)
+     VALUES (?, ?, ?, ?, NULL, ?, 'running', ?, NULL, NULL, ?)`
+  ).run(id, input.ticketId, input.attempt, input.adapter, input.workspaceRef ?? null, now, input.kind ?? 'work');
   return getRun(db, id)!;
 }
 
