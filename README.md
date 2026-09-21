@@ -143,13 +143,16 @@ Run these from wherever `magarine` is on your PATH:
    rather use a plain browser tab, `magarine serve --adapter claude
    --max-parallel 4` runs the same daemon with no window.
 
-   This is the one number that decides how many tasks run at once: the most
-   workers the daemon runs at once across every project (a project only runs
-   fewer if you gave it a smaller cap of its own in step 2). The line it
-   prints says "up to 4 workers at once" so you can see the number you're
-   running under; leave the flag off and it is 1. Each worker is a real
-   session against your subscription's limits, so the number is your choice:
-   start lower if you'd rather it spend more slowly.
+   This number caps WORKERS: the most workers the daemon runs at once across
+   every project (a project only runs fewer if you gave it a smaller cap of
+   its own in step 2). It does NOT count the Manager: a Manager turn takes its
+   own slot on top, at most one per project, so with several projects the
+   sessions running at once can be more than this number (workers plus one
+   Manager per project that has one running). Each session, worker or
+   Manager, is a real session against your subscription's limits, so if those
+   limits are what you are watching, budget for the Managers too and start
+   lower. The line it prints says "up to 4 workers at once" so you can see
+   the worker number you're running under; leave the flag off and it is 1.
 
 4. **Let it interview you.** Write `SCOPE.md` in the project's folder BEFORE
    you run `plan` if you have a scope to hand over -- or run `plan` without

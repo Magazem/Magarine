@@ -1,6 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rmSyncResilient } from '../db/testSupport.ts';
@@ -1886,5 +1887,37 @@ test('project create --verifier-model and project set --verifier-model store the
       (await run(['project', 'set', '--project', created.id, '--verifier-model', 'claude-haiku-4-5-20251001', '--json', '--db', dbFile])).stdout
     ) as { verifierModel: string | null };
     assert.equal(set.verifierModel, 'claude-haiku-4-5-20251001');
+  });
+});
+
+test('plan and discuss say where the reply lands (human output only), and the command they name runs and shows the ticket (batch 18 one-liner)', async () => {
+  await withTempDb('magarine-reply-hint-', async (dbFile) => {
+    const dir = mkdtempSync(join(tmpdir(), 'magarine-reply-hint-dir-'));
+    try {
+      const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--dir', dir, '--json', '--db', dbFile])).stdout) as { id: string };
+      const hint = "Manager tab of the window (`magarine app`) and on this ticket's row in `magarine board --project " + project.id + '`';
+
+      const plan = await run(['plan', '--project', project.id, '--db', dbFile]);
+      assert.equal(plan.code, 0, plan.stderr);
+      assert.match(plan.stdout, /Created manager ticket/);
+      assert.ok(plan.stdout.includes(hint), plan.stdout);
+
+      const discuss = await run(['discuss', '--project', project.id, '--message', 'hello', '--db', dbFile]);
+      assert.equal(discuss.code, 0, discuss.stderr);
+      assert.ok(discuss.stdout.includes(hint), discuss.stdout);
+
+      // --json stdout stays pure JSON: no hint line.
+      const json = await run(['discuss', '--project', project.id, '--message', 'again', '--json', '--db', dbFile]);
+      assert.equal(json.code, 0, json.stderr);
+      assert.doesNotThrow(() => JSON.parse(json.stdout));
+      assert.ok(!json.stdout.includes('Manager tab'));
+
+      // The command the line names actually runs, and the manager ticket is on its rows.
+      const board = await run(['board', '--project', project.id, '--db', dbFile]);
+      assert.equal(board.code, 0, board.stderr);
+      assert.match(board.stdout, /MANAGER/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

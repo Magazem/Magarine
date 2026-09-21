@@ -538,8 +538,10 @@ fake|claude`, `--claude-exe`, `--fake-script`, `--fake-outcome`,
   immediate first pass happens at startup regardless of this value.
 
 **`--max-parallel` is machine-wide as of Batch 9**, not per-project: it is
-the total number of workers `serve` will ever run at once, summed across
-every project in its database. A project's own effective cap for a given
+the total number of WORKERS `serve` will ever run at once, summed across
+every project in its database. Batch 18 ruling 33: a Manager turn is not a
+worker slot -- it runs on top of this ceiling, at most one per project -- so
+the sessions running at once can exceed this number by up to one per project. A project's own effective cap for a given
 tick is `min(<the project's own max_parallel_workers, from "project create
 --max-parallel">, <however much of the machine-wide ceiling is not already
 spent by every project's current in-flight workers>)` — see `daemon.ts`'s
@@ -827,6 +829,11 @@ that already succeeded.
   automatic turn.
 
 ## Planning a project
+
+`plan` and `discuss` print "Created manager ticket ..." and then one line saying
+where the answer goes: the Manager's reply appears in the Manager tab of the
+window (`magarine app`) and on that ticket's row in `magarine board --project
+<id>`, once it has run (`--json` output is unchanged).
 
 The Manager is the last piece of `technical-architecture-weekend-mvp.md`
 that this project had not built: a scope document goes in, tickets with

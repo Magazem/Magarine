@@ -608,6 +608,13 @@ function announceListening(flags: Flags, info: { pid: number; port: number; stat
   );
 }
 
+// Batch 18 one-liner: `plan` and `discuss` used to print "Created manager ticket" and
+// stop, and the owner (and the stranger before them) never learned where the
+// Manager's answer goes. Human output only: --json stdout stays pure JSON.
+function managerReplyHint(projectId: string): string {
+  return `The Manager's reply appears in the Manager tab of the window (\`magarine app\`) and on this ticket's row in \`magarine board --project ${projectId}\`, once it has run.`;
+}
+
 function output(flags: Flags, data: unknown, humanLine: string): void {
   if (flags.json) {
     process.stdout.write(JSON.stringify(data) + '\n');
@@ -846,7 +853,7 @@ ${scopeLine}` : ''}`);
         { mission: mission || undefined, budgetUsd },
         (b) => {
           const t = b as { id: string; title: string };
-          return `Created manager ticket ${t.id} (${t.title})`;
+          return `Created manager ticket ${t.id} (${t.title})\n${managerReplyHint(projectId)}`;
         }
       );
       return;
@@ -854,7 +861,7 @@ ${scopeLine}` : ''}`);
 
     try {
       const ticket = planWithMission(db, projectId, { mission, budgetUsd });
-      output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})`);
+      output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})\n${managerReplyHint(projectId)}`);
     } catch (err) {
       if (err instanceof PlanError) {
         process.stderr.write(`${err.message}\n`);
@@ -881,7 +888,7 @@ ${scopeLine}` : ''}`);
     if (live) {
       await routeMutation(flags, live, 'POST', `/projects/${projectId}/discuss`, { message, budgetUsd }, (b) => {
         const t = b as { id: string; title: string };
-        return `Created manager ticket ${t.id} (${t.title})`;
+        return `Created manager ticket ${t.id} (${t.title})\n${managerReplyHint(projectId)}`;
       });
       return;
     }
@@ -889,7 +896,7 @@ ${scopeLine}` : ''}`);
     try {
       const ticketId = discussProject(db, projectId, message, { budgetUsd });
       const ticket = getTicket(db, ticketId)!;
-      output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})`);
+      output(flags, ticket, `Created manager ticket ${ticket.id} (${ticket.title})\n${managerReplyHint(projectId)}`);
     } catch (err) {
       if (err instanceof ManagerError) {
         process.stderr.write(`${err.message}\n`);
