@@ -38,7 +38,7 @@ test('runMigrations is idempotent: applying twice does not error or duplicate ro
     '0012_artifact_text_column',
     '0013_ticket_expected_artifacts',
     '0014_max_parallel_workers_nullable',
-    '0015_verifier_run_kind',
+    '0015_verifier_run_kind', '0016_ticket_automatic',
   ]);
 });
 
@@ -110,7 +110,7 @@ test('a database migrated only to 0001 picks up 0002 (usage_json) on next open, 
     '0012_artifact_text_column',
     '0013_ticket_expected_artifacts',
     '0014_max_parallel_workers_nullable',
-    '0015_verifier_run_kind',
+    '0015_verifier_run_kind', '0016_ticket_automatic',
   ]);
   assert.equal(snapshot.usageJsonInputTokens, 1);
 });

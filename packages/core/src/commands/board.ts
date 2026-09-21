@@ -81,6 +81,8 @@ export interface BoardTicket {
   status: TicketStatus;
   /** Batch 9: 'work' (the default; every ticket before this batch) or 'manager'. formatBoard tags 'manager' rows distinctly -- see its own comment for why that matters once planning is used in anger. */
   kind: TicketKind;
+  /** Batch 18 ruling 34: true on a manager ticket the scheduler created itself when the board drained (title "Manager: review progress"); false on every other ticket. */
+  automatic: boolean;
   attemptCount: number;
   maxAttempts: number;
   costUsd: number;
@@ -226,6 +228,7 @@ export function buildBoard(db: Db, projectId: string, machineCap: number | null 
         title: t.title,
         status: t.status,
         kind: t.kind,
+        automatic: t.automatic,
         attemptCount: t.attemptCount,
         maxAttempts: t.maxAttempts,
         costUsd: c.costUsd,

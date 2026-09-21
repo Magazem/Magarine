@@ -381,4 +381,26 @@ export const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN verifier_model TEXT;
     `,
   },
+  {
+    // Batch 18 ruling 34: 1 on a manager ticket the SCHEDULER created because the
+    // board drained ("Manager: review progress"), 0 on everything else -- one a
+    // person created with plan/discuss, and every ticket that existed before.
+    //
+    // ALSO records a HIGH-WATER MARK: the highest event sequence at upgrade time.
+    // A completion that happened before this feature existed must never earn an
+    // automatic Manager turn -- every finished, dormant project in an existing
+    // database (a Manager ticket, work DONE after it) looks exactly like a board
+    // that just drained, and waking them all would spend the owner's money on
+    // projects they never asked to continue. autoManager.ts requires a completion
+    // ABOVE this mark. A fresh database records 0.
+    id: '0016_ticket_automatic',
+    sql: `
+      ALTER TABLE tickets ADD COLUMN automatic INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE automatic_manager_mark (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        since_sequence INTEGER NOT NULL
+      );
+      INSERT INTO automatic_manager_mark (id, since_sequence) SELECT 1, COALESCE(MAX(sequence), 0) FROM events;
+    `,
+  },
 ];

@@ -201,7 +201,11 @@ test('renderManagerBrief carries the model guidance paragraph', () => {
 
 // --- The negative test: nothing from a worker prompt or a transcript ---
 
-test('buildManagerEnvelope never carries another ticket\'s own description, a completed dependency\'s reported summary, or its artifacts', () => {
+// Batch 18 ruling 34 amended the rule this test guards: a finished work ticket summary
+// and artefacts DO reach the Manager -- but only through the "Since your last run"
+// section, never as a dependency the envelope carries, and never with the ticket own
+// description or a worker progress line. The two halves are asserted separately.
+test('buildManagerEnvelope never carries another ticket description or a worker progress line, and carries a finished ticket summary and artefacts ONLY in the Since-your-last-run section', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', brief: 'legitimate brief' });
 
@@ -217,6 +221,8 @@ test('buildManagerEnvelope never carries another ticket\'s own description, a co
   });
   recordTicketTransition(db, { ticketId: completedDependency.id, event: 'dependencies_resolved', idempotencyKey: 'r1' });
   recordTicketTransition(db, { ticketId: completedDependency.id, event: 'run_started', idempotencyKey: 's1' });
+  const depRun = createRun(db, { ticketId: completedDependency.id, attempt: 1, adapter: 'fake' });
+  createArtifact(db, { ticketId: completedDependency.id, runId: depRun.id, projectId: project.id, kind: 'file', pathOrUri: WORKER_ARTIFACT_MARKER });
   recordTicketTransition(db, {
     ticketId: completedDependency.id,
     event: 'worker_done',
@@ -255,8 +261,13 @@ test('buildManagerEnvelope never carries another ticket\'s own description, a co
   const serialized = JSON.stringify(envelope);
 
   assert.ok(!serialized.includes(WORKER_DESCRIPTION_MARKER), 'a work ticket\'s own description must not reach the Manager envelope');
-  assert.ok(!serialized.includes(WORKER_SUMMARY_MARKER), 'a completed dependency\'s reported summary must not reach the Manager envelope');
-  assert.ok(!serialized.includes(WORKER_ARTIFACT_MARKER), 'a completed dependency\'s artifact path must not reach the Manager envelope');
+  // The amended rule: exactly the summary and the artefact list, and only inside the section.
+  const briefText = renderManagerBrief(buildManagerBriefing(db, getProject(db, project.id)!, managerTicket));
+  const sinceAt = briefText.indexOf('Since your last run');
+  assert.ok(sinceAt >= 0);
+  assert.ok(briefText.slice(sinceAt).includes(WORKER_SUMMARY_MARKER), 'a finished ticket summary is admitted through Since your last run');
+  assert.ok(briefText.slice(sinceAt).includes(WORKER_ARTIFACT_MARKER), 'a finished ticket artefact list is admitted through Since your last run');
+  assert.ok(!briefText.slice(0, sinceAt).includes(WORKER_SUMMARY_MARKER), 'and nowhere else in the brief');
   assert.ok(!serialized.includes(WORKER_PROGRESS_MARKER), 'a worker progress line must not reach the Manager envelope');
 
   assert.deepEqual(envelope.completedDependencies, [], 'a Manager envelope must never carry completedDependencies');
@@ -307,7 +318,7 @@ test('the envelope carries the CURRENT scope text, read fresh off disk on every 
 // "scope text is present" claim above, so a name naming both halves is
 // actually covering both. ---
 
-test('buildManagerEnvelope never carries the scope text of another kind of content -- specifically, nothing from a worker prompt or transcript', () => {
+test('buildManagerEnvelope never carries the scope text of another kind of content -- nothing from a worker prompt or transcript (a finished ticket summary arrives only via Since your last run)', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', brief: 'legitimate brief' });
 
@@ -333,7 +344,7 @@ test('buildManagerEnvelope never carries the scope text of another kind of conte
   const serialized = JSON.stringify(envelope);
 
   assert.ok(!serialized.includes(WORKER_DESCRIPTION_MARKER));
-  assert.ok(!serialized.includes(WORKER_SUMMARY_MARKER));
+  assert.ok(serialized.includes('Since your last run') && serialized.includes(WORKER_SUMMARY_MARKER), 'the summary is present, through the amended section');
 });
 
 // --- Batch 11 item 2: interview-mode framing (the OR condition) ---

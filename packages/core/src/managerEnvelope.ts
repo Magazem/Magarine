@@ -1,11 +1,13 @@
 import { MANAGER_COMMAND_SCHEMA_DESCRIPTION } from './proposal.ts';
 import { reasonFor } from './commands/inbox.ts';
 import type { Db } from './db/index.ts';
+import { lastManagerActivitySeq, workTicketsFinishedSince } from './autoManager.ts';
 import { readScopeText } from './manager.ts';
 import { inputRateUsd, knownModelIds } from './pricing.ts';
 import {
   getDependencies,
   listArtifactsForTicket,
+  listEventsForEntity,
   listEventsForProject,
   listTickets,
   resolveManagerModel,
@@ -13,6 +15,7 @@ import {
   ticketSpendUsd,
 } from './store.ts';
 import type { Project, Ticket, TicketEnvelope, TicketKind, TicketStatus } from './types.ts';
+import { buildBoard as buildFullBoard, type BoardArtifact } from './commands/board.ts';
 
 // The Manager's envelope, per docs/strategy/batch-9-spec.md section 2:
 // "the project brief, the mission text, the current board in compact form
@@ -20,11 +23,16 @@ import type { Project, Ticket, TicketEnvelope, TicketKind, TicketStatus } from '
 // spend), the decision log, the last five final failures with their
 // reasons, and the command schema. Nothing else: no transcripts, no worker
 // prompts." This module never imports envelope.ts (the WORK-ticket prompt
-// builder) or reads a `WorkerResult`'s `summary`/`artifacts`/`checks` off
-// any event -- see managerEnvelope.test.ts's negative tests for what that
-// buys: a distinctive string planted in another ticket's own description,
-// or in a completed dependency's summary, can be proven absent from the
-// Manager's rendered prompt by construction, not by convention.
+// builder) and never reads a worker's transcript or prompt.
+//
+// Batch 18 ruling 34 AMENDS that rule by exactly one section: "Since your last
+// run" -- for each work ticket that reached DONE or FAILED since the Manager
+// last acted, its status, the worker's own summary, its artefact list, the
+// verifier's verdict (pass, or the failed criteria), attempts and spend. Those
+// fields and nothing else: a Manager that cannot see what was delivered cannot
+// judge whether the scope is met (the owner's "it only did phase 0"). Another
+// ticket's description, a worker's prompt or transcript, a `checks` list still
+// never reach it -- see managerEnvelope.test.ts's negative tests.
 //
 // "An orchestrator that accumulates context is the expensive idle agent
 // this project has designed against from the start" -- the Manager rebuilds
@@ -65,7 +73,25 @@ export interface ManagerConversationEntry {
   createdAt: string;
 }
 
+/** Batch 18 ruling 34: one work ticket that reached DONE or FAILED since the Manager last acted. */
+export interface SinceLastRunEntry {
+  ticketId: string;
+  title: string;
+  status: 'DONE' | 'FAILED';
+  /** The worker's own summary of what it did; null when it gave none (a failure often has none). */
+  summary: string | null;
+  artifacts: BoardArtifact[];
+  /** "pass" (the verifier approved it), "approved by the owner", or the failed criteria / final failure reason. */
+  verdict: string;
+  attempts: string;
+  spendUsd: number;
+}
+
 export interface ManagerBriefing {
+  /** Batch 18 ruling 34: this turn was created by the scheduler because the board drained, not by the owner. */
+  automatic: boolean;
+  /** Batch 18 ruling 34: "Since your last run". */
+  sinceLastRun: SinceLastRunEntry[];
   projectBrief: string;
   mission: string;
   board: ManagerBoardEntry[];
@@ -160,6 +186,46 @@ function buildBoard(db: Db, projectId: string): ManagerBoardEntry[] {
   }));
 }
 
+// Batch 18 ruling 34. The verdict is read off the ticket's own terminal event:
+// a `review_approved` carrying a verifier run id is the verifier's pass; one
+// without is the owner's approve; a FAILED ticket's is the board's own failure
+// reason (which, for a verifier rejection, is the failed criteria verbatim).
+function buildSinceLastRun(db: Db, project: Project, ticket: Ticket): SinceLastRunEntry[] {
+  // The full board (artefacts, failure reasons, spend), not the compact one the brief prints.
+  const fullBoard = buildFullBoard(db, project.id);
+  const finished = workTicketsFinishedSince(db, project.id, lastManagerActivitySeq(db, project.id, ticket.id));
+  return finished.map((t) => {
+    const row = fullBoard.tickets.find((b) => b.id === t.id);
+    const events = listEventsForEntity(db, 'ticket', t.id);
+    const summaryEvent = events
+      .filter((e) => e.eventType === 'worker_done_for_verification' || e.eventType === 'worker_needs_review' || e.eventType === 'worker_done')
+      .at(-1);
+    const summary =
+      summaryEvent && typeof summaryEvent.payload === 'object' && summaryEvent.payload !== null
+        ? ((summaryEvent.payload as { summary?: unknown }).summary as string | undefined)
+        : undefined;
+    const approved = events.filter((e) => e.eventType === 'review_approved').at(-1);
+    const verdict =
+      t.status === 'FAILED'
+        ? (row?.lastFailureReason ?? 'failed')
+        : approved
+          ? (approved.payload as { verifierRunId?: unknown } | null)?.verifierRunId !== undefined
+            ? 'pass (the verifier approved it)'
+            : 'approved by the owner'
+          : 'done (not verified)';
+    return {
+      ticketId: t.id,
+      title: t.title,
+      status: t.status as 'DONE' | 'FAILED',
+      summary: typeof summary === 'string' && summary.length > 0 ? summary : null,
+      artifacts: row?.artifacts ?? [],
+      verdict,
+      attempts: `${t.attemptCount}/${t.maxAttempts}`,
+      spendUsd: row?.costUsd ?? 0,
+    };
+  });
+}
+
 // The structured content, independent of how it is eventually rendered to
 // text -- kept separate from `buildManagerEnvelope` below so a test can
 // assert on exactly these fields without parsing prose.
@@ -171,6 +237,8 @@ export function buildManagerBriefing(db: Db, project: Project, ticket: Ticket): 
   const scope = readScopeText(project);
   const scopeText = scope.text;
   return {
+    automatic: ticket.automatic,
+    sinceLastRun: buildSinceLastRun(db, project, ticket),
     projectBrief: project.brief ?? '',
     // The mission is the ticket's own description -- set once, at `plan`
     // time (see commands/plan.ts), and never rewritten; a Manager rebuilt
@@ -187,6 +255,16 @@ export function buildManagerBriefing(db: Db, project: Project, ticket: Ticket): 
     conversation: buildConversation(db, project.id),
     isFreshProject: scopeText.trim().length === 0 || board.filter((b) => b.kind === 'work').length === 0,
   };
+}
+
+function renderSinceLastRunEntry(e: SinceLastRunEntry): string {
+  const artifacts = e.artifacts.length > 0 ? e.artifacts.map((a) => `(${a.kind}) ${a.content}`).join('; ') : '(none)';
+  return [
+    `- ${e.ticketId} "${e.title}" ${e.status} (attempts ${e.attempts}, spend $${e.spendUsd.toFixed(2)})`,
+    `  Summary: ${e.summary ?? '(none given)'}`,
+    `  Artefacts: ${artifacts}`,
+    `  Verdict: ${e.verdict}`,
+  ].join('\n');
 }
 
 function renderBoardLine(entry: ManagerBoardEntry): string {
@@ -212,6 +290,14 @@ const INTERVIEW_MODE_FRAMING =
   'what you would cut, and the questions you still need answered. Returning ONLY questions (via request_user_decision commands, with no ' +
   'create_ticket commands) is a valid, EXPECTED outcome here -- it is a success, not a stall or a failure. Propose tickets only once you ' +
   'state you have enough information, or the owner\'s latest message explicitly asks you to propose now.';
+
+// Batch 18 ruling 34: no owner message is waiting on this turn; the board
+// drained and the daemon asked the Manager to look at what was delivered.
+const AUTOMATIC_TURN_FRAMING =
+  'This is an AUTOMATIC turn: the board has drained and no owner message is waiting. ' +
+  'Compare what was delivered (see "Since your last run" below) against the scope document, then do exactly one of: ' +
+  'propose the next tickets; return an empty proposal whose rationale states that the scope is met; or ask the owner via request_user_decision. ' +
+  'Do not invent work to seem busy: an empty proposal is the right answer when the scope is met.';
 
 const REPLAN_MODE_FRAMING =
   'This project already has a scope document and/or tickets on the board. If the owner sent a message, reply to it as a manager_reply ' +
@@ -252,6 +338,7 @@ export function renderModelGuidance(): string {
 export function renderManagerBrief(briefing: ManagerBriefing): string {
   const sections: string[] = [];
 
+  if (briefing.automatic) sections.push(AUTOMATIC_TURN_FRAMING);
   sections.push(briefing.isFreshProject ? INTERVIEW_MODE_FRAMING : REPLAN_MODE_FRAMING);
 
   sections.push(`Mission:\n${briefing.mission || '(none provided)'}`);
@@ -276,6 +363,12 @@ export function renderManagerBrief(briefing: ManagerBriefing): string {
     briefing.board.length > 0
       ? `Current board (${briefing.board.length} ticket(s)):\n${briefing.board.map(renderBoardLine).join('\n')}`
       : 'Current board: (no tickets yet)'
+  );
+
+  sections.push(
+    briefing.sinceLastRun.length > 0
+      ? `Since your last run (${briefing.sinceLastRun.length} work ticket(s) finished):\n${briefing.sinceLastRun.map(renderSinceLastRunEntry).join('\n')}`
+      : 'Since your last run: (no work ticket has finished)'
   );
 
   sections.push(

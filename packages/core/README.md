@@ -804,6 +804,28 @@ before the daemon starts listening and a workspace-removal failure must
 never be able to take down `serve` itself, or undo the run/ticket recovery
 that already succeeded.
 
+### The Manager keeps going, and is not a worker slot (batch 18 rulings 33-34)
+
+- **Not a worker slot.** `--max-parallel` and a project's cap count WORK
+  tickets only. A READY manager ticket starts on the next tick whatever the
+  slots hold, but at most one Manager run is in flight per project.
+- **It keeps going on its own.** When a project's board has drained (no work
+  ticket READY, IN_PROGRESS or REVIEW, and none BLOCKED on you), a manager
+  ticket exists, and a work ticket reached DONE or FAILED after the Manager last
+  acted, the scheduler creates ONE manager ticket titled "Manager: review
+  progress", flagged `automatic` (on the ticket, and on `GET /board` rows). It
+  is told, in a "Since your last run" section, each finished ticket's summary,
+  artefacts and the verifier's verdict, and must propose the next tickets,
+  return an empty proposal saying the scope is met, or ask you.
+- **It cannot loop.** No second automatic turn exists until a work ticket
+  finishes after the previous Manager turn, so an empty proposal ends the loop
+  until work next finishes or you write; the daily cap of 20 Manager runs per
+  project still refuses. **Cost: the Manager now spends turns without you
+  pressing Send, at most 20 a day per project.**
+  Upgrading never wakes a finished project: migration 0016 records the highest
+  event sequence at upgrade time, and only work that finishes after it can earn an
+  automatic turn.
+
 ## Planning a project
 
 The Manager is the last piece of `technical-architecture-weekend-mvp.md`

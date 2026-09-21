@@ -393,6 +393,7 @@ interface TicketRow {
   model: string | null;
   model_reason: string | null;
   kind: string;
+  automatic: number;
   expected_artifacts_json: string | null;
   result_json: string | null;
   created_at: string;
@@ -417,6 +418,7 @@ function rowToTicket(row: TicketRow): Ticket {
     model: row.model,
     modelReason: row.model_reason,
     kind: row.kind as TicketKind,
+    automatic: row.automatic === 1,
     expectedArtifacts: row.expected_artifacts_json != null ? JSON.parse(row.expected_artifacts_json) : null,
     resultJson: row.result_json,
     createdAt: row.created_at,
@@ -439,6 +441,8 @@ export function createTicket(
     model?: string | null;
     modelReason?: string | null;
     kind?: TicketKind;
+    /** Batch 18 ruling 34: set only by the scheduler's automatic Manager turn (autoManager.ts). */
+    automatic?: boolean;
     /** Batch 15 item 4: null (the default) means no such list at all -- see types.ts's Ticket.expectedArtifacts. */
     expectedArtifacts?: ExpectedArtifact[] | null;
   }
@@ -453,8 +457,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, max_budget_usd_override, model, model_reason, kind, expected_artifacts_json, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, model, model_reason, kind, automatic, expected_artifacts_json, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -480,6 +484,7 @@ export function createTicket(
     input.model ?? null,
     input.modelReason ?? null,
     input.kind ?? 'work',
+    input.automatic ? 1 : 0,
     input.expectedArtifacts != null ? JSON.stringify(input.expectedArtifacts) : null,
     now,
     now
@@ -885,6 +890,14 @@ export function listEventsForEntity(db: Db, entityType: string, entityId: string
     .prepare('SELECT * FROM events WHERE entity_type = ? AND entity_id = ? ORDER BY sequence ASC')
     .all(entityType, entityId) as EventDbRow[];
   return rows.map(rowToEvent);
+}
+
+// Batch 18 ruling 34: the highest event sequence recorded against a ticket
+// (0 if none) -- what "when did this ticket last change" means in a world where
+// two events can share a millisecond but never a sequence.
+export function lastEventSequenceForTicket(db: Db, ticketId: string): number {
+  const row = db.prepare("SELECT MAX(sequence) AS s FROM events WHERE entity_type = 'ticket' AND entity_id = ?").get(ticketId) as { s: number | null };
+  return row.s ?? 0;
 }
 
 export function listEventsForProject(db: Db, projectId: string): EventRow[] {

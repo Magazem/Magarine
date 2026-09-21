@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { isReady, resolveReadiness } from './dependencies.ts';
+import { maybeCreateAutomaticManagerTurn } from './autoManager.ts';
 import { beginVerifyRun, startVerification } from './verifier.ts';
 import { isManagerDailyCapReached, MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
 import { classifyProgressMessage, parseProgressTool, type ActivityState } from './commands/activity.ts';
@@ -961,6 +962,14 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
   for (const t of listTicketsByStatus(deps.db, deps.projectId, 'REVIEW')) {
     const v = await verifyReviewTicket(deps, t.id);
     if (v) verifying.push(v);
+  }
+
+  // Batch 18 ruling 34: the board has drained -> one automatic Manager turn
+  // (autoManager.ts holds every condition). Created here, before the READY list
+  // is read, so it starts on this same tick; resolveReadiness moves it OPEN ->
+  // READY. The daily cap below still refuses it like any Manager ticket.
+  if (maybeCreateAutomaticManagerTurn(deps.db, deps.projectId)) {
+    resolveReadiness(deps.db, deps.projectId);
   }
 
   const project = getProject(deps.db, deps.projectId);

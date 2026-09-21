@@ -90,6 +90,8 @@ export interface Ticket {
   modelReason: string | null;
   /** Batch 9: 'work' (default) or 'manager' -- see TicketKind. */
   kind: TicketKind;
+  /** Batch 18 ruling 34: true on a manager ticket the scheduler created itself because the board drained -- not one the owner asked for with plan/discuss. The page and `GET /board` rows name it. */
+  automatic: boolean;
   /** Batch 15 item 4: set on create_ticket/update_ticket; null means the ticket carries no such list at all and keeps today's rule (no verification beyond "done requires something delivered," batch 13 ruling 1c). Non-null means DONE is verified against it -- see scheduler.ts. */
   expectedArtifacts: ExpectedArtifact[] | null;
   resultJson: string | null;

@@ -138,8 +138,14 @@ export class FakeAdapter implements AgentAdapter {
 
   private readonly scripts = new Map<string, FakeScript>();
   private readonly verifyScripts = new Map<string, FakeScript>();
+  private defaultScript: FakeScript | undefined;
   private readonly verifyRunsStarted = new Map<string, number>();
   private readonly handles = new Map<string, HandleState>();
+
+  /** Batch 18 ruling 34: the script for any worker run whose ticket has none of its own -- what a test needs for an AUTOMATIC manager ticket, whose id does not exist until the scheduler creates it. */
+  setDefaultScript(script: FakeScript | undefined): void {
+    this.defaultScript = script;
+  }
 
   setScript(ticketId: string, script: FakeScript): void {
     if (script.kind.startsWith('verify_')) this.verifyScripts.set(ticketId, script);
@@ -181,7 +187,7 @@ export class FakeAdapter implements AgentAdapter {
     if (state.verify) this.verifyRunsStarted.set(handle.ticketId, verifyOrdinal);
     const script = state.verify
       ? (this.verifyScripts.get(handle.ticketId) ?? { kind: 'verify_pass' })
-      : (this.scripts.get(handle.ticketId) ?? { kind: 'succeed' });
+      : (this.scripts.get(handle.ticketId) ?? this.defaultScript ?? { kind: 'succeed' });
     const schedule = (event: WorkerEvent, delayMs: number) => {
       const timer = setTimeout(() => {
         if (!state.stopped) this.publish(state, event);
