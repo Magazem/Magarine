@@ -186,6 +186,9 @@
     worker_needs_user_decision: 'Asked you a question',
     worker_needs_review: 'Waiting for your review',
     worker_done: 'Finished',
+    worker_done_for_verification: 'Finished, being verified',
+    review_approved: 'Review passed',
+    review_rejected: 'Review rejected',
     run_started: 'Started running',
     dependencies_resolved: 'Ready to run',
     workspace_preparation_failed: 'Could not prepare its folder',
@@ -217,6 +220,48 @@
 
   // Manager turns are tickets in the daemon but are the Manager on screen.
   function isManager(t) { return !!t && t.kind === 'manager'; }
+
+  // BATCH 18 (rulings 31-34): WHAT THE DAEMON NOW DOES BY ITSELF, IN WORDS.
+  // Every line below has its row in ELEMENT-FIELD-TABLE.md. There is NO line for
+  // a Manager turn waiting for a slot: ruling 33 made that state impossible.
+
+  // REVIEW is the state a verifier run is checking a finished ticket in.
+  function statusText(t) { return t.status === 'REVIEW' ? 'being verified' : t.status; }
+
+  function managerLine(t) {
+    if (!isManager(t) || t.status !== 'IN_PROGRESS') return null;
+    return t.automatic ? 'Manager is checking progress on its own' : 'Manager is working on what you asked';
+  }
+
+  function managerTag(t) { return 'Manager \u00B7 ' + (t.automatic ? 'automatic \u00B7 ' : ''); }
+
+  // What the events say about each ticket. There is no board field for a
+  // rejection that was retried, nor for an empty proposal, so both are read from
+  // the events the daemon really returns (GET /activity) and nothing else.
+  function eventFacts() {
+    var rejected = {}, appliedFor = {}, newestApplied = null;
+    (state.activity || []).slice().sort(function (a, b) { return a.sequence - b.sequence; }).forEach(function (e) {
+      var p = e.payload && typeof e.payload === 'object' ? e.payload : {};
+      if (e.eventType === 'review_rejected') {
+        if (typeof p.reason === 'string' && p.reason.length > 0) rejected[e.entityId] = p.reason;
+      } else if (e.eventType === 'review_approved') {
+        delete rejected[e.entityId];
+      } else if (e.eventType === 'manager_proposal_applied') {
+        appliedFor[e.entityId] = p;
+        newestApplied = e.entityId;
+      }
+    });
+    return { rejected: rejected, appliedFor: appliedFor, newestApplied: newestApplied };
+  }
+
+  // NO `scopeMet` FIELD EXISTS. "Scope met" is an automatic Manager turn that
+  // finished (DONE) and whose applied proposal had no commands.
+  function scopeMetOf(t, facts) {
+    if (!isManager(t) || !t.automatic || t.status !== 'DONE') return null;
+    var p = facts.appliedFor[t.id];
+    if (!p || !Array.isArray(p.commands) || p.commands.length !== 0) return null;
+    return typeof p.rationale === 'string' ? p.rationale : '';
+  }
 
   var EVENT_TONE = {
     worker_failed_final: 'bad', worker_failed_retryable: 'bad',
@@ -559,11 +604,12 @@
       r.appendChild(makeOrg(t.model, t.status));
       var who = el('span', 'who');
       var model = seedFor(t.model);
-      who.appendChild(el('span', 'name', isManager(t) ? 'Manager' : (model ? ORG.tierOf(model) : 'no model recorded')));
+      who.appendChild(el('span', 'name', isManager(t) ? (t.automatic ? 'Manager (automatic)' : 'Manager') : (model ? ORG.tierOf(model) : 'no model recorded')));
       who.appendChild(el('span', 'tier', model || 'tickets.model is null and the project has no default'));
       var doing = doingText(t);
-      var line = el('span', 'doing', doing || 'no progress event recorded yet');
-      if (!doing) line.setAttribute('data-idle', '1');
+      var said = managerLine(t);
+      var line = el('span', 'doing', said ? (doing ? said + ' \u2014 ' + doing : said) : (doing || 'no progress event recorded yet'));
+      if (!doing && !said) line.setAttribute('data-idle', '1');
       who.appendChild(line);
       r.appendChild(who);
       list.appendChild(r);
@@ -589,11 +635,22 @@
     return wrap;
   }
 
-  function ticketCard(t) {
+  // A reason is the daemon's own words (a verifier's evidence, a failure
+  // message): whole, never truncated, kept as written.
+  function reasonLine(label, text, role) {
+    var n = el('div', 'reason');
+    n.setAttribute('data-role', role);
+    n.appendChild(el('span', 'k', label));
+    if (text) n.appendChild(el('span', 'v', text));
+    return n;
+  }
+
+  function ticketCard(t, facts) {
     var card = el('div', 'ticket');
     card.setAttribute('data-status', t.status);
     if (isManager(t)) card.setAttribute('data-kind', 'manager');
-    card.appendChild(el('span', 'tid', (isManager(t) ? 'Manager · ' : '') + shortId(t.id)));
+    if (t.automatic) card.setAttribute('data-automatic', '1');
+    card.appendChild(el('span', 'tid', (isManager(t) ? managerTag(t) : '') + shortId(t.id)));
     card.appendChild(el('div', 'title', t.title));
 
     var meta = el('div', 'meta');
@@ -605,6 +662,17 @@
     if (!doing) line.setAttribute('data-idle', '1');
     meta.appendChild(line);
     card.appendChild(meta);
+
+    var said = managerLine(t);
+    if (said) card.appendChild(el('div', 'note', said));
+    if (t.status === 'REVIEW') card.appendChild(el('div', 'note', 'Being verified'));
+    var met = scopeMetOf(t, facts);
+    if (met !== null) card.appendChild(reasonLine('Scope met', met, 'scope-met'));
+    if (t.status === 'FAILED' && t.lastFailureReason) {
+      card.appendChild(reasonLine('Stopped', t.lastFailureReason, 'failure'));
+    } else if (t.status !== 'DONE' && t.status !== 'FAILED' && t.status !== 'CANCELLED' && facts.rejected[t.id]) {
+      card.appendChild(reasonLine('Rejected', facts.rejected[t.id], 'rejection'));
+    }
 
     if (t.attemptCount > 0) card.appendChild(el('div', 'dep', t.attemptCount + '/' + t.maxAttempts + ' attempts'));
     if (t.blockedBy && t.blockedBy.length) {
@@ -626,6 +694,9 @@
     $('boardCount').textContent = tickets.length + (tickets.length === 1 ? ' ticket' : ' tickets') +
       ' \u00B7 ' + running + ' running';
 
+    var facts = eventFacts();
+    renderScopeMet(tickets, facts);
+
     var emptyLine = $('boardEmpty');
     emptyLine.hidden = tickets.length > 0;
     emptyLine.textContent = tickets.length ? '' :
@@ -640,12 +711,30 @@
       head.appendChild(el('span', 'count', String(mine.length)));
       lane.appendChild(head);
       var body = el('div', 'lane-body');
-      mine.forEach(function (t) { body.appendChild(ticketCard(t)); });
+      mine.forEach(function (t) { body.appendChild(ticketCard(t, facts)); });
       lane.appendChild(body);
       lanes.appendChild(lane);
     });
 
     renderList(tickets);
+  }
+
+  // The board's one line for a finished job. Derived (see the table row): the
+  // newest Manager proposal in the project was an automatic turn's empty one,
+  // and nothing is waiting or running since.
+  function renderScopeMet(tickets, facts) {
+    var line = $('boardStatus');
+    var text = '';
+    var last = facts.newestApplied ? tickets.filter(function (t) { return t.id === facts.newestApplied; })[0] : null;
+    var open = tickets.some(function (t) {
+      return t.kind !== 'manager' && ['OPEN', 'READY', 'IN_PROGRESS', 'REVIEW', 'BLOCKED'].indexOf(t.status) >= 0;
+    });
+    if (last && !open) {
+      var met = scopeMetOf(last, facts);
+      if (met !== null) text = 'Scope met' + (met ? ' \u2014 ' + met : '');
+    }
+    if (line.textContent !== text) line.textContent = text;
+    line.hidden = text === '';
   }
 
   function renderList(tickets) {
@@ -658,9 +747,9 @@
       tr.setAttribute('data-status', t.status);
       var first = el('td');
       first.appendChild(el('div', 'title', t.title));
-      first.appendChild(el('span', 'tid mono', (isManager(t) ? 'Manager · ' : '') + t.id));
+      first.appendChild(el('span', 'tid mono', (isManager(t) ? managerTag(t) : '') + t.id));
       tr.appendChild(first);
-      tr.appendChild(el('td', 'num', t.status));
+      tr.appendChild(el('td', 'num', statusText(t)));
       tr.appendChild(el('td', 'num', t.attemptCount + '/' + t.maxAttempts));
       var cost = el('td', 'num', costText(t));
       if (t.costIsEstimate) cost.setAttribute('data-estimate', '1');
@@ -789,7 +878,7 @@
     head.appendChild(makeOrg(t && t.model, status, 'lg'));
     var who = el('span', 'who');
     var model = seedFor(t && t.model);
-    who.appendChild(el('span', 'name', (isManager(t) ? 'Manager' : (model ? ORG.tierOf(model) : 'project')) + ' \u00B7 ' + labelFor(item.eventType)));
+    who.appendChild(el('span', 'name', (isManager(t) ? (t.automatic ? 'Manager (automatic)' : 'Manager') : (model ? ORG.tierOf(model) : 'project')) + ' \u00B7 ' + labelFor(item.eventType)));
     who.appendChild(el('span', 'tid', item.ticketId || item.projectId || ''));
     head.appendChild(who);
     ask._when = el('span', 'when', ago(item.createdAt) + ' ago');

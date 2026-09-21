@@ -111,7 +111,15 @@ terminal lane with `DONE`, struck through, rather than being dropped.
 | CANCELLED strike-through | field | `BoardTicket.status` |
 | list view columns | field | the same fields; `BoardTicket.id` in full |
 | list view order | copy | `commands/board.ts`'s own `STATUS_ORDER`, so the page and CLI agree |
-| Manager turn's tag | field | `BoardTicket.kind` is `manager`: the id line reads "Manager · <id>" |
+| Manager turn's tag | field | `BoardTicket.kind` is `manager`: the id line reads "Manager · <id>"; when `BoardTicket.automatic` is true it reads "Manager · automatic · <id>" and the card carries `data-automatic`. Batch 18 ruling 34 |
+| **"Being verified"** (card line, and the list's status cell) | field | `BoardTicket.status === 'REVIEW'` on a work ticket. Ruling 31: a worker's done enters REVIEW while a verifier run checks it, so REVIEW is exactly that state. The owner's own `approve`/`reject` remain available from Needs you; the line claims only what the status says |
+| **"Manager is checking progress on its own"** | field | `BoardTicket.kind === 'manager'`, `.status === 'IN_PROGRESS'` and `.automatic === true` (the scheduler made this turn when the board drained). Also on the fleet row |
+| **"Manager is working on what you asked"** | field | `BoardTicket.kind === 'manager'`, `.status === 'IN_PROGRESS'` and `.automatic === false`. Deliberately says nothing more specific: the daemon does not record whether the turn is a plan or a reply |
+| a Manager turn WAITING for a slot | — | DELIBERATELY ABSENT. Ruling 33: a Manager turn is not a worker slot, so that state cannot occur, and a line describing it would be untrue |
+| **"Rejected: …"** (card, ticket not DONE and not FAILED) | derived | the newest `EventRow` of type `review_rejected` for this ticket (`entityId === BoardTicket.id`) in `GET /activity`, its `payload.reason` verbatim, unless a `review_approved` for the same ticket came after it. `reason` is the verifier's failed criteria and their evidence (ruling 31), or the owner's own words when the owner rejected. Never truncated; omitted when `payload.reason` is not a string |
+| **"Stopped: …"** (card, status FAILED) | field | `BoardTicket.lastFailureReason`, verbatim. After a verifier rejection with no attempts left it carries the verdict (`rejected: <reason>`) |
+| **"Scope met"** (Manager card, and one line above the board) | derived | **There is no `scopeMet` field.** On a card: `BoardTicket.automatic` is true, `.status === 'DONE'`, and the `manager_proposal_applied` `EventRow` for that ticket (`entityId === BoardTicket.id`, from `GET /activity`) has `payload.commands` an empty array. The rationale is shown after it, verbatim from `payload.rationale`. The board line appears only while the newest `manager_proposal_applied` event in the project is such a turn and no work ticket is OPEN, READY, IN_PROGRESS, REVIEW or BLOCKED — so it disappears the moment the Manager or the owner starts more work |
+| board status line (scope met) | derived | see "Scope met" above. Hidden otherwise |
 | empty board | copy | "No tickets yet. Open the Manager tab ..." shown only while `BoardResult.tickets` is empty |
 | cost note | copy | the equivalent-API-cost sentence, once, under the board |
 

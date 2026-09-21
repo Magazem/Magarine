@@ -530,6 +530,18 @@
   .ticket[data-status="CANCELLED"] .title { text-decoration: line-through; color: var(--fg-3); }
   .ticket .dep { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-3); overflow-wrap: anywhere; margin-top: var(--s1); }
 
+  /* Batch 18: what the daemon does by itself, in words. A note is one plain
+     sentence; a reason is the daemon's own text (a verifier's evidence) shown
+     whole, line breaks kept, never clamped. */
+  .ticket .note, .note { font-size: var(--t-xs); color: var(--fg-2); margin-top: var(--s1); }
+  .ticket .reason { display: flex; gap: var(--s2); margin-top: var(--s1); font-size: var(--t-xs); }
+  .ticket .reason .k { font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--fg-3); flex: none; }
+  .ticket .reason .v { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; color: var(--fg); }
+  .ticket .reason[data-role="rejection"] .k, .ticket .reason[data-role="failure"] .k { color: var(--st-failed); }
+  .ticket .reason[data-role="scope-met"] .k { color: var(--st-done); }
+  /* A turn the daemon took by itself reads as such before the owner reads a word of it. */
+  .ticket[data-automatic] .tid { color: var(--fg-2); font-style: italic; }
+
   /* Delivered artefacts. "file" shows its path; a text-bearing kind shows its
      kind and a LENGTH, never its body -- the CLI printed 1643 characters into
      a table cell and that is the defect this rule exists to prevent. */
