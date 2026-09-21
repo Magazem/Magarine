@@ -241,6 +241,127 @@ test('a launch code signs a real browser in, leaves no code in the address, and 
   });
 });
 
+
+// ------------------------------------------- never rebuild an input under a user's hands
+//
+// The owner typed an answer into a Needs You box and the page threw it away a
+// few seconds later: every poll rebuilt the list and nothing carried the
+// draft, the focus or the caret across. Real daemon, real poll, real live
+// events, real typing (Input.insertText goes through the browser's own editing
+// path, as a keyboard does).
+
+test('a Needs You answer box keeps its text, focus and caret across polls, live events and an unrelated ticket moving; and across a change to its own row', async () => {
+  const workspace = mkdtempSync(join(root.root, 'work-'));
+  const stateDir = mkdtempSync(join(root.root, 'typing-'));
+  const project = JSON.parse((await runCli(
+    ['project', 'create', '--name', 'Typing', '--max-parallel', '2', '--dir', workspace, '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  const add = async (title: string) => JSON.parse((await runCli(
+    ['ticket', 'add', '--project', project.id, '--title', title, '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  const asking = await add('the ticket that asks');
+  const chatty = await add('a chatty neighbour');
+  const script: string[] = ['--fake-script', `${asking.id}=needs_user_decision`];
+  for (let i = 0; i < 40; i++) script.push('--fake-script', `${chatty.id}=progress:step ${i + 1}`);
+
+  await withDaemonAt(stateDir, ['--max-parallel', '2', '--fake-progress-gap', '500', ...script], async (d) => {
+    const browser = await launchBrowser(chrome.executable, mkdtempSync(join(root.root, 'chrome-')));
+    const until = async (expr: string, what: string) => {
+      for (let i = 0; i < 150; i++) {
+        if (await browser.cdp.eval<boolean>(expr)) return;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`the browser never reached: ${what}`);
+    };
+    const probe = () => browser.cdp.eval<{ value: string; focused: boolean; start: number | null; end: number | null; stamp: number | null; boxes: number }>(`(() => {
+      const boxes = document.querySelectorAll('#needsList .ask input.field');
+      const b = boxes[0];
+      return { value: b.value, focused: document.activeElement === b, start: b.selectionStart, end: b.selectionEnd,
+               stamp: b.__stamp || null, boxes: boxes.length };
+    })()`);
+    try {
+      await browser.openPage(d.baseUrl, d.token);
+      // openPage's hash form is a same-document navigation and would not reload the page, so the view is chosen after it.
+      await browser.cdp.eval(`location.hash = '#needs-you'`);
+      await until(`document.querySelectorAll('#needsList .ask input.field').length === 1`, 'the answer box');
+
+      // Stamp the node so "the same node" can be asked, then type like a person.
+      await browser.cdp.eval(`(() => { const b = document.querySelector('#needsList .ask input.field'); b.__stamp = 7; b.focus(); return true; })()`);
+      await browser.cdp.send('Input.insertText', { text: 'half an answer' });
+      await browser.cdp.eval(`document.querySelector('#needsList .ask input.field').setSelectionRange(4, 4)`);
+
+      // PART 1: several polls (4s each) and a stream of live events from the
+      // chatty neighbour. Nothing about this row changes.
+      await new Promise((r) => setTimeout(r, 14_000));
+      const settled = await probe();
+      assert.equal(settled.boxes, 1);
+      assert.equal(settled.value, 'half an answer', 'a refresh threw the draft away');
+      assert.equal(settled.focused, true, 'a refresh pulled focus out of the box');
+      assert.deepEqual([settled.start, settled.end], [4, 4], 'a refresh moved the caret');
+      assert.equal(settled.stamp, 7, 'the box was rebuilt although nothing about its row changed');
+
+      // PART 2: the row's own data changes, so the row IS rebuilt, and the
+      // owner's state has to be carried across. A blocked ticket's real row has
+      // nothing that moves by itself, so the ONE thing faked here is the inbox
+      // reply's text: the page's own fetch is wrapped, passes the real daemon's
+      // answer through, and appends a suffix to each item's message when told.
+      await browser.cdp.eval(`(() => {
+        const real = window.fetch.bind(window);
+        window.fetch = async (url, init) => {
+          const res = await real(url, init);
+          if (window.__suffix && String(url).includes('/inbox')) {
+            const items = await res.clone().json();
+            for (const i of items) i.message += window.__suffix;
+            return new Response(JSON.stringify(items), { status: res.status, headers: { 'Content-Type': 'application/json' } });
+          }
+          return res;
+        };
+        window.__suffix = ' [edited]';
+        return true;
+      })()`);
+      await until(`document.querySelector('#needsList .ask input.field') && document.querySelector('#needsList .ask input.field').__stamp !== 7`, 'the row to be rebuilt after its own data changed');
+      const carried = await probe();
+      assert.equal(carried.boxes, 1);
+      assert.equal(carried.value, 'half an answer', 'the draft was lost when the row was rebuilt');
+      assert.equal(carried.focused, true, 'focus was lost when the row was rebuilt');
+      assert.deepEqual([carried.start, carried.end], [4, 4], 'the caret was lost when the row was rebuilt');
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
+test('the Manager composer keeps its text, focus and caret across polls and live events', async () => {
+  const workspace = mkdtempSync(join(root.root, 'work-'));
+  const stateDir = mkdtempSync(join(root.root, 'composer-'));
+  const project = JSON.parse((await runCli(
+    ['project', 'create', '--name', 'Composer', '--max-parallel', '1', '--dir', workspace, '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  const chatty = JSON.parse((await runCli(
+    ['ticket', 'add', '--project', project.id, '--title', 'chatty', '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+  const script: string[] = [];
+  for (let i = 0; i < 40; i++) script.push('--fake-script', `${chatty.id}=progress:step ${i + 1}`);
+
+  await withDaemonAt(stateDir, ['--fake-progress-gap', '500', ...script], async (d) => {
+    const browser = await launchBrowser(chrome.executable, mkdtempSync(join(root.root, 'chrome-')));
+    try {
+      await browser.openPage(d.baseUrl, d.token);
+      await browser.cdp.eval(`location.hash = '#scope'`);
+      await browser.cdp.eval(`(() => { const s = document.getElementById('say'); s.__stamp = 9; s.focus(); return true; })()`);
+      await browser.cdp.send('Input.insertText', { text: 'a question for the Manager' });
+      await browser.cdp.eval(`document.getElementById('say').setSelectionRange(6, 6)`);
+      await new Promise((r) => setTimeout(r, 14_000));
+      const after = await browser.cdp.eval<{ value: string; focused: boolean; start: number | null; end: number | null; stamp: number | null }>(`(() => {
+        const s = document.getElementById('say');
+        return { value: s.value, focused: document.activeElement === s, start: s.selectionStart, end: s.selectionEnd, stamp: s.__stamp || null };
+      })()`);
+      assert.equal(after.value, 'a question for the Manager', 'a refresh threw the composer draft away');
+      assert.equal(after.focused, true, 'a refresh pulled focus out of the composer');
+      assert.deepEqual([after.start, after.end], [6, 6], 'a refresh moved the composer caret');
+      assert.equal(after.stamp, 9, 'the composer was rebuilt');
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 }
 
 /** withDaemon, but on a state directory the caller has already seeded. */

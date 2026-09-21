@@ -110,6 +110,15 @@ class FakeElement {
     child.parentNode = null;
     return child;
   }
+  insertBefore(child: Node, ref: Node | null): Node {
+    if (ref === null) return this.appendChild(child);
+    if (child.parentNode) child.parentNode.removeChild(child);
+    const i = this.childNodes.indexOf(ref);
+    if (i < 0) throw new Error('domHarness: insertBefore with a reference that is not a child');
+    child.parentNode = this;
+    this.childNodes.splice(i, 0, child);
+    return child;
+  }
   setAttribute(name: string, value: string): void { this.attributes.set(name, String(value)); }
   getAttribute(name: string): string | null { return this.attributes.has(name) ? this.attributes.get(name)! : null; }
   removeAttribute(name: string): void { this.attributes.delete(name); }

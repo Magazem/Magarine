@@ -621,6 +621,76 @@
     });
   }
 
+  // -------------------------------------------------- keep the owner's hands ----
+  // THE RULE: a re-render never destroys an input under a user's hands. Every
+  // list that can hold a text box is drawn through here, and there are two
+  // halves to it.
+  //  1. A row whose signature is unchanged is not rebuilt: its DOM node is the
+  //     same node as last pass, so its draft, focus, caret and selection are
+  //     untouched, and so is its one-shot organism animation (a rebuilt row
+  //     replays it, which is the "refresh flash" the owner saw).
+  //  2. A row that DID change is rebuilt, and the draft text, which control had
+  //     focus and the caret are carried across to the new row before the old
+  //     one is dropped. Only a row that has gone away loses its draft.
+  // Each entry is { key, sig, build }: `key` says which row this is across
+  // passes, `sig` is everything the row draws, `build` makes a fresh node.
+  // In document order, so an old row's controls line up with the new row's.
+  function formControls(node, out) {
+    out = out || [];
+    Array.prototype.forEach.call(node.children, function (c) {
+      if (c.tagName === 'INPUT' || c.tagName === 'TEXTAREA' || c.tagName === 'BUTTON') out.push(c);
+      formControls(c, out);
+    });
+    return out;
+  }
+
+  function carryState(oldNode, newNode) {
+    var a = formControls(oldNode), b = formControls(newNode);
+    var focusAt = -1, sel = null;
+    for (var i = 0; i < a.length && i < b.length; i++) {
+      if (a[i].tagName !== b[i].tagName) break;
+      if (a[i].tagName !== 'BUTTON') b[i].value = a[i].value;
+      if (a[i] === document.activeElement) {
+        focusAt = i;
+        try { sel = [a[i].selectionStart, a[i].selectionEnd, a[i].selectionDirection]; } catch (e) { sel = null; }
+      }
+    }
+    return function restore() {
+      if (focusAt < 0) return;
+      b[focusAt].focus();
+      if (sel && sel[0] !== null && sel[0] !== undefined) {
+        try { b[focusAt].setSelectionRange(sel[0], sel[1], sel[2] || 'none'); } catch (e) { /* type has no caret */ }
+      }
+    };
+  }
+
+  function reconcileList(list, entries) {
+    var old = list._rows || {};
+    var next = {}, kept = [], restores = [];
+    entries.forEach(function (en) {
+      var prev = old[en.key];
+      var node;
+      if (prev && prev.sig === en.sig) node = prev.node;
+      else {
+        node = en.build();
+        if (prev) restores.push(carryState(prev.node, node));
+      }
+      next[en.key] = { sig: en.sig, node: node };
+      kept.push(node);
+    });
+    // Drop what is no longer wanted first, so nothing that stays is ever moved.
+    Array.prototype.slice.call(list.childNodes).forEach(function (n) {
+      if (kept.indexOf(n) < 0) list.removeChild(n);
+    });
+    var cursor = list.firstChild;
+    kept.forEach(function (n) {
+      if (n === cursor) cursor = cursor.nextSibling;
+      else list.insertBefore(n, cursor);
+    });
+    list._rows = next;
+    restores.forEach(function (r) { r(); });
+  }
+
   // -------------------------------------------------------- needs you ----
   function actionRow(item) {
     var specs = ACTIONS[item.eventType];
@@ -673,7 +743,8 @@
     who.appendChild(el('span', 'name', (model ? ORG.tierOf(model) : 'project') + ' \u00B7 ' + item.eventType));
     who.appendChild(el('span', 'tid', item.ticketId || item.projectId || ''));
     head.appendChild(who);
-    head.appendChild(el('span', 'when', ago(item.createdAt) + ' ago'));
+    ask._when = el('span', 'when', ago(item.createdAt) + ' ago');
+    head.appendChild(ask._when);
     ask.appendChild(head);
 
     var doing = t && doingText(t);
@@ -717,9 +788,23 @@
     setTitle(items.length);
 
     var list = $('needsList');
-    clear(list);
-    if (!items.length) { list.appendChild(el('div', 'empty', 'nothing is waiting on you')); return; }
-    items.forEach(function (item) { list.appendChild(askNode(item)); });
+    if (!items.length) {
+      reconcileList(list, [{ key: 'empty', sig: '', build: function () { return el('div', 'empty', 'nothing is waiting on you'); } }]);
+      return;
+    }
+    reconcileList(list, items.map(function (item) {
+      var t = item.ticketId ? ticketById(item.ticketId) : null;
+      var act = t ? activityOf(t) : null;
+      return {
+        key: ['row', item.eventType, item.ticketId || '', item.projectId || '', item.createdAt].join(''),
+        sig: JSON.stringify([item.message, t ? [t.status, t.model, t.artifacts, doingText(t), act && act.at] : null]),
+        build: function () { return askNode(item); }
+      };
+    }));
+    // "4m ago" moves on its own; it is text, not an input, so it is updated in place.
+    Array.prototype.forEach.call(list.children, function (node, i) {
+      if (node._when && items[i]) node._when.textContent = ago(items[i].createdAt) + ' ago';
+    });
   }
 
   // --------------------------------------------------------- activity ----
@@ -748,7 +833,8 @@
     if (state.scopeError) text = '(this project’s scope file exists but could not be read: ' + state.scopeError + ')';
     else if (!text && state.scopeStatus === 'absent') text = '(this project has no scope file yet)';
     else if (!text) text = '(the scope file is empty)';
-    $('scopeText').textContent = text;
+    // Untouched when unchanged, so a selection in it survives the poll.
+    if ($('scopeText').textContent !== text) $('scopeText').textContent = text;
   }
 
   function renderConversation() {
@@ -757,56 +843,78 @@
       ' \u00B7 newest last';
 
     var tabs = $('convTabs');
-    clear(tabs);
     var ids = [];
     entries.forEach(function (e) { if (e.ticketId && ids.indexOf(e.ticketId) < 0) ids.push(e.ticketId); });
-    ['all'].concat(ids).forEach(function (id) {
-      var b = el('button', null, id === 'all' ? 'All' : shortId(id));
-      b.type = 'button';
-      b.setAttribute('aria-pressed', String(state.convFilter === id));
-      b.addEventListener('click', function () { state.convFilter = id; renderConversation(); });
-      tabs.appendChild(b);
-    });
+    var tabsKey = state.convFilter + '' + ids.join('');
+    if (tabs._key !== tabsKey) {
+      tabs._key = tabsKey;
+      clear(tabs);
+      ['all'].concat(ids).forEach(function (id) {
+        var b = el('button', null, id === 'all' ? 'All' : shortId(id));
+        b.type = 'button';
+        b.setAttribute('aria-pressed', String(state.convFilter === id));
+        b.addEventListener('click', function () { state.convFilter = id; renderConversation(); });
+        tabs.appendChild(b);
+      });
+    }
 
     var list = $('convList');
-    clear(list);
     var shown = entries.filter(function (e) {
       return state.convFilter === 'all' || e.ticketId === state.convFilter;
     });
-    if (!shown.length) { list.appendChild(el('div', 'empty', 'no entries for this filter')); return; }
-    shown.forEach(function (e) {
-      var art = el('article', 'entry');
-      art.setAttribute('data-kind', e.kind);
+    if (!shown.length) {
+      reconcileList(list, [{ key: 'empty', sig: '', build: function () { return el('div', 'empty', 'no entries for this filter'); } }]);
+      return;
+    }
+    var seen = {};
+    reconcileList(list, shown.map(function (e) {
+      var base = ['row', e.kind, e.ticketId || '', e.createdAt].join('');
+      seen[base] = (seen[base] || 0) + 1;
       var t = e.ticketId ? ticketById(e.ticketId) : null;
-      var who = el('div', 'who');
-      if (e.kind !== 'owner_message' && e.kind !== 'scope_updated') {
-        who.appendChild(makeOrg(t && t.model, t && t.status, 'sm'));
-      }
-      who.appendChild(el('span', 'name', e.kind === 'owner_message' ? 'You' : e.kind));
-      who.appendChild(el('span', 'at', e.createdAt));
-      art.appendChild(who);
-      art.appendChild(el('div', 'text', e.text));
+      return {
+        key: base + '' + seen[base],
+        sig: JSON.stringify([e, t ? [t.status, t.model] : null]),
+        build: function () { return conversationEntry(e); }
+      };
+    }));
+  }
 
-      // Only a still-unanswered question carries a live answer box, matching
-      // the daemon's own rule that only a BLOCKED ticket has anything to
-      // answer. `answered` is the entry's own field; absence is not "false".
-      if (e.kind === 'question' && e.ticketId && e.answered !== true) {
-        var acts = actionRow({ eventType: 'worker_needs_user_decision', ticketId: e.ticketId });
-        if (acts) art.appendChild(acts);
-      }
-      list.appendChild(art);
-    });
+  function conversationEntry(e) {
+    var art = el('article', 'entry');
+    art.setAttribute('data-kind', e.kind);
+    var t = e.ticketId ? ticketById(e.ticketId) : null;
+    var who = el('div', 'who');
+    if (e.kind !== 'owner_message' && e.kind !== 'scope_updated') {
+      who.appendChild(makeOrg(t && t.model, t && t.status, 'sm'));
+    }
+    who.appendChild(el('span', 'name', e.kind === 'owner_message' ? 'You' : e.kind));
+    who.appendChild(el('span', 'at', e.createdAt));
+    art.appendChild(who);
+    art.appendChild(el('div', 'text', e.text));
+
+    // Only a still-unanswered question carries a live answer box, matching
+    // the daemon's own rule that only a BLOCKED ticket has anything to
+    // answer. `answered` is the entry's own field; absence is not "false".
+    if (e.kind === 'question' && e.ticketId && e.answered !== true) {
+      var acts = actionRow({ eventType: 'worker_needs_user_decision', ticketId: e.ticketId });
+      if (acts) art.appendChild(acts);
+    }
+    return art;
   }
 
   // ------------------------------------------------------------ pause ----
   function renderPause() {
     var banner = $('pauseBanner');
     var b = state.board;
-    if (!b || !b.pauseMessage) { banner.hidden = true; return; }
+    if (!b || !b.pauseMessage) { banner.hidden = true; banner._sig = null; return; }
     banner.hidden = false;
     $('pauseHead').textContent = PAUSE_HEADS[b.pauseReason] || 'Paused';
     $('pauseBody').textContent = b.pauseMessage;
 
+    // The spend box lives in here: rebuilt only when what it offers changes.
+    var sig = b.pauseReason + '' + state.projectId;
+    if (banner._sig === sig) return;
+    banner._sig = sig;
     var acts = $('pauseActs');
     clear(acts);
     // pauseReason is structured precisely so the page can offer the fix that
