@@ -1,6 +1,6 @@
 import type { Db } from '../db/index.ts';
 import { isKnownModel } from '../pricing.ts';
-import { countTicketsByStatus, getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
+import { countWorkTicketsInProgress, getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
 import type { PauseReason, Ticket, TicketKind, TicketStatus } from '../types.ts';
 import type { ActivityState } from './activity.ts';
 import { describeProjectPause, reasonFor } from './inbox.ts';
@@ -198,7 +198,7 @@ export function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; i
 // One place for the machine-wide slots picture, shared by `GET /board` and
 // `GET /health` (which `status` reads) so the two can never disagree.
 export function buildSlots(db: Db, machineCap: number | null): { used: number; cap: number | null } {
-  return { used: countTicketsByStatus(db, 'IN_PROGRESS'), cap: machineCap };
+  return { used: countWorkTicketsInProgress(db), cap: machineCap };
 }
 
 export function buildBoard(db: Db, projectId: string, machineCap: number | null = null): BoardResult {

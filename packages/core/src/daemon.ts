@@ -5,7 +5,7 @@ import type { Db } from './db/index.ts';
 import { assertReadinessMode, type ReadinessMode } from './readiness.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { cancelRun, tick, type StartedRun } from './scheduler.ts';
-import { countTicketsByStatus, getProject, listProjects, listTicketsByStatus } from './store.ts';
+import { countWorkTicketsInProgress, getProject, listProjects } from './store.ts';
 import type { AgentAdapter } from './types.ts';
 
 // `<state>/daemon.json` lifecycle: the file that lets a second process find
@@ -196,9 +196,10 @@ function computeProjectCap(db: Db, projectId: string, machineCap: number): numbe
   // project side is unbounded and only the machine-wide ceiling below limits
   // it (NOT 1, and not zero).
   const projectCap = project?.maxParallelWorkers ?? Number.POSITIVE_INFINITY;
-  const machineInProgress = countTicketsByStatus(db, 'IN_PROGRESS');
+  // Batch 18 ruling 33: only WORK tickets spend slots -- a Manager turn is not one.
+  const machineInProgress = countWorkTicketsInProgress(db);
   const remaining = Math.max(0, machineCap - machineInProgress);
-  const projectInProgress = listTicketsByStatus(db, projectId, 'IN_PROGRESS').length;
+  const projectInProgress = countWorkTicketsInProgress(db, projectId);
   return Math.min(projectCap, projectInProgress + remaining);
 }
 

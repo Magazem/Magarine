@@ -596,6 +596,18 @@ export function listTicketsByStatus(db: Db, projectId: string, status: TicketSta
 // machine-wide cap needs to know how many workers are in flight across EVERY
 // project, not one, before deciding how much of a project's own
 // max_parallel_workers cap it can actually use this tick.
+// Batch 18 ruling 33: worker slots are spent by WORK tickets only -- a Manager
+// turn is not a worker slot -- so every slot count (the daemon's machine-wide
+// ceiling, the board's `slots.used`) reads this, not countTicketsByStatus.
+export function countWorkTicketsInProgress(db: Db, projectId?: string): number {
+  const row = (
+    projectId === undefined
+      ? db.prepare("SELECT COUNT(*) AS n FROM tickets WHERE status = 'IN_PROGRESS' AND kind != 'manager'").get()
+      : db.prepare("SELECT COUNT(*) AS n FROM tickets WHERE status = 'IN_PROGRESS' AND kind != 'manager' AND project_id = ?").get(projectId)
+  ) as { n: number };
+  return row.n;
+}
+
 export function countTicketsByStatus(db: Db, status: TicketStatus): number {
   const row = db.prepare('SELECT COUNT(*) AS n FROM tickets WHERE status = ?').get(status) as { n: number };
   return row.n;

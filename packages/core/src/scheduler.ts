@@ -963,19 +963,28 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
     if (v) verifying.push(v);
   }
 
-  const inProgressCount = listTicketsByStatus(deps.db, deps.projectId, 'IN_PROGRESS').length;
-  const available = Math.max(0, deps.maxParallelWorkers - inProgressCount);
-  if (available === 0) {
-    return { started: verifying };
-  }
-
   const project = getProject(deps.db, deps.projectId);
   if (!project) {
     return { started: verifying };
   }
 
+  // Batch 18 ruling 33: a Manager turn is not a worker slot. `available`
+  // counts only WORK tickets in IN_PROGRESS; a READY manager ticket starts on
+  // this tick whatever the slots hold, ahead of any work ticket, but at most
+  // one Manager run is in flight per project (two proposals must not race
+  // against one board). This was the owner's "it just stopped": one READY list
+  // and one cap for everything meant their message to the Manager queued
+  // behind a running worker, and nothing said so.
+  const inProgress = listTicketsByStatus(deps.db, deps.projectId, 'IN_PROGRESS');
+  const workInProgressCount = inProgress.filter((t) => t.kind !== 'manager').length;
+  const managerInFlight = inProgress.some((t) => t.kind === 'manager');
+  const available = Math.max(0, deps.maxParallelWorkers - workInProgressCount);
+  const allReady = listTicketsByStatus(deps.db, deps.projectId, 'READY');
+  const readyManager = managerInFlight ? [] : allReady.filter((t) => t.kind === 'manager').slice(0, 1);
+  const readyWork = allReady.filter((t) => t.kind !== 'manager').slice(0, available);
+  const readyTickets = [...readyManager, ...readyWork];
+
   const artifactsDir = deps.artifactsDir ?? join(process.cwd(), '.magarine', 'artifacts');
-  const readyTickets = listTicketsByStatus(deps.db, deps.projectId, 'READY').slice(0, available);
   const started: StartedRun[] = [...verifying];
   // Batch 11 item 3: one fixed instant for the whole tick, so every
   // manager-kind ticket considered in this pass is measured against the
