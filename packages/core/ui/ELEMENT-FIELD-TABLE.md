@@ -236,8 +236,8 @@ they disagree.
 
 | family | file | subset | ranges |
 |---|---|---|---|
-| JetBrains Mono | `ui/JetBrainsMono.woff2` | latin | 27 ranges, `U+0020-007E` through `U+FEFF` |
-| Magarine Sans (IBM Plex Sans) | `ui/IBMPlexSans.woff2` | latin | the same 27 |
+| JetBrains Mono | `ui/JetBrainsMono.woff2` | latin + symbols (ruling 35) | 43 ranges, `U+0020-007E` through `U+FEFF`; arrows U+2190-2199 and U+2713 included, re-subset command in `licenses/FONT-SUBSETTING.md` |
+| Magarine Sans (IBM Plex Sans) | `ui/IBMPlexSans.woff2` | latin + symbols | the same 43 |
 
 The ranges are the **measured intersection of the two files' own cmap tables**,
 read out of the woff2 by the test — not a published subset constant.

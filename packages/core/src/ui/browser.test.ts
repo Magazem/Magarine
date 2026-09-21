@@ -362,6 +362,30 @@ test('the Manager composer keeps its text, focus and caret across polls and live
   });
 });
 
+
+test('ruling 35: Chrome accepts the re-subset fonts and draws an arrow and a check mark from them', async () => {
+  // The cmap parser proves what the files say; only a browser proves its font
+  // sanitiser accepts them and that the unicode-range now sends these
+  // characters to the bundled families instead of a system font.
+  await withDaemon(root, async (d) => {
+    await d.createProject('Glyphs');
+    const browser = await launchBrowser(chrome.executable, mkdtempSync(join(root.root, 'chrome-')));
+    try {
+      await browser.openPage(d.baseUrl, d.token);
+      const r = await browser.cdp.eval<{ sans: number; mono: number; states: string[] }>(`(async () => {
+        const sans = await document.fonts.load('400 1rem "Magarine Sans"', '→ ✓');
+        const mono = await document.fonts.load('400 1rem "JetBrains Mono"', '→ ✓');
+        return { sans: sans.length, mono: mono.length, states: [...document.fonts].map((f) => f.family + ':' + f.status) };
+      })()`);
+      assert.equal(r.sans, 1, 'Chrome did not select the bundled sans for an arrow and a check mark');
+      assert.equal(r.mono, 1, 'Chrome did not select the bundled mono for an arrow and a check mark');
+      assert.ok(r.states.every((s) => s.endsWith(':loaded')), `a bundled font failed to load: ${r.states.join(', ')}`);
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 }
 
 /** withDaemon, but on a state directory the caller has already seeded. */

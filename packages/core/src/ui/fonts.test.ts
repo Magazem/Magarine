@@ -227,6 +227,22 @@ test('the two characters the design depends on are really in both fonts', () => 
   assert.ok(C.covers(0x2014));
 });
 
+test('ruling 35: the arrows, ticks and dashes models write are in both fonts, covered, and raise no notice', () => {
+  // The owner saw "outside the bundled subsets: U+2192 U+2713" -- an arrow and
+  // a check mark, in ordinary model prose. Each is asked of the real files.
+  const written: [number, string][] = [
+    [0x2192, 'rightwards arrow'], [0x2190, 'leftwards arrow'], [0x2191, 'upwards arrow'], [0x2193, 'downwards arrow'],
+    [0x2713, 'check mark'], [0x2013, 'en dash'], [0x2014, 'em dash'], [0x2022, 'bullet'], [0x2026, 'ellipsis'],
+    [0x2212, 'minus sign'], [0x2260, 'not equal to'], [0x2264, 'less-than or equal to'],
+  ];
+  for (const file of FONTS) {
+    const have = codePointsOf(join(UI_DIR, file));
+    for (const [cp, name] of written) assert.ok(have.has(cp), `${file} lacks U+${cp.toString(16).toUpperCase()}, ${name}`);
+  }
+  for (const [cp, name] of written) assert.ok(C.covers(cp), `the coverage function does not cover ${name}`);
+  assert.equal(C.textOutsideFontCoverage(['ticket → done ✓ — see ← back']).outside, false);
+});
+
 // -------------------------------------------- the pure function, at the edges
 
 test('the coverage function is exact at every range boundary', () => {
