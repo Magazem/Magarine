@@ -425,6 +425,6 @@ export function buildManagerEnvelope(db: Db, ticket: Ticket, project: Project): 
     allowedTools: [],
     expectedOutputFormat: MANAGER_EXPECTED_OUTPUT_FORMAT,
     maxBudgetUsd: resolveMaxBudgetUsd(project, ticket),
-    model: resolveManagerModel(project),
+    model: resolveManagerModel(db, project),
   };
 }

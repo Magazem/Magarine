@@ -16,16 +16,22 @@ import {
   createProject,
   createTicket,
   getProject,
+  getSetting,
+  getSettings,
   getTicket,
   listProjects,
   listTickets,
+  resolveMachineCap,
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
   setProjectVerifierModel,
   setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
+  setSetting,
+  SETTINGS_KEYS,
   setTicketBudgetOverride,
+  unsetSetting,
 } from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
 import { discussProject, ManagerError } from './manager.ts';
@@ -232,7 +238,7 @@ async function liveDaemonFor(flags: Flags): Promise<DaemonFileInfo | undefined> 
 async function routeMutation(
   flags: Flags,
   daemon: DaemonFileInfo,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT',
   path: string,
   body: unknown,
   humanLine: (body: unknown) => string
@@ -292,6 +298,13 @@ const FLAG_SPECS: Record<string, string[]> = {
   // Batch 10 (Role Q), item 2: no flags of its own -- lists every project in
   // this state directory's database. See commands/projectList.ts.
   'project list': [],
+  // Ruling 35 (batch-19-spec.md section 3): `key`/`value` are positional
+  // (`config set <key> <value>`, `config get [key]`, `config unset <key>`),
+  // matching `project create --name`/positionals[1]'s own fallback shape --
+  // no flag of their own to validate here.
+  'config get': [],
+  'config set': [],
+  'config unset': [],
   'ticket add': [
     'project',
     'title',
@@ -781,6 +794,76 @@ ${scopeLine}` : ''}`);
     return;
   }
 
+  // Ruling 35 (batch-19-spec.md section 3): `config get [key]`, `config set
+  // <key> <value>`, `config unset <key>` -- the global defaults table. `get`
+  // is read-only, like `project list`/`board`/... above: never routed to a
+  // live daemon. `set`/`unset` follow the single-writer rule everything else
+  // mutating does (liveDaemonFor below): PATCH /settings when a daemon owns
+  // this database file, a direct write otherwise. Validation (unknown key,
+  // unknown model, a bad cap) lives once in store.ts's setSetting/
+  // unsetSetting -- this block only catches what they throw and reports it
+  // exactly like every other command's own typed error already is.
+  if (command === 'config' && subcommand === 'get') {
+    const db = openDb(dbPath(flags));
+    const key = positionals[1];
+    if (key !== undefined) {
+      if (!(SETTINGS_KEYS as readonly string[]).includes(key)) {
+        process.stderr.write(`unknown setting: ${key}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      const value = getSetting(db, key);
+      output(flags, { [key]: value }, value === null ? `${key} is not set` : `${key} = ${value}`);
+      return;
+    }
+    const settings = getSettings(db);
+    output(
+      flags,
+      settings,
+      Object.keys(settings).length > 0 ? Object.entries(settings).map(([k, v]) => `${k} = ${v}`).join('\n') : '(no settings set)'
+    );
+    return;
+  }
+
+  if (command === 'config' && subcommand === 'set') {
+    const db = openDb(dbPath(flags));
+    const key = String(positionals[1] ?? '');
+    const value = String(positionals[2] ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'PATCH', '/settings', { [key]: value }, () => `${key} = ${value}`);
+      return;
+    }
+    try {
+      setSetting(db, key, value);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    output(flags, getSettings(db), `${key} = ${value}`);
+    return;
+  }
+
+  if (command === 'config' && subcommand === 'unset') {
+    const db = openDb(dbPath(flags));
+    const key = String(positionals[1] ?? '');
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'PATCH', '/settings', { [key]: null }, () => `${key} unset`);
+      return;
+    }
+    try {
+      unsetSetting(db, key);
+    } catch (err) {
+      process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    output(flags, getSettings(db), `${key} unset`);
+    return;
+  }
+
   if (command === 'doctor') {
     // No `--db`/daemon routing: doctor never touches ticket/project state,
     // only the state directory (writability) and a live daemon.json there
@@ -1061,11 +1144,15 @@ ${scopeLine}` : ''}`);
 
     recoverOrphanedRuns(db);
     const adapter = buildAdapter(db, flags, projectId);
+    // Review fix #4: same fallback chain the daemon's own admission uses
+    // (resolveMachineCap, store.ts) -- a direct `tick` with no `--max-parallel`
+    // must see `config set max_parallel_workers`, not silently fall back to 1
+    // as if nothing had ever been configured.
     const result = await tick({
       db,
       adapter,
       projectId,
-      maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
+      maxParallelWorkers: resolveMachineCap(db, parseMaxParallelFlag(flags)),
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
       readiness: { stateDir: stateDir(flags), scopeProbe: probeScopeFile },
@@ -1101,11 +1188,21 @@ ${scopeLine}` : ''}`);
     }
     recoverOrphanedRuns(db);
     const adapter = buildAdapter(db, flags, projectId);
+    // Review fix #4: `runUntilIdle` calls `tick(deps)` in a loop, reading
+    // `deps.maxParallelWorkers` fresh each pass -- a GETTER (not a number
+    // computed once before the call) is what makes THIS read fresh too, so
+    // `config set max_parallel_workers` while a long `run --until-idle` is
+    // still churning changes admission on its very next iteration, same as
+    // the daemon's own tick. No change needed in scheduler.ts itself: this
+    // is a plain property access there either way.
+    const untilIdleMaxParallelFlag = parseMaxParallelFlag(flags);
     await runUntilIdle({
       db,
       adapter,
       projectId,
-      maxParallelWorkers: parseMaxParallelFlag(flags) ?? 1,
+      get maxParallelWorkers() {
+        return resolveMachineCap(db, untilIdleMaxParallelFlag);
+      },
       runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
       artifactsDir: artifactsDir(flags),
       readiness: { stateDir: stateDir(flags), scopeProbe: probeScopeFile },
@@ -1117,22 +1214,25 @@ ${scopeLine}` : ''}`);
   if (command === 'serve') {
     // Ruling 23: validated FIRST, before the database is opened or anything
     // is bound -- an invalid --max-parallel must never start a daemon.
-    const machineCap = parseMaxParallelFlag(flags) ?? 1;
+    // Ruling 35: `undefined` (the flag was not given) is passed through, not
+    // defaulted to 1 here -- daemon.ts re-reads `settings.max_parallel_workers`
+    // fresh on every tick in that case (resolveMachineCap, store.ts); only
+    // the ANNOUNCE line below needs one concrete number to print, computed
+    // once at startup from whichever the daemon will actually use first.
+    const machineCapFlag = parseMaxParallelFlag(flags);
     const resolvedDbPath = dbPath(flags);
     const db = openDb(resolvedDbPath);
     // No `--project` on `serve` -- it ticks every project in the database
     // (daemon.ts's startDaemonLoop), so there is no single id to resolve.
     const adapter = buildAdapter(db, flags, '');
     const resolvedStateDir = stateDir(flags);
-    // (`machineCap`, validated above, is named on the listening line the owner
-    // reads, so the cap they are running under is never a guess.)
     try {
       await serve({
         db,
         dbPath: resolvedDbPath,
         stateDir: resolvedStateDir,
         adapter,
-        maxParallelWorkers: machineCap,
+        maxParallelWorkers: machineCapFlag,
         runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
         artifactsDir: artifactsDir(flags),
         tickIntervalMs: typeof flags['tick-interval'] === 'string' ? Number(flags['tick-interval']) * 1000 : undefined,
@@ -1148,7 +1248,7 @@ ${scopeLine}` : ''}`);
         // to authenticate against it. Ruling 20: the human line now names
         // the page address (not a secret) and the one command that puts the
         // token on the clipboard -- `--json` is unchanged, still no token.
-        onListening: (info) => announceListening(flags, info, machineCap),
+        onListening: (info) => announceListening(flags, info, resolveMachineCap(db, machineCapFlag)),
       });
     } catch (err) {
       if (err instanceof ServeError) {
@@ -1163,8 +1263,9 @@ ${scopeLine}` : ''}`);
 
   if (command === 'app') {
     // Same validation-first rule as `serve` (ruling 23): a bad --max-parallel
-    // never starts anything.
-    const machineCap = parseMaxParallelFlag(flags) ?? 1;
+    // never starts anything. Ruling 35: `undefined` (flag absent) is passed
+    // through to serveOptions() unchanged, same as `serve` above.
+    const machineCapFlag = parseMaxParallelFlag(flags);
     const resolvedDbPath = dbPath(flags);
     const resolvedStateDir = stateDir(flags);
     // Opened and built LAZILY, only if this process ends up running the daemon
@@ -1185,14 +1286,17 @@ ${scopeLine}` : ''}`);
               dbPath: resolvedDbPath,
               stateDir: resolvedStateDir,
               adapter: buildAdapter(db, flags, ''),
-              maxParallelWorkers: machineCap,
+              maxParallelWorkers: machineCapFlag,
               runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
               artifactsDir: artifactsDir(flags),
               tickIntervalMs: typeof flags['tick-interval'] === 'string' ? Number(flags['tick-interval']) * 1000 : undefined,
               port: typeof flags.port === 'string' ? Number(flags.port) : undefined,
             };
           },
-          onListening: (info) => announceListening(flags, info, machineCap),
+          // `getDb()` is already memoized by the time this fires: onListening
+          // (owned mode only, see runApp's own doc comment) always runs AFTER
+          // serveOptions() has called it once.
+          onListening: (info) => announceListening(flags, info, resolveMachineCap(getDb(), machineCapFlag)),
           onStopped: ({ cancelled }) => {
             const line = formatShutdown(cancelled);
             output(flags, line.json, line.human);

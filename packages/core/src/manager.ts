@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { Db } from './db/index.ts';
 import { newId } from './id.ts';
@@ -66,6 +67,56 @@ export function writeScopeText(project: Project, content: string): void {
   }
   mkdirSync(dirname(project.scopePath), { recursive: true });
   writeFileSync(project.scopePath, content, 'utf8');
+}
+
+// Ruling 35 (batch-19-spec.md section 3): the owner's own scope editor
+// (`PUT /projects/{id}/scope`, daemonApi.ts) writes through THIS function,
+// not writeScopeText above -- a person editing a live document from the
+// window must never be able to leave scope_path half-written if the write
+// itself fails partway (a full disk, a permissions problem hit mid-write):
+// the content lands in a TEMP file first, and only a successful rename ever
+// touches the real path. `rename` on the same filesystem (the temp file is
+// always a sibling of the target, same directory) is atomic on every
+// platform this project targets -- the real file is either the old content
+// or the new one, never a partial write. Same "no scope_path set" refusal
+// as writeScopeText; the Manager's own `update_scope` tool keeps using the
+// plain (non-atomic) writer above, unchanged by this batch.
+//
+// Review fix #6: the temp name is now PID + a random suffix, not a fixed
+// `<path>.tmp` -- two concurrent writers (two browser tabs, or a retried
+// request racing its own timeout) used to be able to collide on the exact
+// same temp path and corrupt each other's write; each call now gets its own
+// file, so two writers can proceed independently and neither ever observes
+// the other's half-written temp file. On ANY failure (the write itself, or
+// the rename) the temp file is removed before the error propagates -- a
+// failed edit must never leave a stray `.tmp-*` file sitting next to the
+// real document for the owner to find later.
+// `testHooks.renameSync`, defaulting to the real one: the ONLY seam this
+// function exposes, and only for tests -- daemonApi.ts's real call site never
+// passes it. Same idiom managerApply.ts's own ApplyManagerProposalTestHooks
+// uses to force a mid-write failure deterministically; here it stands in for
+// a real rename failure (a cross-device temp dir, a permissions problem hit
+// at the last instant) without depending on this call's own unpredictable
+// (pid + random) temp file name, which a filesystem-collision trick cannot
+// target ahead of time the way the OLD fixed `<path>.tmp` name could.
+export function writeScopeTextAtomic(
+  project: Project,
+  content: string,
+  testHooks: { renameSync?: typeof renameSync } = {}
+): void {
+  if (!project.scopePath) {
+    throw new ManagerError('cannot write scope text: this project has no scope_path set');
+  }
+  mkdirSync(dirname(project.scopePath), { recursive: true });
+  const tmpPath = `${project.scopePath}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
+  const rename = testHooks.renameSync ?? renameSync;
+  try {
+    writeFileSync(tmpPath, content, 'utf8');
+    rename(tmpPath, project.scopePath);
+  } catch (err) {
+    rmSync(tmpPath, { force: true });
+    throw err;
+  }
 }
 
 // "created empty when absent" (batch-11-spec.md section 2, Role R item 1):

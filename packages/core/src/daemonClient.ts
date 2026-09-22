@@ -24,7 +24,7 @@ export class DaemonUnreachableError extends Error {}
 // comes from Node's fetch/undici and does not carry the request we sent.
 export async function daemonRequest<T = unknown>(
   info: Pick<DaemonFileInfo, 'port' | 'token'>,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT',
   path: string,
   body?: unknown
 ): Promise<DaemonResponse<T>> {

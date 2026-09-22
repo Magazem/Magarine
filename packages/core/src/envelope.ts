@@ -1,5 +1,33 @@
 import type { TicketEnvelope } from './types.ts';
 
+// Ruling 35 (batch-19-spec.md section 3): "the verifier verdict passed into
+// the retry prompt verbatim, no length limit" (batch 19's own carry list,
+// item 5) was the bug -- an unbounded verdict.reason could balloon the
+// retry prompt without limit. Cut here, not at the source (the verdict is
+// still recorded in full in the database/events; only the RENDERED prompt
+// is capped), so nothing upstream loses data over this.
+const PREVIOUS_ATTEMPT_REASON_CHAR_CAP = 4000;
+
+// Review fix #10: `reason.slice(0, 4000)` cuts by UTF-16 CODE UNIT, which
+// can land exactly between a surrogate pair's high and low half (an emoji
+// or any character outside the Basic Multilingual Plane is two code units;
+// `reason.length` already counts in these, matching `String.prototype.slice`
+// itself). A cut mid-pair leaves an unpaired surrogate at the very end of
+// the rendered prompt -- not invalid per se in a JS string, but it prints
+// as U+FFFD/mojibake once it reaches a terminal or the worker's own model,
+// and is never anything a person actually typed into a verdict. Backs off
+// by exactly one code unit (never more) when the cap would split a pair --
+// so the rendered reason is 4000 code units long ordinarily, 3999 in that
+// one edge case, and the "cut to N characters" line always names whichever
+// it actually is, never a number that does not match what is printed.
+function cutWithoutSplittingSurrogatePair(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  const charBeforeCut = text.charCodeAt(maxLength - 1);
+  const charAtCut = text.charCodeAt(maxLength);
+  const wouldSplitPair = charBeforeCut >= 0xd800 && charBeforeCut <= 0xdbff && charAtCut >= 0xdc00 && charAtCut <= 0xdfff;
+  return text.slice(0, wouldSplitPair ? maxLength - 1 : maxLength);
+}
+
 // Turns a TicketEnvelope into the text prompt handed to a worker CLI.
 // Contains exactly what technical-architecture-weekend-mvp.md's "The worker
 // receives only" list specifies (project brief, relevant decisions, ticket
@@ -25,9 +53,15 @@ export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: strin
   // Batch 18 ruling 32: a retry is told why the last attempt did not stand,
   // ahead of the criteria it must now meet. A first attempt has none.
   if (envelope.previousAttempt) {
+    const reason = envelope.previousAttempt.reason;
+    const wasCut = reason.length > PREVIOUS_ATTEMPT_REASON_CHAR_CAP;
+    const renderedReason = wasCut ? cutWithoutSplittingSurrogatePair(reason, PREVIOUS_ATTEMPT_REASON_CHAR_CAP) : reason;
     sections.push(
-      `Previous attempt ${envelope.previousAttempt.status}: ${envelope.previousAttempt.reason}\n` +
-        'Do not repeat it: fix exactly what is named above, and do not present anything as finished that it names as missing.'
+      `Previous attempt ${envelope.previousAttempt.status}: ${renderedReason}` +
+        (wasCut
+          ? `\n(cut to ${renderedReason.length} characters; the original reason was ${reason.length} characters long)`
+          : '') +
+        '\nDo not repeat it: fix exactly what is named above, and do not present anything as finished that it names as missing.'
     );
   }
 

@@ -24,7 +24,8 @@ export interface ServeOptions {
   dbPath: string;
   stateDir: string;
   adapter: AgentAdapter;
-  maxParallelWorkers: number;
+  /** The `serve --max-parallel` flag's value; `undefined` when the flag was not given -- see daemon.ts's DaemonLoopDeps.maxParallelWorkers (ruling 35: without the flag, the machine cap is re-read from settings on every tick instead). */
+  maxParallelWorkers: number | undefined;
   runTimeoutMs?: number;
   artifactsDir: string;
   tickIntervalMs?: number;
@@ -83,7 +84,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
   const startedAt = new Date().toISOString();
   const token = generateDaemonToken();
 
-  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt, machineCap: opts.maxParallelWorkers, stateDir: opts.stateDir });
+  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt, machineCapFlag: opts.maxParallelWorkers, stateDir: opts.stateDir });
   const server: Server = createServer(requestHandler.handle);
 
   try {

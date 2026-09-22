@@ -5,7 +5,7 @@ import type { Db } from './db/index.ts';
 import { assertReadinessMode, type ReadinessMode } from './readiness.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
 import { cancelRun, tick, type StartedRun } from './scheduler.ts';
-import { countWorkTicketsInProgress, getProject, listProjects } from './store.ts';
+import { countWorkTicketsInProgress, getProject, listProjects, resolveMachineCap } from './store.ts';
 import type { AgentAdapter } from './types.ts';
 
 // `<state>/daemon.json` lifecycle: the file that lets a second process find
@@ -168,8 +168,16 @@ export interface DaemonLoopDeps {
    * there is no "other projects" for a machine-wide ceiling to mean
    * anything against, and the Strategist's ruling only asks for the change
    * at the daemon (`serve`).
+   *
+   * Batch 19 ruling 35: `undefined` here means `serve --max-parallel` was
+   * NOT given -- `tickProject` below then calls store.ts's
+   * `resolveMachineCap(deps.db, undefined)` FRESH on every single tick, so
+   * `config set max_parallel_workers` changes admission on the daemon's very
+   * next pass with no restart. A real number here means the flag WAS given:
+   * it wins for the life of this daemon process and the setting is never
+   * even read (same `resolveMachineCap` call, its first branch).
    */
-  maxParallelWorkers: number;
+  maxParallelWorkers: number | undefined;
   runTimeoutMs?: number;
   artifactsDir: string;
   /** REQUIRED, passed to every tick (batch 16 ruling 24): `{ stateDir }` runs the readiness check, `'skip'` declares this caller is not asking. `startDaemonLoop` throws if it is absent. */
@@ -235,11 +243,16 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
   // so a run started by a forced API tick is cancellable and gets swept up
   // on shutdown exactly like one started by the regular interval.
   const tickProject = async (projectId: string): Promise<StartedRun[]> => {
+    // Ruling 35: resolved fresh on every call, not once at startDaemonLoop
+    // time -- see resolveMachineCap's own doc comment and this file's
+    // DaemonLoopDeps.maxParallelWorkers for why deps.maxParallelWorkers
+    // (the FLAG's value, or undefined) is not simply used as-is here.
+    const machineCap = resolveMachineCap(deps.db, deps.maxParallelWorkers);
     const { started } = await tick({
       db: deps.db,
       adapter: deps.adapter,
       projectId,
-      maxParallelWorkers: computeProjectCap(deps.db, projectId, deps.maxParallelWorkers),
+      maxParallelWorkers: computeProjectCap(deps.db, projectId, machineCap),
       runTimeoutMs: deps.runTimeoutMs,
       artifactsDir: deps.artifactsDir,
       readiness: deps.readiness,

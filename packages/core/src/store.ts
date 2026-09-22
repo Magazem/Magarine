@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { newId } from './id.ts';
 import { classify } from './policy.ts';
+import { isKnownModel } from './pricing.ts';
 import { isReadinessRule } from './readiness.ts';
 import type {
   PauseReason,
@@ -48,6 +49,109 @@ export function assertValidMaxParallelWorkers(value: number): void {
   if (!Number.isInteger(value) || value < 1) {
     throw new Error(`--max-parallel (a project's max parallel workers) must be a whole number of 1 or more, got: ${value}`);
   }
+}
+
+// Ruling 35 (batch-19-spec.md section 3): global defaults live in ONE
+// table, key/value, read fresh on every call -- never cached, same
+// discipline the rest of this codebase already holds for anything the
+// owner can change out from under a running daemon. Every key this batch
+// knows about, and nothing else: `setSetting`/`unsetSetting` refuse an
+// unknown key THEMSELVES (not merely a caller in front of them), so a CLI
+// typo and a bad API body get the exact same one-sentence refusal, from the
+// one place that can ever write this table.
+export const SETTINGS_KEYS = ['default_manager_model', 'default_verifier_model', 'max_parallel_workers'] as const;
+export type SettingsKey = (typeof SETTINGS_KEYS)[number];
+
+export function assertKnownSettingKey(key: string): asserts key is SettingsKey {
+  if (!(SETTINGS_KEYS as readonly string[]).includes(key)) {
+    throw new Error(`unknown setting: ${key}`);
+  }
+}
+
+// Review fix #9: the cap is stored as its CANONICAL decimal integer string
+// only. `Number("0x3")` is 3, `Number("1e1")` is 10, `Number(" 3")` is 3 --
+// assertValidMaxParallelWorkers's `Number(value)` used to accept every one
+// of those silently. Refused instead of normalized (the reviewer's own
+// choice between the two): a stored value that never round-trips through a
+// second representation is one fewer thing to get wrong later. Named after
+// the SETTING here ("max_parallel_workers (the machine's worker cap)"),
+// not the CLI flag -- assertValidMaxParallelWorkers's own message
+// ("--max-parallel...") is right for `project set`/`serve`, wrong here,
+// where nobody typed a flag.
+const CANONICAL_POSITIVE_INT = /^[1-9]\d*$/;
+
+function assertCanonicalMachineCap(value: string): void {
+  if (!CANONICAL_POSITIVE_INT.test(value)) {
+    throw new Error(
+      `max_parallel_workers (the machine's worker cap) must be a whole number of 1 or more, written as a plain decimal integer with no leading zero, sign, decimal point, exponent or surrounding space, got: ${value}`
+    );
+  }
+}
+
+// Review fix #2/#3: split out of setSetting so a caller (handlePatchSettings)
+// can validate EVERY key/value pair in a PATCH body BEFORE writing any of
+// them -- the bug this fixes: `{ default_manager_model: "opus", max_parallel_workers: "bogus" }`
+// used to write the first key, THEN throw on the second, leaving a partial
+// write behind. setSetting below still calls this too (defence in depth for
+// any other caller), so the two can never validate differently.
+export function assertValidSettingValue(key: string, value: string): void {
+  assertKnownSettingKey(key);
+  if (key === 'default_manager_model' || key === 'default_verifier_model') {
+    if (!isKnownModel(value)) {
+      throw new Error(`unknown model for ${key}: ${value}`);
+    }
+  } else if (key === 'max_parallel_workers') {
+    assertCanonicalMachineCap(value);
+  }
+}
+
+/** `null` when the key has never been set (or was unset) -- no synthesized default row; see resolveManagerModel/resolveVerifierModel/resolveMachineCap for where the actual "?? fallback" chain lives. */
+export function getSetting(db: Db, key: string): string | null {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+/** Every setting actually stored, key -> value. A key nobody has set is simply absent, not present with a guessed value. */
+export function getSettings(db: Db): Record<string, string> {
+  const rows = db.prepare('SELECT key, value FROM settings').all() as Array<{ key: string; value: string }>;
+  const out: Record<string, string> = {};
+  for (const row of rows) out[row.key] = row.value;
+  return out;
+}
+
+// One validator per key, run no matter which surface calls this (CLI's
+// `config set`, PATCH /settings) -- same shape as assertValidMaxParallelWorkers
+// above: a bad value is refused HERE, once, not merely by a caller that
+// happens to remember to check. Models validate against pricing.ts's own
+// table (ruling 35: "Model values validated against src/pricing.ts"); the
+// cap reuses assertValidMaxParallelWorkers itself, so `config set
+// max_parallel_workers` and `serve --max-parallel` can never disagree about
+// what a valid cap looks like.
+export function setSetting(db: Db, key: string, value: string): void {
+  assertValidSettingValue(key, value);
+  db.prepare(
+    'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+  ).run(key, value, new Date().toISOString());
+}
+
+/** Clears a setting back to "not set" -- the fallback chain (project override, then this, then the hard-coded last resort) then reads as if it never existed. Refuses an unknown key exactly like setSetting. */
+export function unsetSetting(db: Db, key: string): void {
+  assertKnownSettingKey(key);
+  db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+}
+
+// The daemon's machine-wide `--max-parallel`. Ruling 35: `serve --max-parallel
+// N` wins for the life of that daemon process (`flagValue` given, non-
+// undefined) -- the setting is never even read. Without the flag, the
+// setting is read FRESH on every call (never cached across ticks), so
+// `config set max_parallel_workers` changes admission on the very next tick
+// with no restart -- the owner's complaint in the batch-18 replan, section 0.
+// `1` is the last resort when neither the flag nor the setting says
+// anything, matching `serve`'s own default before settings existed.
+export function resolveMachineCap(db: Db, flagValue?: number): number {
+  if (flagValue !== undefined) return flagValue;
+  const raw = getSetting(db, 'max_parallel_workers');
+  return raw !== null ? Number(raw) : 1;
 }
 
 interface ProjectRow {
@@ -324,22 +428,29 @@ export function resolveModel(project: Project, ticket: Ticket): string {
   return ticket.model ?? project.defaultModel;
 }
 
-// Batch 18 ruling 31: the model a VERIFIER run uses -- the project's own
-// `verifier_model` if set, else its `default_model`. Read from the project like
-// resolveManagerModel (a verifier is a project-level role, not a per-ticket one).
-export function resolveVerifierModel(project: Project): string {
-  return project.verifierModel ?? project.defaultModel;
+// Batch 18 ruling 31, amended by batch 19 ruling 35: the model a VERIFIER
+// run uses -- the project's own `verifier_model` if set, else the global
+// `default_verifier_model` setting if one is set, else the project's own
+// `default_model`. Still ONE function (every caller amended, not a second
+// path): managerEnvelope.ts and verifier.ts both already have `db` in hand
+// where they call this, so passing it costs nothing new at either call site.
+export function resolveVerifierModel(db: Db, project: Project): string {
+  return project.verifierModel ?? getSetting(db, 'default_verifier_model') ?? project.defaultModel;
 }
 
-// Batch 9: the model a Manager ticket runs on -- the project's own
-// `manager_model` override if set, else its `default_model` (batch-9-spec.md
-// section 2: "a project-level `manager_model` override defaulting to the
-// project's default model"). Deliberately reads the PROJECT's setting, not
-// `ticket.model`: unlike an ordinary work ticket, a Manager ticket's model
-// choice is not something an individual ticket should freeze -- see
-// types.ts's Project.managerModel doc comment.
-export function resolveManagerModel(project: Project): string {
-  return project.managerModel ?? project.defaultModel;
+// Batch 9, amended by batch 19 ruling 35: the model a Manager ticket runs on
+// -- the project's own `manager_model` override if set, else the global
+// `default_manager_model` setting if one is set, else the project's own
+// `default_model` (batch-9-spec.md section 2: "a project-level
+// `manager_model` override defaulting to the project's default model"; the
+// global setting slots in BETWEEN those two, per ruling 35's "global
+// defaults live in a settings table, and a project's own value wins").
+// Deliberately reads the PROJECT's setting, not `ticket.model`: unlike an
+// ordinary work ticket, a Manager ticket's model choice is not something an
+// individual ticket should freeze -- see types.ts's Project.managerModel
+// doc comment.
+export function resolveManagerModel(db: Db, project: Project): string {
+  return project.managerModel ?? getSetting(db, 'default_manager_model') ?? project.defaultModel;
 }
 
 // Setter for a future `project set --model` to call instead of writing the

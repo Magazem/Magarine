@@ -14,6 +14,10 @@ export interface ProjectListEntry {
   id: string;
   name: string;
   defaultModel: string;
+  /** Batch 19 ruling 35: the project's own overrides (null falls back to a global setting, then defaultModel -- see store.ts's resolveManagerModel/resolveVerifierModel) and its own worker cap (null falls back to the machine-wide one -- resolveMachineCap). Added so `PATCH /projects/{id}` has somewhere to show its own effect: this list is what the settings page (batch 19, mini-phase 3B) reads. */
+  maxParallelWorkers: number | null;
+  managerModel: string | null;
+  verifierModel: string | null;
   spendUsd: number;
   spendIsEstimate: boolean;
   maxSpendUsd: number | null;
@@ -44,6 +48,9 @@ export function buildProjectList(db: Db, stateDir: string, probe: ScopeProbe): P
       id: project.id,
       name: project.name,
       defaultModel: project.defaultModel,
+      maxParallelWorkers: project.maxParallelWorkers,
+      managerModel: project.managerModel,
+      verifierModel: project.verifierModel,
       spendUsd: spend.costUsd,
       spendIsEstimate: spend.isEstimate,
       maxSpendUsd: project.maxSpendUsd,

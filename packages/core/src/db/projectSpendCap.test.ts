@@ -98,6 +98,10 @@ test('a database migrated only to 0001-0004 picks up 0005 (project spend cap) on
     '0010_backfill_workspace_root_from_scope_path', '0011_ticket_model_reason', '0012_artifact_text_column', '0013_ticket_expected_artifacts',
  '0014_max_parallel_workers_nullable',
  '0015_verifier_run_kind', '0016_ticket_automatic',
+    // Batch 19: same reason 0008/0009 were added above -- this snapshot runs
+    // every migration up to HEAD, and 0018_settings is HEAD in this tree
+    // (0017_worker_profiles lands from a separate worktree, not yet merged).
+    '0018_settings',
   ]);
   assert.equal(snapshot.maxSpendUsdBeforeUpdate, null, 'existing project rows must get NULL (no cap), not a numeric default');
   assert.equal(snapshot.maxSpendUsdAfterUpdate, 10);

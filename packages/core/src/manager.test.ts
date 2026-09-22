@@ -1,7 +1,7 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { openDb } from './db/index.ts';
 import {
   discussProject,
@@ -11,6 +11,7 @@ import {
   planProject,
   readScopeText,
   writeScopeText,
+  writeScopeTextAtomic,
 } from './manager.ts';
 import { createProject, createTicket, createRun, getProject, getTicket, listEventsForProject, setProjectScopePath } from './store.ts';
 import { testTempRoot } from './testSupport.ts';
@@ -48,6 +49,83 @@ test('writeScopeText refuses to write when the project has no scope_path set', (
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });
   assert.throws(() => writeScopeText(project, 'x'), ManagerError);
+});
+
+// --- Batch 19 ruling 35: writeScopeTextAtomic (PUT /projects/{id}/scope) ---
+
+test('writeScopeTextAtomic writes through a temp file and rename, creating its parent directory, and readScopeText reads it straight back', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'atomic-write-test', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+
+  writeScopeTextAtomic(project, 'First draft.');
+  assert.equal(readFileSync(scopePath, 'utf8'), 'First draft.');
+  assert.equal(readScopeText(project).text, 'First draft.');
+  // The temp file is gone once the rename lands -- nothing left behind next
+  // to the real one after a clean write.
+  assert.equal(existsSync(`${scopePath}.tmp`), false);
+
+  writeScopeTextAtomic(project, 'Replaced entirely.');
+  assert.equal(readScopeText(project).text, 'Replaced entirely.');
+});
+
+test('writeScopeTextAtomic refuses to write when the project has no scope_path set', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  assert.throws(() => writeScopeTextAtomic(project, 'x'), ManagerError);
+});
+
+test('writeScopeTextAtomic: two writes get two different temp file names (pid + random), never the same one twice', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'atomic-unique-temp-test', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+  writeScopeTextAtomic(project, 'first');
+
+  const seenTmpPaths: string[] = [];
+  writeScopeTextAtomic(project, 'second', {
+    renameSync: (from, to) => {
+      seenTmpPaths.push(String(from));
+      renameSync(from, to);
+    },
+  });
+  writeScopeTextAtomic(project, 'third', {
+    renameSync: (from, to) => {
+      seenTmpPaths.push(String(from));
+      renameSync(from, to);
+    },
+  });
+
+  assert.equal(seenTmpPaths.length, 2);
+  assert.notEqual(seenTmpPaths[0], seenTmpPaths[1], 'each call must use its own temp file name');
+  for (const p of seenTmpPaths) assert.match(p, /SCOPE\.md\.tmp-\d+-[0-9a-f]+$/);
+  assert.equal(readFileSync(scopePath, 'utf8'), 'third');
+});
+
+test('writeScopeTextAtomic: a failed rename removes the temp file and leaves the original content untouched, with no `.tmp-*` file left behind', () => {
+  const db = openDb(':memory:');
+  const scopePath = join(testRoot.root, 'atomic-failure-test', 'SCOPE.md');
+  const project = createProject(db, { name: 'p', scopePath });
+
+  writeScopeTextAtomic(project, 'OLD CONTENT');
+  assert.equal(readFileSync(scopePath, 'utf8'), 'OLD CONTENT');
+
+  // Forces the RENAME step itself to fail, deterministically -- a real
+  // rename failure (cross-device link, permissions) without depending on
+  // this call's own unpredictable (pid + random) temp file name, which a
+  // filesystem-collision trick can no longer target ahead of time (see
+  // writeScopeTextAtomic's own comment on why this test-only seam exists).
+  assert.throws(
+    () =>
+      writeScopeTextAtomic(project, 'NEW CONTENT THAT MUST NOT LAND', {
+        renameSync: () => {
+          throw new Error('simulated rename failure');
+        },
+      }),
+    /simulated rename failure/
+  );
+  assert.equal(readFileSync(scopePath, 'utf8'), 'OLD CONTENT', 'the real file must be untouched by the failed write');
+  const leftover = readdirSync(dirname(scopePath)).filter((name) => name.startsWith('SCOPE.md.tmp-'));
+  assert.deepEqual(leftover, [], 'the temp file must be removed on failure, not left behind');
 });
 
 test('ensureScopeFile creates an empty file when scope_path is set but absent, and is a no-op once it exists', () => {

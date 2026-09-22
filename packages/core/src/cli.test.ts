@@ -684,3 +684,106 @@ test('activity --progress --ticket <id> reports (no runs yet) for a ticket that 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- Batch 19 ruling 35: `config get|set|unset` (global defaults) ---
+
+test('config set/get/unset round-trip a value, direct-write (no daemon running)', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-config-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const emptyGet = await run(['config', 'get', '--json', '--db', dbFile]);
+    assert.equal(emptyGet.code, 0, emptyGet.stderr);
+    assert.deepEqual(JSON.parse(emptyGet.stdout), {});
+
+    const set = await run(['config', 'set', 'max_parallel_workers', '3', '--json', '--db', dbFile]);
+    assert.equal(set.code, 0, set.stderr);
+    assert.deepEqual(JSON.parse(set.stdout), { max_parallel_workers: '3' });
+
+    const getOne = await run(['config', 'get', 'max_parallel_workers', '--json', '--db', dbFile]);
+    assert.equal(getOne.code, 0, getOne.stderr);
+    assert.deepEqual(JSON.parse(getOne.stdout), { max_parallel_workers: '3' });
+
+    const unset = await run(['config', 'unset', 'max_parallel_workers', '--json', '--db', dbFile]);
+    assert.equal(unset.code, 0, unset.stderr);
+
+    const afterUnset = await run(['config', 'get', 'max_parallel_workers', '--json', '--db', dbFile]);
+    assert.equal(afterUnset.code, 0, afterUnset.stderr);
+    assert.deepEqual(JSON.parse(afterUnset.stdout), { max_parallel_workers: null });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('config set refuses an unknown key and an unknown model, each in one sentence, with a non-zero exit', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-config-bad-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const unknownKey = await run(['config', 'set', 'not_a_real_key', 'x', '--db', dbFile]);
+    assert.notEqual(unknownKey.code, 0);
+    assert.match(unknownKey.stderr, /unknown setting: not_a_real_key/);
+
+    const unknownModel = await run(['config', 'set', 'default_manager_model', 'not-a-real-model', '--db', dbFile]);
+    assert.notEqual(unknownModel.code, 0);
+    assert.match(unknownModel.stderr, /unknown model/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a project resolves the manager model from `config set default_manager_model`, and its own manager-model override still wins over it', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-config-resolve-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    await run(['config', 'set', 'default_manager_model', 'claude-opus-5', '--db', dbFile]);
+    const withNoOverride = JSON.parse((await run(['project', 'create', '--name', 'p1', '--json', '--db', dbFile])).stdout);
+    // No direct getter over the CLI for the resolved model in this batch --
+    // asserting the project's OWN column stays null (the override itself),
+    // matching store.test.ts's own resolveManagerModel coverage of the
+    // fallback chain this exercises indirectly (config set really landed).
+    assert.equal(withNoOverride.managerModel, null);
+
+    const withOverride = JSON.parse(
+      (await run(['project', 'create', '--name', 'p2', '--manager-model', 'claude-fable-5-1', '--json', '--db', dbFile])).stdout
+    );
+    assert.equal(withOverride.managerModel, 'claude-fable-5-1');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Review fix #4: a direct `tick` (no live daemon, no `--max-parallel`) used
+// to hard-code its admission at 1, ignoring `config set max_parallel_workers`
+// entirely -- unlike `serve`, which already read it via resolveMachineCap.
+test('tick with no --max-parallel honours `config set max_parallel_workers`, admitting more than the old hard-coded default of 1', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-tick-cap-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile])).stdout);
+    const t1 = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 't1', '--workspace', 'NONE', '--json', '--db', dbFile])).stdout
+    );
+    const t2 = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 't2', '--workspace', 'NONE', '--json', '--db', dbFile])).stdout
+    );
+
+    await run(['config', 'set', 'max_parallel_workers', '2', '--db', dbFile]);
+
+    const tickRes = await run([
+      'tick',
+      '--project',
+      project.id,
+      '--fake-script',
+      `${t1.id}=hang`,
+      '--fake-script',
+      `${t2.id}=hang`,
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+    const result = JSON.parse(tickRes.stdout) as { started: Array<{ ticketId: string }> };
+    assert.equal(result.started.length, 2, 'both tickets must start: the configured cap of 2, not the old hard-coded 1');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

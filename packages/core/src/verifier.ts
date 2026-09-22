@@ -182,7 +182,7 @@ export function buildVerifierEnvelope(db: Db, ticket: Ticket, project: Project):
     allowedTools: [],
     expectedOutputFormat: 'Return the verdict object as your final answer. Do not write result.json and do not create or modify any file.',
     maxBudgetUsd: resolveMaxBudgetUsd(project, ticket),
-    model: resolveVerifierModel(project),
+    model: resolveVerifierModel(db, project),
     ...(ticket.expectedArtifacts != null ? { expectedArtifacts: ticket.expectedArtifacts } : {}),
     runKind: 'verify',
     verification: verificationSubject(db, ticket),

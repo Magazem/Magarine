@@ -24,6 +24,7 @@ import {
   getTicket,
   listTicketsByStatus,
   setProjectMaxParallelWorkers,
+  setSetting,
 } from './store.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
@@ -239,6 +240,64 @@ test('startDaemonLoop ticks every project in the database, not just one', async 
     }
     assert.equal(getTicket(db, ticketA.id)!.status, 'DONE', 'project A ticket should have been ticked');
     assert.equal(getTicket(db, ticketB.id)!.status, 'DONE', 'project B ticket should have been ticked');
+  } finally {
+    await loop.stop();
+  }
+});
+
+// Review fix #7 (batch 19 ruling 35): the "no restart needed" claim is about
+// THIS loop -- daemon.ts's own tickProject, which resolves the machine cap
+// via store.ts's resolveMachineCap on every single pass (deliberately NOT
+// hoisted into a local computed once at startDaemonLoop() time). A
+// scheduler.ts-level test calling tick() directly twice, with the caller
+// itself re-computing the cap between calls, cannot tell "daemon.ts re-reads
+// per tick" apart from "daemon.ts computed it once and the TEST happened to
+// pass the right numbers in" -- only exercising the real loop, through
+// forceTick (the same entry point POST /tick uses), proves the re-read lives
+// inside daemon.ts itself. `maxParallelWorkers: undefined` here is the
+// no-`--max-parallel`-flag case; `tickIntervalMs` is set far longer than
+// this test can run so the PERIODIC timer never fires and every admission
+// observed comes from a `forceTick` call this test made on purpose.
+test('startDaemonLoop admits more work on the very next forceTick after `config set max_parallel_workers` changes it, with no restart of the loop', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' }); // no project-level cap: the machine cap alone governs
+  const adapter = new FakeAdapter();
+  const tickets = ['a', 'b', 'c'].map((n) => createTicket(db, { projectId: project.id, title: n, workspaceType: 'NONE' }));
+  for (const t of tickets) adapter.setScript(t.id, { kind: 'hang' });
+
+  const loop = startDaemonLoop({
+    readiness: 'skip',
+    db,
+    adapter,
+    maxParallelWorkers: undefined,
+    artifactsDir: join(testRoot.root, 'artifacts-cap-reread'),
+    tickIntervalMs: 60_000,
+  });
+  try {
+    // Nothing configured yet: the loop's own first tick (fired automatically
+    // by startDaemonLoop, before this test calls forceTick at all) must have
+    // admitted exactly 1 -- the same "?? 1" last resort resolveMachineCap
+    // itself falls back to.
+    const deadline1 = Date.now() + 2000;
+    while (listTicketsByStatus(db, project.id, 'IN_PROGRESS').length < 1 && Date.now() < deadline1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(listTicketsByStatus(db, project.id, 'IN_PROGRESS').length, 1, 'admission capped at 1 with nothing configured');
+
+    // The owner's fix from the batch-18 replan: `config set
+    // max_parallel_workers 3` while this SAME loop keeps running.
+    setSetting(db, 'max_parallel_workers', '3');
+    await loop.forceTick(project.id);
+
+    const deadline2 = Date.now() + 2000;
+    while (listTicketsByStatus(db, project.id, 'IN_PROGRESS').length < 3 && Date.now() < deadline2) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(
+      listTicketsByStatus(db, project.id, 'IN_PROGRESS').length,
+      3,
+      'the remaining 2 tickets are admitted on the next forceTick now that the cap reads 3 -- no restart of the loop'
+    );
   } finally {
     await loop.stop();
   }
