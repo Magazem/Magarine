@@ -26,13 +26,25 @@ roles, and continue batches"*.
    interface designer (assistant `ui-ux-pro-max`) for `packages/core/ui/**` + `src/ui/**`.
    **There is no Liaison now**; the owner talks to you directly in this chat.
 
-**THE OWNER AMENDED THE HIRING THE SAME DAY, verbatim:** *"instead you will hire reviewers tho,
-opus models"*. So the new hires are **REVIEWERS, on Opus models**. This matters because the lead
-is now deciding with no Strategist to check it, so an independent Opus reviewer restores the
-second pair of eyes the old split provided. **Open at the time of the reset:** whether reviewers
-are hired IN ADDITION to implementers (engineers still build, reviewers check) or INSTEAD of them,
-and whether they review the lead's specs, the code, or both. The lead asked the owner. Read
-their answer in the chat before hiring anyone.
+**THE OWNER SETTLED HOW REVIEW WORKS, same day, in two messages, verbatim:**
+*"instead you will hire reviewers tho, opus models"*, then, asked whether reviewers were in
+addition to builders or instead of them: *"no, reviewer every mini phase or so i think better"*.
+
+**AS RULED FROM THOSE WORDS:**
+- **An Opus reviewer at the end of EVERY MINI-PHASE**, meaning roughly each item or small group of
+  items, not once per batch. A FRESH reviewer each time, never a standing teammate who
+  accumulates context. Fresh eyes are the point: the lead looked at the developer notes on the
+  page all day and read them as normal, and a stranger saw them in minutes. A long-lived reviewer
+  would drift the same way.
+- **Builders still build.** The owner's "no" rejected the framing of the question, not the
+  builders. Hire sonnet engineers for implementation as before, and put the Opus review at each
+  mini-phase boundary. (The lead's reading. If the owner meant otherwise they will say so.)
+- **Mechanics:** a one-shot review is cheapest as an `Agent` call with `model: "opus"`, with no team
+  slot and no idle cost. Brief it with the ruling, the diff and the acceptance lines, and ask for
+  defects only, labelled by severity. Spawn a team reviewer only if a review needs back-and-forth.
+- **The lead still verifies on its own**: a cold suite and mutations on a still or isolated tree.
+  The reviewer is an additional check, not a replacement for that. Two independent checks, one of
+  them fresh every time.
 
 **WHERE THINGS STAND:** batch 18 is CLOSED and pushed. The owner ran it on real work and said:
 *"i did the run, it is fine generally, didn't find real bugs this time so i will accept it"*. Read
