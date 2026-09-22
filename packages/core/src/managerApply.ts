@@ -275,6 +275,14 @@ export function applyManagerProposal(
       // so both must carry the real question for either one to work, not
       // just the one this code happened to be tested against.
       const questionSummary = decisionRequests.map((d) => d.question).join('; ');
+      // Ruling 36 (batch 19, mini-phase 2B): `questions` carries one entry
+      // per request_user_decision command, in proposal order -- the same
+      // "<question> (<context>)" text `blockers` already carries, so
+      // decide.ts's pendingQuestions can read the real per-question list
+      // instead of falling back to the single joined summary. `summary` and
+      // `blockers` are unchanged, so every pre-2B consumer of this payload
+      // keeps working exactly as before.
+      const questions = decisionRequests.map((d) => `${d.question} (${d.context})`);
       recordTicketTransition(db, {
         ticketId: ticket.id,
         event: 'worker_needs_user_decision',
@@ -284,8 +292,8 @@ export function applyManagerProposal(
           summary: questionSummary,
           artifacts: [],
           checks: [],
-          blockers: decisionRequests.map((d) => `${d.question} (${d.context})`),
-          questions: [],
+          blockers: questions,
+          questions,
         },
       });
       return { outcome: 'applied', ticketStatus: 'BLOCKED', created };

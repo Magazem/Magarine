@@ -87,6 +87,9 @@ test('buildConversation surfaces a worker_needs_user_decision on a manager ticke
   assert.equal(entries[0].text, 'Which platform should this target?');
   assert.equal(entries[0].ticketId, ticket.id);
   assert.equal(entries[0].answered, false);
+  // Ruling 36 (batch 19, mini-phase 2B), acceptance 6: the JSON also carries
+  // `questions`, via the one function commands/decide.ts's pendingQuestions.
+  assert.deepEqual(entries[0].questions, ['Which platform should this target?']);
 });
 
 test('buildConversation marks a question answered once its ticket leaves BLOCKED, and does not resurrect it after a later question on the same ticket', () => {
@@ -118,6 +121,33 @@ test('buildConversation marks a question answered once its ticket leaves BLOCKED
   assert.equal(questions[0].answered, true, 'superseded by a later question on the same ticket, so no longer live');
   assert.equal(questions[1].text, 'Should offline mode be in scope?');
   assert.equal(questions[1].answered, false, 'the ticket is BLOCKED on this one right now');
+});
+
+// Ruling 36 (batch 19, mini-phase 2B), acceptance 6: a multi-question
+// worker_needs_user_decision payload (managerApply.ts's real shape for
+// several request_user_decision commands) surfaces its full `questions`
+// list, not just the joined `text`.
+test('buildConversation surfaces every pending question when the payload carries a real questions list', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const ticket = createTicket(db, { projectId: project.id, kind: 'manager', title: 'Manager: plan', workspaceType: 'NONE' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'dr_multi' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'rs_multi' });
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'worker_needs_user_decision',
+    idempotencyKey: 'wnud_multi',
+    payload: {
+      status: 'needs_user_decision',
+      summary: 'Which library?; Which host?',
+      blockers: ['Which library? (ctx)', 'Which host? (ctx)'],
+      questions: ['Which library? (ctx)', 'Which host? (ctx)'],
+    },
+  });
+
+  const entries = buildConversation(db, project.id);
+  const question = entries.find((e) => e.kind === 'question')!;
+  assert.deepEqual(question.questions, ['Which library? (ctx)', 'Which host? (ctx)']);
 });
 
 test('buildConversation surfaces a scope_updated event with its summary', () => {

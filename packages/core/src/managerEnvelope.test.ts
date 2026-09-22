@@ -130,6 +130,38 @@ test('the decision log renders every recorded user_decision as "Q: ... — A: ..
   assert.deepEqual(briefing.decisionLog, ['Q: Which library? — A: Use library X.']);
 });
 
+// Ruling 36 (batch 19, mini-phase 2B), acceptance 3: a `user_decision` event
+// carrying `decisions` (a decide() call answering N questions at once)
+// renders one `Q: — A:` line per entry, not the single joined pair.
+test('the decision log renders one "Q: — A:" line per entry of a multi-question user_decision event', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id, 'mission');
+  const blocked = createTicket(db, { projectId: project.id, title: 'Needs decisions' });
+  recordTicketTransition(db, { ticketId: blocked.id, event: 'dependencies_resolved', idempotencyKey: 'r2' });
+  recordTicketTransition(db, { ticketId: blocked.id, event: 'run_started', idempotencyKey: 's2' });
+  recordTicketTransition(db, { ticketId: blocked.id, event: 'worker_needs_user_decision', idempotencyKey: 'd2', payload: {} });
+  recordTicketTransition(db, {
+    ticketId: blocked.id,
+    event: 'user_decision',
+    idempotencyKey: 'a2',
+    payload: {
+      ticketId: blocked.id,
+      question: 'Which library?; Which host?; Which region?',
+      answer: 'Library X.; Host Y.; Region Z.',
+      decisions: [
+        { question: 'Which library?', answer: 'Library X.' },
+        { question: 'Which host?', answer: 'Host Y.' },
+        { question: 'Which region?', answer: 'Region Z.' },
+      ],
+    },
+  });
+
+  const briefing = buildManagerBriefing(db, project, managerTicket);
+
+  assert.deepEqual(briefing.decisionLog, ['Q: Which library? — A: Library X.', 'Q: Which host? — A: Host Y.', 'Q: Which region? — A: Region Z.']);
+});
+
 test('renderManagerBrief includes the mission, board, decision log, failures and the command schema, and names every one of the seven commands', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });

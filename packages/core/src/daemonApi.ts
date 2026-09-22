@@ -409,12 +409,17 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     const [, ticketId, action] = ticketMatch;
     switch (action) {
       case 'decide': {
-        // Mirrors the CLI's own `decide --answer` exactly: decide() itself
-        // is the one place that validates (ticket must be BLOCKED); an
-        // empty/absent answer is accepted there too, so this route does not
-        // invent a stricter rule the CLI surface doesn't also enforce.
-        const { answer } = body as { answer?: string };
-        return { status: 200, body: decide(deps.db, { ticketId, answer: answer ?? '' }) };
+        // Ruling 36 (batch 19, mini-phase 2B): `{ answer }` or `{ answers }`,
+        // passed straight through, unmodified -- decide() itself is the one
+        // place that validates (ticket must be BLOCKED, exactly one of the
+        // two, the right count and type for however many questions are
+        // pending), and its DecideError already becomes a 400 via
+        // toApiError, so this route does not invent a second copy of that
+        // rule. `unknown`, not a typed cast: a malformed body (wrong type
+        // for either field) must reach decide()'s own one-sentence refusal,
+        // not a TypeError thrown here first.
+        const { answer, answers } = body as { answer?: unknown; answers?: unknown };
+        return { status: 200, body: decide(deps.db, { ticketId, answer, answers }) };
       }
       case 'retry':
         return { status: 200, body: retry(deps.db, { ticketId }) };

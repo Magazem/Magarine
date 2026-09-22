@@ -121,9 +121,17 @@ const RECENT_FAILURES_LIMIT = 5;
 function buildDecisionLog(db: Db, projectId: string): string[] {
   return listEventsForProject(db, projectId)
     .filter((e) => e.eventType === 'user_decision')
-    .map((e) => {
-      const p = e.payload as { question?: string; answer?: string };
-      return `Q: ${p.question ?? ''} — A: ${p.answer ?? ''}`;
+    .flatMap((e) => {
+      // Ruling 36 (batch 19, mini-phase 2B): one `Q: — A:` line per entry of
+      // `decisions` when present -- a `decide` call answering N pending
+      // questions at once. An old-shape event (recorded before this ruling,
+      // no `decisions` field, or an empty one) falls back to the single
+      // `question`/`answer` pair exactly as it rendered before, unchanged.
+      const p = e.payload as { question?: string; answer?: string; decisions?: Array<{ question: string; answer: string }> };
+      if (p.decisions && p.decisions.length > 0) {
+        return p.decisions.map((d) => `Q: ${d.question} — A: ${d.answer}`);
+      }
+      return [`Q: ${p.question ?? ''} — A: ${p.answer ?? ''}`];
     });
 }
 

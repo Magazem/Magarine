@@ -3,6 +3,7 @@ import { classify } from '../policy.ts';
 import { getProject, getRun, getTicket, listEventsForProject } from '../store.ts';
 import { describeReadinessRule, isReadinessRule } from '../readiness.ts';
 import type { EventRow, PauseReason } from '../types.ts';
+import { pendingQuestions } from './decide.ts';
 
 // `inbox`: events that require the user's attention and have not yet been
 // resolved. There is no separate "acknowledged" column on `events` (the
@@ -51,6 +52,8 @@ export interface InboxItem {
   eventType: string;
   message: string;
   createdAt: string;
+  /** Ruling 36 (batch 19, mini-phase 2B): set only for `worker_needs_user_decision` -- the ticket's own pending questions, one field per question (mini-phase 3B's page draws one field per entry), via the one function (commands/decide.ts's pendingQuestions) every consumer of "the pending question(s)" now shares. */
+  questions?: string[];
 }
 
 // Batch 11: the exact command that clears each ticket-scoped pending item,
@@ -62,8 +65,17 @@ export interface InboxItem {
 // branches below, since the fix is a property of what the ticket is
 // waiting for, not of which payload shape happened to compose its message
 // text.
-const NEXT_COMMAND: Record<string, (ticketId: string) => string> = {
-  worker_needs_user_decision: (id) => `magarine decide --ticket ${id} --answer "..."`,
+const NEXT_COMMAND: Record<string, (ticketId: string, pendingQuestionsCount?: number) => string> = {
+  // Opus review amendment (ruling 36, batch 19 mini-phase 2B, section 3):
+  // for N > 1 pending questions, the hint shows the repeated `--answer` form
+  // -- one flag per question -- rather than the single-`--answer` shape,
+  // even though decide() also accepts one combined `--answer` for now (the
+  // page's own shape until mini-phase 3B). The repeated form is the one that
+  // actually answers each question individually.
+  worker_needs_user_decision: (id, n) =>
+    n && n > 1
+      ? `magarine decide --ticket ${id} ${Array.from({ length: n }, () => `--answer "..."`).join(' ')}`
+      : `magarine decide --ticket ${id} --answer "..."`,
   worker_needs_review: (id) => `magarine approve --ticket ${id}, or magarine reject --ticket ${id} --reason "..."`,
   worker_failed_final: (id) => `magarine retry --ticket ${id}, once the reason above is addressed`,
 };
@@ -86,7 +98,7 @@ const NEXT_COMMAND: Record<string, (ticketId: string) => string> = {
 // no full prompts/results/artifact listings reaching the envelope; a failed
 // ticket's own reported reason for failing is exactly the "reasons" the
 // spec asks the Manager's envelope to carry.
-export function reasonFor(eventType: string, payload: unknown, ticketId?: string): string {
+export function reasonFor(eventType: string, payload: unknown, ticketId?: string, pendingQuestionsCount?: number): string {
   const p = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
 
   if (eventType === 'project_spend_cap_reached') {
@@ -168,7 +180,7 @@ export function reasonFor(eventType: string, payload: unknown, ticketId?: string
     return eventType;
   })();
 
-  const nextCommand = ticketId ? NEXT_COMMAND[eventType]?.(ticketId) : undefined;
+  const nextCommand = ticketId ? NEXT_COMMAND[eventType]?.(ticketId, pendingQuestionsCount) : undefined;
   return nextCommand ? `${base} -- ${nextCommand}` : base;
 }
 
@@ -268,11 +280,13 @@ export function buildInbox(db: Db, projectId: string): InboxItem[] {
     const resolvesWhen = policy.resolvesWhen;
 
     let ticketIdForMessage: string | undefined;
+    let ticketForQuestions: ReturnType<typeof getTicket> | undefined;
     let stillPending: boolean;
     if ('ticketLeaves' in resolvesWhen) {
       const ticket = getTicket(db, event.entityId);
       stillPending = ticket !== undefined && ticket.status === resolvesWhen.ticketLeaves;
       ticketIdForMessage = event.entityId;
+      ticketForQuestions = ticket;
     } else {
       const run = getRun(db, event.entityId);
       stillPending = run !== undefined && run.status === resolvesWhen.runLeaves;
@@ -280,11 +294,22 @@ export function buildInbox(db: Db, projectId: string): InboxItem[] {
     }
     if (!stillPending) continue;
 
+    // Opus review amendment: `questions` only reads real per-question text
+    // off a MANAGER ticket's payload -- pendingQuestions needs the ticket's
+    // own kind to know that, so it is looked up here rather than trusting
+    // the payload shape alone (a work ticket's `questions` field is not
+    // this ticket's pending questions, see decide.ts's own doc comment).
+    const questions =
+      event.eventType === 'worker_needs_user_decision' && ticketForQuestions
+        ? pendingQuestions(event.payload, ticketForQuestions.kind)
+        : undefined;
+
     items.push({
       ticketId: ticketIdForMessage,
       eventType: event.eventType,
-      message: reasonFor(event.eventType, event.payload, ticketIdForMessage),
+      message: reasonFor(event.eventType, event.payload, ticketIdForMessage, questions?.length),
       createdAt: event.createdAt,
+      questions,
     });
   }
   // Chronological, by when each item's CURRENT (most recent) triggering
