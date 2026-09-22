@@ -46,6 +46,42 @@ addition to builders or instead of them: *"no, reviewer every mini phase or so i
   The reviewer is an additional check, not a replacement for that. Two independent checks, one of
   them fresh every time.
 
+**THE OPERATING MODEL: A PIPELINE. The owner, verbatim:** *"try to orchestrate in a way where a
+few sonnets build then another opus reviews meanwhile new sonnets code the next mini phase and some
+are running tests"*.
+
+So at any moment, three stages run at once on successive mini-phases:
+
+    mini-phase N+1   ->  a few SONNET builders code it
+    mini-phase N     ->  one fresh OPUS reviewer reviews it
+    mini-phase N-1   ->  SONNET test runners run the suite and the mutations on it
+
+Nobody waits for anybody. The lead plans the mini-phases, feeds the pipeline, verifies, commits.
+
+**THE CONSTRAINTS THAT MAKE IT SAFE. Each was learned by breaking it during batches 16-18:**
+1. **Parallel builders must not share files.** Two agents editing one file silently destroyed a
+   teammate's edit in batch 17. Either cut mini-phases along file boundaries, or, better, run
+   each builder with `Agent(..., isolation: "worktree")`, which gives every builder its own git
+   worktree. Then the lead merges.
+2. **Mini-phase N+1 must not build on N's UNREVIEWED code.** If the Opus review of N finds a defect
+   after N+1 was built on top of it, N+1 is rework. Order the batch so neighbouring mini-phases are
+   independent, and when one truly depends on another, hold it until the review passes.
+3. **Test runners run in ISOLATED worktrees, never the shared tree.** Page tests spawn a daemon from
+   source, so a half-written builder edit makes a test runner report failures that are not real.
+   That happened twice in batch 18. And **never run two Chrome-driving suites at once**: the
+   timing-sensitive animation test fails under that load (proven 2026-09-21, ten concurrent Chrome
+   processes, passes 3/3 alone).
+4. **The Opus reviewer is fresh every mini-phase** (see above), briefed with the ruling, the diff
+   and the acceptance lines, and reports defects by severity. A defect it finds goes back to a
+   builder; it does not advance.
+5. **The lead is still the only one who runs git**, and still does its own cold suite and
+   mutation before committing a mini-phase. Pipelining the work does not pipeline the trust:
+   nothing merges on a teammate's or reviewer's word alone.
+6. **COST, stated once:** a pipeline runs several agents at once, and the owner's binding
+   constraint has always been session limits. Keep builders to "a few" as they said, retire each
+   agent the moment its stage is done, and prefer one-shot `Agent` calls, which carry no idle
+   context, over standing team slots.
+
 **WHERE THINGS STAND:** batch 18 is CLOSED and pushed. The owner ran it on real work and said:
 *"i did the run, it is fine generally, didn't find real bugs this time so i will accept it"*. Read
 `docs/strategy/batch-18-closeout.md` first. `main` equals `origin/main` at `b85f842`. Suite:
