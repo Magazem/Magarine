@@ -98,3 +98,22 @@ Ruled instead — the panel says which case it is in, derived from data the page
 
 If the two can diverge for any reason other than the flag, the honest fix is for the daemon to say
 whether a flag is in force, ruled then as a small daemon change, the way `GET /models` was.
+
+## 5. Amendment 2, 2026-09-23: the daemon says whether a flag is in force
+
+Section 4's derived rule is SUPERSEDED. The designer proved two cases the page cannot resolve by
+inference, citing `daemonApi.ts` 558/564 and `store.ts` 153:
+
+- A board read taken before a save shows the old cap for up to one poll. Page-side fix: re-read the
+  board after a save, which they did.
+- **With no saved setting, `--max-parallel 1` and the plain default of 1 are indistinguishable.** The
+  page would then promise "applies on the next tick" for a daemon that in truth needs a restart.
+
+Ruled, as section 4 said it would be if this happened: `BoardResult.slots` gains
+`capFlag: number | null` (`deps.machineCapFlag ?? null`). The page reads flag-or-not from that field
+and never infers it. With a flag, the panel names it, says it wins until the daemon is restarted, and
+shows both the cap in force and the saved value; without one, the plain sentence. `capFlag` is a
+FIELD row in `ELEMENT-FIELD-TABLE.md`, and the derived rule from section 4 is removed.
+
+Tested with a daemon started with the flag and one without, including the `--max-parallel 1` and no
+saved setting case specifically, since that is the one inference got wrong.
