@@ -1,5 +1,60 @@
 # Handover — read this first
 
+## ⚠ 2026-09-22 — THE TEAM WAS DISSOLVED AND THE LEAD NOW HOLDS THE STRATEGIST ROLE
+
+**If you are a fresh lead, this section overrides everything below it.**
+
+The owner's instruction, verbatim: *"what we need right now, is to reset you, and fire everone,
+i am giving you the strategist role, and you hire new assistants based on their needs and
+roles, and continue batches"*.
+
+**WHAT CHANGED:**
+1. **There is no separate Strategist any more. You are the Strategist AND the lead.** You write
+   the batch specs and rulings yourself, in `docs/strategy/`, in the same style as before: HARD /
+   SOFT / UNKNOWN labels, every claim citing an artefact you have read, every acceptance line
+   runnable. The old rule "the Orchestrator orchestrates and never decides" is RETIRED; the
+   owner lifted it. What stays: **verify every teammate claim yourself before committing, and
+   mutation-test everything.** Deciding does not excuse you from checking.
+2. **Every previous teammate was shut down**: Strategist, Liaison, Interface Designer,
+   Invariants Engineer. The Butler had already been removed. Nothing was in flight and the tree
+   was clean.
+3. **The owner delegated hiring:** "you hire new assistants based on their needs and roles".
+   Hire for what the NEXT batch actually needs, not to rebuild the old roster. The team
+   governance still says to show the lineup as a table first; the owner has pre-authorised it,
+   so show it and proceed unless they object. `team_list_assistants` shows the real catalogue.
+   Old roles that worked: a sonnet daemon engineer for `packages/core/src/**`, and a sonnet
+   interface designer (assistant `ui-ux-pro-max`) for `packages/core/ui/**` + `src/ui/**`.
+   **There is no Liaison now**; the owner talks to you directly in this chat.
+
+**WHERE THINGS STAND:** batch 18 is CLOSED and pushed. The owner ran it on real work and said:
+*"i did the run, it is fine generally, didn't find real bugs this time so i will accept it"*. Read
+`docs/strategy/batch-18-closeout.md` first. `main` equals `origin/main` at `b85f842`. Suite:
+934 tests, 933 pass, 0 fail, 1 honest skip.
+
+**NEXT: batch 19. You plan it.** The carry list is in `batch-18-closeout.md`, all from the
+owner's own words:
+- The Manager's model: per project, with a configurable default (default half not built).
+- Worker roles/profiles: designed in `batch-16-addendum-1-worker-profiles-design.md`, never built.
+- Drill-down into what a worker is doing ("what is it running exactly, is it stuck").
+- `max-parallel` and the scope editable from inside the app.
+- One answer field per Manager question.
+- Batch 20: project creation in the window.
+Before planning, **ask the owner whether they want 19 now or want to use Magarine on real work
+first and let the friction set the order.** That question was open when the reset happened.
+
+**THE OWNER'S REAL PROJECT IS ON A DIFFERENT MACHINE.** This machine's `~/.magarine` holds only
+old walks and demos. The owner has given permission to read it. **Their `magarine app` window
+runs a Chrome whose profile is `~/.magarine\window`. It is theirs, not a stray.**
+
+**HOW THIS TEAM WORKED, which the old roster proved and you should keep:**
+- Verify page and daemon work in an ISOLATED git worktree (HEAD plus only the files under
+  review) whenever another agent is mid-edit, because page tests spawn a daemon from source.
+- A mutation window covers your test RUNS, not just your edits.
+- Test anything that acts automatically against a COPY of real data: that is how ruling 34's
+  dormant-project wake-up was caught, when no test in the suite had any history.
+- Clear a teammate's context once their brief is durable; never broadcast.
+- The lead commits and pushes; teammates never run git.
+
 Written so the Orchestrator's and Strategist's contexts can be reset without losing anything.
 Everything below is durable: the task board, `docs/strategy/`, `docs/design/`, `docs/evidence/`
 and the commit history carry the rest.
