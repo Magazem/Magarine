@@ -61,3 +61,20 @@ Evidence labels: HARD = I read or ran it. SOFT = inferred. UNKNOWN = guessing.
 
 The settings controls, the scope editor and one field per Manager question are 3B. The Agent
 Generator stays cut (batch 16 addendum section 6).
+
+## 4. Amendment, 2026-09-23: two gaps the designer found, ruled
+
+Both checked against the code by the lead before ruling.
+
+- **The organism could not take its tier from a profile id.** `organism(seed)` derives the tier from
+  the seed's own text (`organism.js` 108-113), so `mg.v1:prof_<uuid>` always came out `unknown` and
+  changing a profile's model changed nothing — acceptance 3 was unreachable. Ruled: `organism` gains
+  an OPTIONAL second argument, the model. Given a model, the tier is `tierOf(model)` and the cells
+  come from the hash of the seed; absent, every existing caller is unchanged. The file's own rule
+  stands: the tier is derived from the model, never stored.
+- **Nothing told the page which models the daemon knows.** `knownModelIds` was reachable only inside
+  a failed POST's error sentence. Ruled: a read-only `GET /models` returning `knownModelIds()`,
+  behind the token like every other route, with a test for 200 with a token and 401 without, and its
+  row in the element-field table. The alternative — deriving the list from the profiles in use —
+  was refused: a model nobody currently uses must still be choosable. This is a small daemon change
+  inside a page mini-phase, allowed deliberately.
