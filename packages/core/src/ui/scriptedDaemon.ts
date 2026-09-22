@@ -63,7 +63,7 @@ export async function withScriptedDaemon(
   const project = createProject(db, { name: 'Scripted', maxParallelWorkers: 2, workspaceRoot: workRoot });
   const loop = startDaemonLoop({ db, adapter, maxParallelWorkers: 2, artifactsDir, readiness: 'skip', tickIntervalMs: 1_000_000 });
   const handler = createRequestHandler({
-    db, adapter, loop, token: TOKEN, pid: process.pid, startedAt: new Date().toISOString(), machineCap: 2, stateDir: dir,
+    db, adapter, loop, token: TOKEN, pid: process.pid, startedAt: new Date().toISOString(), machineCapFlag: 2, stateDir: dir,
   });
   const server: Server = createServer(handler.handle);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

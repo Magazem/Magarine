@@ -20,6 +20,8 @@ import {
   listEventsForEntity,
   listEventsForProject,
   listTicketsByStatus,
+  resolveMachineCap,
+  setSetting,
   setTicketBudgetOverride,
   workerProfileStatus,
 } from './store.ts';
@@ -227,6 +229,69 @@ test('the concurrency cap holds even when workers hang', async () => {
     const run = getRun(db, started.runId)!;
     if (run.workspaceRef) rmSync(run.workspaceRef, { recursive: true, force: true });
   }
+});
+
+// Batch 19 ruling 35: the MACHINE-wide cap (not this project's own, which is
+// null here -- see setupProject's maxParallelWorkers arg, unused below) is
+// what daemon.ts re-reads from settings.max_parallel_workers on every tick
+// when `serve --max-parallel` was not given. That re-read itself lives in
+// store.ts's resolveMachineCap (daemon.ts just calls it once per tick); this
+// tests it AT THE SCHEDULER LEVEL -- two direct tick() calls, no daemon, no
+// timer, no process restart -- exactly like `computeProjectCap`'s own
+// caller (daemon.ts's tickProject) would drive it.
+test('admission rises on the very next tick when max_parallel_workers changes, with no restart -- resolveMachineCap called fresh per tick', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' }); // no project-level cap of its own: the machine cap alone governs, same as computeProjectCap's projectCap ?? Infinity
+  const adapter = new FakeAdapter();
+  const tickets = ['a', 'b', 'c'].map((n) => createTicket(db, { projectId: project.id, title: n, workspaceType: 'NONE' }));
+  for (const t of tickets) adapter.setScript(t.id, { kind: 'hang' });
+
+  const deps = (machineCap: number) => ({
+    readiness: 'skip' as const,
+    db,
+    adapter,
+    maxParallelWorkers: resolveMachineCap(db, machineCap === -1 ? undefined : machineCap),
+    projectId: project.id,
+    workspaceBaseDir,
+  });
+
+  // Nothing configured yet, no flag: resolveMachineCap's own last resort is 1.
+  const first = await tick(deps(-1));
+  assert.equal(first.started.length, 1, 'admission capped at 1 with nothing set');
+
+  // The owner's fix from the batch-18 replan (section 0): `config set
+  // max_parallel_workers 3` WHILE the daemon keeps running -- simulated here
+  // by writing the setting directly and calling tick() again, no restart of
+  // anything in between.
+  setSetting(db, 'max_parallel_workers', '3');
+  const second = await tick(deps(-1));
+  assert.equal(second.started.length, 2, '1 already in flight + 2 more admitted now that the cap reads 3');
+
+  for (const s of [...first.started, ...second.started]) await adapter.stop(s.handle);
+});
+
+test('resolveMachineCap: the flag wins outright for the life of the daemon -- a later config set to a HIGHER number changes nothing while the flag is given', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const adapter = new FakeAdapter();
+  const tickets = ['a', 'b'].map((n) => createTicket(db, { projectId: project.id, title: n, workspaceType: 'NONE' }));
+  for (const t of tickets) adapter.setScript(t.id, { kind: 'hang' });
+
+  setSetting(db, 'max_parallel_workers', '5');
+  // Simulates `serve --max-parallel 1`: the flag's own value is passed as
+  // resolveMachineCap's second argument, same as daemon.ts's
+  // deps.maxParallelWorkers when the flag was given.
+  const { started } = await tick({
+    readiness: 'skip',
+    db,
+    adapter,
+    maxParallelWorkers: resolveMachineCap(db, 1),
+    projectId: project.id,
+    workspaceBaseDir,
+  });
+  assert.equal(started.length, 1, 'the flag (1) wins outright even though the setting says 5');
+
+  for (const s of started) await adapter.stop(s.handle);
 });
 
 test('retry exhaustion reaches FAILED after max_attempts retryable failures', async () => {

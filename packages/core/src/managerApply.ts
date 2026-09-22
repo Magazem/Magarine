@@ -80,7 +80,7 @@ function buildProposalBoard(db: Db, projectId: string): ProposalBoard {
 // `scope_updated` event so the decision log (and, eventually, Role Q's page)
 // shows that the scope changed and roughly how much, without duplicating the
 // document's full text a second time in the event payload.
-function summarizeScopeChange(before: string, after: string): string {
+export function summarizeScopeChange(before: string, after: string): string {
   const countLines = (text: string) => text.split('\n').filter((l) => l.trim().length > 0).length;
   const beforeLines = countLines(before);
   const afterLines = countLines(after);

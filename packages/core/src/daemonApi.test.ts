@@ -8,8 +8,9 @@ import { spawnManaged, type ManagedProcess } from './process.ts';
 import { daemonFilePath, type DaemonFileInfo, type DaemonLoop } from './daemon.ts';
 import { consumeEventStream } from './daemonClient.ts';
 import { createRequestHandler, isSafeAssetName } from './daemonApi.ts';
-import { openDb } from './db/index.ts';
+import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
+import { createProject, getSetting, listEventsForProject, setProjectScopePath, setSetting } from './store.ts';
 import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
 
 // Cross-process coverage for the daemon's HTTP API itself: everything here
@@ -85,7 +86,7 @@ async function api(
   token: string,
   // Batch 19 mini-phase 1A: 'PATCH' joins 'GET'/'POST' for `PATCH
   // /profiles/{id}` (profile set).
-  method: 'GET' | 'POST' | 'PATCH',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT',
   path: string,
   body?: unknown
 ): Promise<{ status: number; text: string; json: unknown }> {
@@ -106,6 +107,242 @@ async function api(
   }
   return { status: res.status, text, json };
 }
+
+// Ruling 35's own routes (GET/PATCH /settings, PATCH /projects/{id}, PUT
+// /projects/{id}/scope) are covered IN-PROCESS, the same way the SSE
+// closeAllStreams test above already does it: a real http.Server built
+// directly from createRequestHandler's own `handle`, no CLI subprocess. The
+// auth test above needs a real spawned daemon (it checks stdout/stderr never
+// leak the token); these routes do not, so the lighter, faster path is used
+// here.
+const TEST_TOKEN = 'settings-test-token';
+
+async function startTestServer(db: Db): Promise<{ port: number; close: () => Promise<void> }> {
+  const stubLoop: DaemonLoop = {
+    live: new Map(),
+    stop: async () => ({ cancelled: [] }),
+    forceTick: async () => ({ started: [] }),
+    cancelTicket: async () => 'not_running',
+  };
+  const requestHandler = createRequestHandler({
+    db,
+    adapter: new FakeAdapter(),
+    loop: stubLoop,
+    token: TEST_TOKEN,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    stateDir: testRoot.root,
+  });
+  const server = createServer(requestHandler.handle);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  return {
+    port,
+    async close() {
+      requestHandler.closeAllStreams();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+test('GET /settings reports only what has been set; PATCH /settings sets (string OR number for the cap), clears (null), validates ALL fields before writing ANY, and refuses an unknown key or a bad value in one sentence', async () => {
+  const db = openDb(':memory:');
+  const { port, close } = await startTestServer(db);
+  try {
+    // Mutating routes stay behind the token like every existing one.
+    const wrongToken = await api(port, 'wrong-token', 'PATCH', '/settings', { max_parallel_workers: '2' });
+    assert.equal(wrongToken.status, 401);
+
+    const empty = await api(port, TEST_TOKEN, 'GET', '/settings');
+    assert.equal(empty.status, 200);
+    assert.deepEqual(empty.json, {});
+
+    // Review fix #9: max_parallel_workers accepted as a JSON NUMBER, not
+    // only a string -- stored as its canonical decimal string either way.
+    const set = await api(port, TEST_TOKEN, 'PATCH', '/settings', { default_manager_model: 'claude-opus-5', max_parallel_workers: 3 });
+    assert.equal(set.status, 200, set.text);
+    assert.deepEqual(set.json, { default_manager_model: 'claude-opus-5', max_parallel_workers: '3' });
+
+    const unknownKey = await api(port, TEST_TOKEN, 'PATCH', '/settings', { not_a_real_key: 'x' });
+    assert.equal(unknownKey.status, 400);
+    assert.equal((unknownKey.json as { error: string }).error.split('.').length <= 2, true, 'refusal must be one sentence');
+
+    const badModel = await api(port, TEST_TOKEN, 'PATCH', '/settings', { default_verifier_model: 'not-a-real-model' });
+    assert.equal(badModel.status, 400);
+
+    const badCap = await api(port, TEST_TOKEN, 'PATCH', '/settings', { max_parallel_workers: '0' });
+    assert.equal(badCap.status, 400);
+
+    // Review fix #9: non-canonical forms Number() would happily parse.
+    for (const nonCanonical of ['0x3', '1e1', ' 3']) {
+      const bad = await api(port, TEST_TOKEN, 'PATCH', '/settings', { max_parallel_workers: nonCanonical });
+      assert.equal(bad.status, 400, `${nonCanonical} must be refused`);
+    }
+
+    // Review fix #3: a valid field alongside an invalid one must not leave
+    // the valid one written -- the whole request is validated FIRST.
+    const partial = await api(port, TEST_TOKEN, 'PATCH', '/settings', {
+      default_manager_model: 'claude-fable-5-1',
+      max_parallel_workers: 'bogus',
+    });
+    assert.equal(partial.status, 400);
+    assert.equal(getSetting(db, 'default_manager_model'), 'claude-opus-5', 'must be untouched by the rejected request');
+    assert.equal(getSetting(db, 'max_parallel_workers'), '3', 'must be untouched by the rejected request');
+
+    // Review fix #8: a null/non-object body is a clean 400, not a JS error.
+    const nullBody = await api(port, TEST_TOKEN, 'PATCH', '/settings', null);
+    assert.equal(nullBody.status, 400);
+    const arrayBody = await api(port, TEST_TOKEN, 'PATCH', '/settings', [1, 2, 3]);
+    assert.equal(arrayBody.status, 400);
+
+    const clear = await api(port, TEST_TOKEN, 'PATCH', '/settings', { default_manager_model: null });
+    assert.equal(clear.status, 200, clear.text);
+    assert.equal(getSetting(db, 'default_manager_model'), null);
+    assert.equal(getSetting(db, 'max_parallel_workers'), '3', 'clearing one key must not touch another');
+  } finally {
+    await close();
+  }
+});
+
+test('PATCH /projects/{id} accepts maxParallel/managerModel/verifierModel/defaultModel, null clears an override, validates ALL fields before writing ANY, and refuses an unknown model, maxParallel: 0, an unknown field, or a null/non-object body with one sentence', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', defaultModel: 'claude-sonnet-5' });
+  const { port, close } = await startTestServer(db);
+  try {
+    const wrongToken = await api(port, 'wrong-token', 'PATCH', `/projects/${project.id}`, { maxParallel: 2 });
+    assert.equal(wrongToken.status, 401);
+
+    const ok = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, { maxParallel: 2, managerModel: 'claude-opus-5' });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal((ok.json as { maxParallelWorkers: number }).maxParallelWorkers, 2);
+    assert.equal((ok.json as { managerModel: string }).managerModel, 'claude-opus-5');
+
+    // GET /projects confirms the change is visible on the project list too.
+    const list = await api(port, TEST_TOKEN, 'GET', '/projects');
+    assert.equal(list.status, 200);
+    const listed = (list.json as Array<{ id: string; maxParallelWorkers?: number; managerModel?: string | null }>).find(
+      (p) => p.id === project.id
+    );
+    assert.ok(listed, 'the project must appear in GET /projects');
+    assert.equal(listed!.maxParallelWorkers, 2, 'GET /projects must reflect the patched maxParallel');
+    assert.equal(listed!.managerModel, 'claude-opus-5', 'GET /projects must reflect the patched managerModel');
+
+    // Review fix #2: {maxParallel: 2, managerModel: "bogus"} -- maxParallel
+    // alone is perfectly valid, but the WHOLE request must be validated
+    // before anything is written, so the earlier successful maxParallel: 2
+    // from above must still read back as 2, not overwritten to a NEW
+    // (also valid) number here, and nothing from this rejected call lands.
+    const partial = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, { maxParallel: 9, managerModel: 'bogus' });
+    assert.equal(partial.status, 400, partial.text);
+    const afterPartial = await api(port, TEST_TOKEN, 'GET', '/projects');
+    const listedAfterPartial = (afterPartial.json as Array<{ id: string; maxParallelWorkers?: number; managerModel?: string | null }>).find(
+      (p) => p.id === project.id
+    );
+    assert.equal(listedAfterPartial!.maxParallelWorkers, 2, 'maxParallel must be UNCHANGED by the rejected request');
+    assert.equal(listedAfterPartial!.managerModel, 'claude-opus-5', 'managerModel must be UNCHANGED by the rejected request');
+
+    const clearOverride = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, { managerModel: null });
+    assert.equal(clearOverride.status, 200, clearOverride.text);
+    assert.equal((clearOverride.json as { managerModel: string | null }).managerModel, null);
+
+    const unknownModel = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, { verifierModel: 'not-a-real-model' });
+    assert.equal(unknownModel.status, 400);
+    assert.equal((unknownModel.json as { error: string }).error.length > 0, true);
+
+    const zeroCap = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, { maxParallel: 0 });
+    assert.equal(zeroCap.status, 400);
+
+    const unknownField = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, { nope: 'x' });
+    assert.equal(unknownField.status, 400);
+    assert.equal((unknownField.json as { error: string }).error.includes('nope'), true);
+
+    const clearedDefault = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, { defaultModel: null });
+    assert.equal(clearedDefault.status, 400, 'defaultModel has no override to clear');
+
+    // Review fix #8: a null/non-object body is a clean 400, not a JS error.
+    const nullBody = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, null);
+    assert.equal(nullBody.status, 400);
+    const stringBody = await api(port, TEST_TOKEN, 'PATCH', `/projects/${project.id}`, 'oops');
+    assert.equal(stringBody.status, 400);
+  } finally {
+    await close();
+  }
+});
+
+test('PUT /projects/{id}/scope writes atomically (temp file + rename): GET returns the same text back, records a scope_updated event marked as the owner\'s edit, is refused with no scope_path set, a null/non-object body is a clean 400, and it stays behind the token', async () => {
+  const db = openDb(':memory:');
+  const noScope = createProject(db, { name: 'no-scope' });
+  const scopePath = join(testRoot.root, 'scope-put-test', 'SCOPE.md');
+  const withScope = createProject(db, { name: 'with-scope' });
+  setProjectScopePath(db, withScope.id, scopePath);
+  const { port, close } = await startTestServer(db);
+  try {
+    const wrongToken = await api(port, 'wrong-token', 'PUT', `/projects/${withScope.id}/scope`, { scopeText: 'x' });
+    assert.equal(wrongToken.status, 401);
+
+    const refused = await api(port, TEST_TOKEN, 'PUT', `/projects/${noScope.id}/scope`, { scopeText: 'x' });
+    assert.equal(refused.status, 400);
+
+    const nullBody = await api(port, TEST_TOKEN, 'PUT', `/projects/${withScope.id}/scope`, null);
+    assert.equal(nullBody.status, 400);
+
+    const put = await api(port, TEST_TOKEN, 'PUT', `/projects/${withScope.id}/scope`, { scopeText: 'First draft.' });
+    assert.equal(put.status, 200, put.text);
+
+    const get = await api(port, TEST_TOKEN, 'GET', `/projects/${withScope.id}/scope`);
+    assert.equal(get.status, 200);
+    assert.deepEqual(get.json, { scopeText: 'First draft.', status: 'present' });
+
+    // No tmp file left lying around next to the real one after a clean write.
+    assert.equal(readFileSync(scopePath, 'utf8'), 'First draft.');
+    assert.throws(() => readFileSync(`${scopePath}.tmp`, 'utf8'));
+
+    // Review fix #5: reuses managerApply.ts's own summarizeScopeChange, and
+    // is marked as the OWNER's edit (not the Manager's) so the two origins
+    // are distinguishable in the activity feed the Manager also reads from.
+    const events = listEventsForProject(db, withScope.id).filter((e) => e.eventType === 'scope_updated');
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0]!.payload, { summary: 'scope written (1 line(s))', source: 'owner' });
+  } finally {
+    await close();
+  }
+});
+
+// Review fix #1: without `--max-parallel` (startTestServer's requestHandler
+// is built with no `machineCapFlag`, matching a real `serve` with no flag),
+// GET /health and GET /board used to report `cap: null` FOREVER -- resolved
+// once, wrong, at createRequestHandler() time. Both now call store.ts's
+// resolveMachineCap fresh on every request; this proves it by reading twice,
+// across a `config set` in between, with NO server restart -- the exact same
+// "no restart" claim daemon.ts's own admission fix makes, now true for the
+// REPORTED cap too, not just the enforced one.
+test('GET /health and GET /board report the machine cap resolved fresh (flag ?? settings ?? 1), never null, and change without a server restart', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const { port, close } = await startTestServer(db);
+  try {
+    const healthBefore = (await api(port, TEST_TOKEN, 'GET', '/health')).json as { slots: { cap: number | null } };
+    assert.equal(healthBefore.slots.cap, 1, 'the last-resort default, not null');
+
+    const boardBefore = (await api(port, TEST_TOKEN, 'GET', `/board?project=${project.id}`)).json as {
+      slots: { cap: number | null };
+    };
+    assert.equal(boardBefore.slots.cap, 1);
+
+    setSetting(db, 'max_parallel_workers', '5');
+
+    const healthAfter = (await api(port, TEST_TOKEN, 'GET', '/health')).json as { slots: { cap: number | null } };
+    assert.equal(healthAfter.slots.cap, 5, 'the SAME running server must reflect the new setting on its very next read');
+
+    const boardAfter = (await api(port, TEST_TOKEN, 'GET', `/board?project=${project.id}`)).json as {
+      slots: { cap: number | null };
+    };
+    assert.equal(boardAfter.slots.cap, 5);
+  } finally {
+    await close();
+  }
+});
 
 test('auth: correct token is accepted, a wrong or missing token is refused (401), and the real token never appears in any response or in the daemon\'s own output', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'auth-'));

@@ -480,4 +480,30 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  // Batch 19 ruling 35 (docs/strategy/batch-19-spec.md section 3): global
+  // defaults live in ONE table, key/value, read fresh on every use (never
+  // cached) -- store.ts's resolveManagerModel/resolveVerifierModel/
+  // resolveMachineCap. This batch's own three keys are
+  // `default_manager_model`, `default_verifier_model` and
+  // `max_parallel_workers`; an unknown key is refused by the store before it
+  // ever reaches this table (assertKnownSettingKey), so a row here is always
+  // one of those three. `updated_at` is per-row, not per-table, matching
+  // every other mutable row in this schema.
+  //
+  // Mini-phase 1B owns this id; the parallel worktree building 1A owns
+  // `0017_worker_profiles`. The two are independent (this migration adds no
+  // column to any table 0017 touches) -- appended straight after 0016 here
+  // since 0017 has not landed in this tree yet, per the mini-phase table's
+  // own note that 1B's migration must not assume 0017 ran first, beyond the
+  // list's own order.
+  {
+    id: '0018_settings',
+    sql: `
+      CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `,
+  },
 ];

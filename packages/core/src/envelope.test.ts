@@ -124,3 +124,55 @@ test('prompt has no expected-artifacts section at all when the ticket carries no
   const prompt = buildWorkerPrompt(ticket({ expectedArtifacts: undefined }), '/tmp/ws');
   assert.doesNotMatch(prompt, /Expected artifacts/i);
 });
+
+// --- Batch 19 ruling 35: the verdict cap ---
+
+test('a previousAttempt.reason of 10,000 characters is cut to exactly 4000 in the rendered prompt, with a line naming the cut and the original length', () => {
+  const reason = 'x'.repeat(10_000);
+  const prompt = buildWorkerPrompt(ticket({ previousAttempt: { status: 'rejected', reason } }), '/tmp/ws');
+
+  const match = /Previous attempt rejected: (x+)/.exec(prompt);
+  assert.ok(match, 'the previous-attempt line must be present');
+  assert.equal(match![1]!.length, 4000, 'exactly 4000 characters of the reason must appear');
+  assert.doesNotMatch(prompt, /x{4001}/, 'no more than 4000 consecutive x characters may appear');
+  assert.match(prompt, /cut to 4000 characters/);
+  assert.match(prompt, /10000 characters long/);
+});
+
+test('a previousAttempt.reason under the 4000-character cap is rendered whole, with no cut line', () => {
+  const reason = 'short reason UNIQUE-MARKER-777';
+  const prompt = buildWorkerPrompt(ticket({ previousAttempt: { status: 'failed', reason } }), '/tmp/ws');
+
+  assert.match(prompt, /Previous attempt failed: short reason UNIQUE-MARKER-777/);
+  assert.doesNotMatch(prompt, /cut to 4000 characters/);
+});
+
+test('a previousAttempt.reason of EXACTLY 4000 characters is not treated as cut (boundary)', () => {
+  const reason = 'y'.repeat(4000);
+  const prompt = buildWorkerPrompt(ticket({ previousAttempt: { status: 'rejected', reason } }), '/tmp/ws');
+  assert.doesNotMatch(prompt, /cut to 4000 characters/);
+  assert.match(prompt, new RegExp(`Previous attempt rejected: y{4000}(?!y)`));
+});
+
+// Review fix #10: an emoji ('😀', U+1F600) is two UTF-16 code units -- a
+// high surrogate then a low surrogate. Placed so the plain 4000-cut would
+// land exactly between them (3999 'x's, then the emoji, then padding),
+// the cut must back off to 3999 code units rather than emit a lone,
+// unpaired surrogate at the end of the rendered reason.
+test('a previousAttempt.reason where the 4000-cut would split a surrogate pair backs off to 3999 code units instead, and says so', () => {
+  const reason = 'x'.repeat(3999) + '\u{1F600}' + 'z'.repeat(5999);
+  assert.equal(reason.length, 10_000, 'sanity: the emoji contributes 2 UTF-16 code units, still 10,000 total');
+  assert.equal(reason.charCodeAt(3999), 0xd83d, 'sanity: index 3999 is the emoji\'s high surrogate');
+  assert.equal(reason.charCodeAt(4000), 0xde00, 'sanity: index 4000 is the emoji\'s low surrogate');
+
+  const prompt = buildWorkerPrompt(ticket({ previousAttempt: { status: 'rejected', reason } }), '/tmp/ws');
+
+  const match = /Previous attempt rejected: (x+)/.exec(prompt);
+  assert.ok(match, 'the previous-attempt line must be present');
+  assert.equal(match![1]!.length, 3999, 'backed off by exactly one code unit to avoid splitting the pair');
+  assert.match(prompt, /cut to 3999 characters/, 'the cut line must name the ACTUAL length rendered, not a fixed 4000');
+  assert.match(prompt, /10000 characters long/);
+  // Neither surrogate half of the emoji reaches the rendered prompt at all.
+  assert.ok(!prompt.includes('\u{1F600}'), 'the emoji itself must not appear');
+  assert.ok(!prompt.includes('\uD83D'), 'the lone high surrogate must not appear unpaired');
+});

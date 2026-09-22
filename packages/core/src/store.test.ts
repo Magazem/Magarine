@@ -14,6 +14,8 @@ import {
   finishRun,
   getProject,
   getRun,
+  getSetting,
+  getSettings,
   getTicket,
   getWorkerProfile,
   getWorkerProfileByName,
@@ -29,11 +31,13 @@ import {
   pauseProjectAdapter,
   projectSpendUsd,
   resolveManagerModel,
+  resolveMachineCap,
   resolveMaxBudgetUsd,
   resolveModel,
   resolveWorkerProfileRef,
   resolveWorkerProfileRefForAdmin,
   retireWorkerProfile,
+  resolveVerifierModel,
   resumeProject,
   resumeProjectAdapter,
   setProjectDir,
@@ -42,9 +46,12 @@ import {
   setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setProjectScopePath,
+  setProjectVerifierModel,
   setRunUsage,
+  setSetting,
   setTicketBudgetOverride,
   ticketSpendUsd,
+  unsetSetting,
   updateTicketFields,
   updateWorkerProfile,
   workerProfileStatus,
@@ -148,13 +155,13 @@ test('createProject defaults managerModel to null and accepts an override', () =
 test('resolveManagerModel falls back to the project\'s defaultModel when no managerModel override is set', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', defaultModel: 'claude-sonnet-5' });
-  assert.equal(resolveManagerModel(project), 'claude-sonnet-5');
+  assert.equal(resolveManagerModel(db, project), 'claude-sonnet-5');
 });
 
 test('resolveManagerModel prefers managerModel over defaultModel when set', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', defaultModel: 'claude-sonnet-5', managerModel: 'claude-fable-5-1' });
-  assert.equal(resolveManagerModel(project), 'claude-fable-5-1');
+  assert.equal(resolveManagerModel(db, project), 'claude-fable-5-1');
 });
 
 test('addDependency refuses a "blocks" edge between a manager ticket and a work ticket, in both directions, but allows work-to-work and manager-to-manager', () => {
@@ -929,4 +936,100 @@ test('createRun refuses a profileId for a manager-kind ticket', () => {
   // A profile-less run on the same manager ticket is unaffected.
   const run = createRun(db, { ticketId: managerTicket.id, attempt: 1, adapter: 'fake' });
   assert.equal(run.profileId, null);
+});
+
+// --- Batch 19 ruling 35: settings (global defaults) ---
+
+test('getSetting/getSettings: absent by default, direct reads see exactly what setSetting wrote', () => {
+  const db = openDb(':memory:');
+  assert.equal(getSetting(db, 'default_manager_model'), null);
+  assert.deepEqual(getSettings(db), {});
+
+  setSetting(db, 'default_manager_model', 'claude-opus-5');
+  assert.equal(getSetting(db, 'default_manager_model'), 'claude-opus-5');
+  assert.deepEqual(getSettings(db), { default_manager_model: 'claude-opus-5' });
+
+  // Setting the same key again overwrites, not duplicates.
+  setSetting(db, 'default_manager_model', 'claude-fable-5-1');
+  assert.equal(getSetting(db, 'default_manager_model'), 'claude-fable-5-1');
+  assert.deepEqual(getSettings(db), { default_manager_model: 'claude-fable-5-1' });
+});
+
+test('setSetting refuses an unknown key, an unknown model, and an invalid max_parallel_workers, each in one sentence, and writes nothing', () => {
+  const db = openDb(':memory:');
+  assert.throws(() => setSetting(db, 'not_a_real_key', 'x'), /unknown setting: not_a_real_key/);
+  assert.throws(() => setSetting(db, 'default_manager_model', 'not-a-real-model'), /unknown model/);
+  assert.throws(() => setSetting(db, 'default_verifier_model', 'not-a-real-model'), /unknown model/);
+  for (const bad of ['0', '-1', '1.5', 'abc']) {
+    assert.throws(() => setSetting(db, 'max_parallel_workers', bad), /whole number of 1 or more/, `must refuse ${bad}`);
+  }
+  assert.deepEqual(getSettings(db), {}, 'every refused call must have written nothing');
+});
+
+// Review fix #9: Number() happily parses "0x3" (hex), "1e1" (exponential)
+// and " 3" (leading space) -- the OLD `assertValidMaxParallelWorkers(Number(value))`
+// check silently accepted every one of those. The cap is now stored as its
+// canonical decimal-integer string ONLY; a non-canonical form is refused
+// (the chosen fix, per the review, is refuse -- not normalize-and-store).
+// The refusal message names the SETTING ("max_parallel_workers (the
+// machine's worker cap)"), not the CLI flag -- nobody typed `--max-parallel`
+// on this path.
+test('setSetting refuses a non-canonical max_parallel_workers value ("0x3", "1e1", " 3", "3.0", "+3") even though Number() would parse every one of them', () => {
+  const db = openDb(':memory:');
+  for (const nonCanonical of ['0x3', '1e1', ' 3', '3 ', '3.0', '+3', '03']) {
+    assert.throws(
+      () => setSetting(db, 'max_parallel_workers', nonCanonical),
+      /max_parallel_workers \(the machine's worker cap\)/,
+      `must refuse non-canonical form ${JSON.stringify(nonCanonical)}`
+    );
+  }
+  assert.equal(getSetting(db, 'max_parallel_workers'), null, 'nothing must have been written');
+  // The canonical form of the same value is still accepted.
+  setSetting(db, 'max_parallel_workers', '3');
+  assert.equal(getSetting(db, 'max_parallel_workers'), '3');
+});
+
+test('unsetSetting clears a key back to absent, and itself refuses an unknown key', () => {
+  const db = openDb(':memory:');
+  setSetting(db, 'max_parallel_workers', '4');
+  assert.equal(getSetting(db, 'max_parallel_workers'), '4');
+  unsetSetting(db, 'max_parallel_workers');
+  assert.equal(getSetting(db, 'max_parallel_workers'), null);
+  assert.throws(() => unsetSetting(db, 'not_a_real_key'), /unknown setting: not_a_real_key/);
+});
+
+test('resolveManagerModel/resolveVerifierModel: project override wins, else the global setting, else the project defaultModel', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', defaultModel: 'claude-sonnet-5' });
+
+  // Neither override nor setting: falls all the way back to defaultModel.
+  assert.equal(resolveManagerModel(db, project), 'claude-sonnet-5');
+  assert.equal(resolveVerifierModel(db, project), 'claude-sonnet-5');
+
+  // The global setting slots in between the override and defaultModel.
+  setSetting(db, 'default_manager_model', 'claude-opus-5');
+  setSetting(db, 'default_verifier_model', 'claude-haiku-4-5-20251001');
+  assert.equal(resolveManagerModel(db, project), 'claude-opus-5');
+  assert.equal(resolveVerifierModel(db, project), 'claude-haiku-4-5-20251001');
+
+  // A project's own override still wins over the global setting.
+  setProjectManagerModel(db, project.id, 'claude-fable-5-1');
+  setProjectVerifierModel(db, project.id, 'claude-fable-5-1');
+  const withOverrides = getProject(db, project.id)!;
+  assert.equal(resolveManagerModel(db, withOverrides), 'claude-fable-5-1');
+  assert.equal(resolveVerifierModel(db, withOverrides), 'claude-fable-5-1');
+});
+
+test('resolveMachineCap: the flag wins outright when given; without it, the setting is read fresh, falling back to 1 when nothing is set', () => {
+  const db = openDb(':memory:');
+  assert.equal(resolveMachineCap(db, undefined), 1, 'last resort: neither flag nor setting');
+
+  setSetting(db, 'max_parallel_workers', '5');
+  assert.equal(resolveMachineCap(db, undefined), 5, 'the setting, read fresh, with no flag');
+
+  assert.equal(resolveMachineCap(db, 2), 2, 'the flag wins outright, even though the setting says 5');
+
+  // No restart needed to see a changed setting: a later call sees the change immediately.
+  setSetting(db, 'max_parallel_workers', '7');
+  assert.equal(resolveMachineCap(db, undefined), 7);
 });

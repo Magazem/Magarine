@@ -28,7 +28,7 @@ export async function daemonRequest<T = unknown>(
   // /profiles/{id}` (profile set) -- everything else about this function
   // (auth header, JSON body, the DaemonUnreachableError wrapping) is
   // unchanged and applies identically to the new verb.
-  method: 'GET' | 'POST' | 'PATCH',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT',
   path: string,
   body?: unknown
 ): Promise<DaemonResponse<T>> {

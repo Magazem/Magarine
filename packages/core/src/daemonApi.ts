@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Db } from './db/index.ts';
+import { withTransaction, type Db } from './db/index.ts';
+import { newId } from './id.ts';
 import { buildActivity, buildTicketProgress } from './commands/activity.ts';
 import { approve, ApproveError } from './commands/approve.ts';
 import { buildBoard, buildSlots } from './commands/board.ts';
@@ -15,31 +16,42 @@ import { resume, ResumeError } from './commands/resume.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import type { DaemonLoop } from './daemon.ts';
 import { resolveReadiness } from './dependencies.ts';
-import { discussProject, ManagerError, readScopeText } from './manager.ts';
+import { discussProject, ManagerError, readScopeText, writeScopeTextAtomic } from './manager.ts';
+import { summarizeScopeChange } from './managerApply.ts';
 import { buildConversation } from './commands/conversation.ts';
+import { classify } from './policy.ts';
 import { planWithMission } from './commands/plan.ts';
+import { isKnownModel } from './pricing.ts';
 import { validateExpectedArtifacts } from './proposal.ts';
 import { probeScopeFile } from './scopeProbe.ts';
 import {
   addDependency,
+  assertValidMaxParallelWorkers,
+  assertValidSettingValue,
   createTicket,
   createWorkerProfile,
   getProject,
+  getSettings,
   getTicket,
   getWorkerProfile,
+  insertEvent,
   listEventsSince,
   listWorkerProfiles,
   NoSuchWorkerProfileError,
   retireWorkerProfile,
+  resolveMachineCap,
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
   setProjectVerifierModel,
   setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
+  setSetting,
+  SETTINGS_KEYS,
   setTicketBudgetOverride,
   updateWorkerProfile,
   workerProfileStatus,
+  unsetSetting,
 } from './store.ts';
 import type { AgentAdapter, DependencyType, EventRow, ExpectedArtifact, WorkspaceType } from './types.ts';
 
@@ -53,7 +65,11 @@ import type { AgentAdapter, DependencyType, EventRow, ExpectedArtifact, Workspac
 // A, ruling 7 and its own item 2) adds `GET /tickets/{id}/progress`, `GET
 // /events?since=<sequence>` (answering `text/event-stream`, see
 // handleEventsStream below -- the one non-JSON route this file serves) and
-// the `GET /ui/<name>` static asset route (ruling 12).
+// the `GET /ui/<name>` static asset route (ruling 12). Batch 19 ruling 35
+// adds `GET`/`PATCH /settings`, `PATCH /projects/{id}` (a stricter sibling
+// of the existing `POST /projects/{id}/set`, see handlePatchProject's own
+// comment) and `PUT /projects/{id}/scope` (the scope editor's write side,
+// alongside the existing `GET`).
 //
 // Every mutation here goes through the exact same functions the CLI already
 // calls (store.ts, commands/*.ts, dependencies.ts) -- this file adds no
@@ -69,15 +85,18 @@ export interface DaemonApiDeps {
   token: string;
   pid: number;
   startedAt: string;
-  // A `?? null` on this field (in `/health` and `/board`) is a default that
-  // CARRIES THE UNKNOWN FORWARD: absent here means "this handler was built
-  // without a scheduler in view", and the consumer receives `cap: null`
-  // -- never a number nobody measured. That is the opposite of a default
-  // that INVENTS a measurement (`?? { used: 0 }` would report "nothing running"
-  // where nothing was measured), which is what `status` must never do with a
-  // `/health` that lacks `slots` (see its comment in cli.ts).
-  /** The daemon's machine-wide `--max-parallel`, reported on `GET /health` and `GET /board` as `slots.cap`. Optional so a handler built without a scheduler in view (tests) reports null rather than a guess. */
-  machineCap?: number;
+  // Review fix (1B): this used to be a single fixed number (or undefined),
+  // frozen at createRequestHandler() time -- so a daemon started WITHOUT
+  // `--max-parallel` reported `slots.cap: null` on every `/health`/`/board`
+  // forever, never picking up a `config set max_parallel_workers` the way
+  // admission itself already does (daemon.ts's tickProject). Renamed to make
+  // that explicit: this is the FLAG's value only (undefined when not given);
+  // `/health` and `/board` below call store.ts's resolveMachineCap(deps.db,
+  // deps.machineCapFlag) FRESH on every request, same function and same
+  // fallback (`?? settings.max_parallel_workers ?? 1`) daemon.ts uses per
+  // tick -- so the reported cap is never null and never stale.
+  /** `serve --max-parallel`'s own value; undefined when the flag was not given. Never read directly -- see resolveMachineCap's call sites in /health and /board below. */
+  machineCapFlag?: number;
   /** Magarine's state directory: `GET /projects` needs it for the readiness rules (batch 16 ruling 24). */
   stateDir: string;
   /** The clock launch codes expire against (epoch milliseconds). Injectable so a test proves the sixty seconds without sleeping; `Date.now` in production. */
@@ -284,6 +303,172 @@ function handleSetProject(db: Db, projectId: string, body: unknown): RouteResult
   return { status: 200, body: getProject(db, projectId) };
 }
 
+// Ruling 35 (batch-19-spec.md section 3): a STRICTER sibling of
+// handleSetProject above -- that route pre-dates this batch and stays as-is
+// (unknown fields silently ignored, no model validation, matching the CLI's
+// own long-standing `project set`). This one is new: an unknown field, an
+// unknown model, or `maxParallel: 0` is a 400 naming the problem in one
+// sentence, exactly what section 3's acceptance line 3 asks for. `null`
+// clears an override (`managerModel`/`verifierModel`/`maxParallel`);
+// `defaultModel` has no override to clear (a project always has one), so
+// `null` there is refused rather than silently accepted as a no-op.
+const PROJECT_PATCH_FIELDS = ['maxParallel', 'managerModel', 'verifierModel', 'defaultModel'] as const;
+
+// Review fix #8: a literal JSON `null`, array, or scalar body reached the
+// field checks below as-is and threw a raw property-access TypeError (e.g.
+// `null.scopeText`) rather than a clean 400 -- checked once, here and in
+// handlePatchSettings/handlePutScope, before anything else touches `body`.
+// A genuinely EMPTY body (`readBody` resolves that to `{}`, never to
+// `undefined`) is a valid, if pointless, no-op PATCH and is not refused.
+function requireJsonObjectBody(body: unknown): Record<string, unknown> {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw new ApiError(400, 'the request body must be a JSON object');
+  }
+  return body as Record<string, unknown>;
+}
+
+function handlePatchProject(db: Db, projectId: string, body: unknown): RouteResult {
+  const project = getProject(db, projectId);
+  if (!project) throw new ApiError(404, `no such project: ${projectId}`);
+  const b = requireJsonObjectBody(body);
+  const unknown = Object.keys(b).filter((k) => !(PROJECT_PATCH_FIELDS as readonly string[]).includes(k));
+  if (unknown.length > 0) {
+    throw new ApiError(400, `unknown field(s) for PATCH /projects/{id}: ${unknown.join(', ')}`);
+  }
+
+  // Review fix #2: every field is VALIDATED here, before any setter runs --
+  // {maxParallel: 2, managerModel: "bogus"} must reach the second field's
+  // refusal without the first ever having been written. Nothing below this
+  // block calls a setter.
+  let maxParallel: number | null | undefined;
+  if ('maxParallel' in b) {
+    const v = b.maxParallel;
+    if (v !== null) {
+      if (typeof v !== 'number') throw new ApiError(400, 'maxParallel must be a number or null');
+      assertValidMaxParallelWorkers(v);
+    }
+    maxParallel = v as number | null;
+  }
+  let managerModel: string | null | undefined;
+  if ('managerModel' in b) {
+    const v = b.managerModel;
+    if (v !== null && (typeof v !== 'string' || !isKnownModel(v))) {
+      throw new ApiError(400, `unknown model for managerModel: ${String(v)}`);
+    }
+    managerModel = v as string | null;
+  }
+  let verifierModel: string | null | undefined;
+  if ('verifierModel' in b) {
+    const v = b.verifierModel;
+    if (v !== null && (typeof v !== 'string' || !isKnownModel(v))) {
+      throw new ApiError(400, `unknown model for verifierModel: ${String(v)}`);
+    }
+    verifierModel = v as string | null;
+  }
+  let defaultModel: string | undefined;
+  if ('defaultModel' in b) {
+    const v = b.defaultModel;
+    if (v === null) throw new ApiError(400, 'defaultModel cannot be cleared: a project always has one');
+    if (typeof v !== 'string' || !isKnownModel(v)) throw new ApiError(400, `unknown model for defaultModel: ${String(v)}`);
+    defaultModel = v;
+  }
+
+  // Every field above is already validated -- this can only fail on a
+  // genuine DB-level surprise, and withTransaction rolls back atomically
+  // either way, so a mid-write failure still leaves nothing partially set.
+  withTransaction(db, () => {
+    if (maxParallel !== undefined) setProjectMaxParallelWorkers(db, projectId, maxParallel);
+    if (managerModel !== undefined) setProjectManagerModel(db, projectId, managerModel);
+    if (verifierModel !== undefined) setProjectVerifierModel(db, projectId, verifierModel);
+    if (defaultModel !== undefined) setProjectDefaultModel(db, projectId, defaultModel);
+  });
+  return { status: 200, body: getProject(db, projectId) };
+}
+
+// Ruling 35: `PUT /projects/{id}/scope`, `{ scopeText }`, written atomically
+// (writeScopeTextAtomic, manager.ts) -- refused, same as the Manager's own
+// `update_scope` command, when the project has no scope_path set at all.
+function handlePutScope(db: Db, projectId: string, body: unknown): RouteResult {
+  const project = getProject(db, projectId);
+  if (!project) throw new ApiError(404, `no such project: ${projectId}`);
+  const b = requireJsonObjectBody(body);
+  if (typeof b.scopeText !== 'string') throw new ApiError(400, '"scopeText" is required and must be a string');
+  // Review fix #5: same `scope_updated` event managerApply.ts's own
+  // `update_scope` command records (reusing its summarizeScopeChange, not a
+  // second copy of that line-count logic), so this write shows up in the
+  // owner-facing activity feed the same way a Manager-proposed scope change
+  // already does -- `source: 'owner'` distinguishes the two origins without
+  // inventing a second event type. Read BEFORE the write so "before" is the
+  // real prior content, not whatever the write just landed.
+  const before = readScopeText(project).text;
+  writeScopeTextAtomic(project, b.scopeText);
+  const scopePolicy = classify('scope_updated');
+  insertEvent(db, {
+    projectId,
+    eventType: 'scope_updated',
+    entityType: 'project',
+    entityId: projectId,
+    payload: { summary: summarizeScopeChange(before, b.scopeText), source: 'owner' },
+    visibility: scopePolicy.visibility,
+    requiresUser: scopePolicy.requiresUser,
+    idempotencyKey: newId('evt'),
+  });
+  return { status: 200, body: { scopeText: b.scopeText, status: 'present' } };
+}
+
+// Ruling 35: `GET /settings` reports every key actually stored (absent keys
+// are simply absent -- store.ts's getSettings never synthesizes a default
+// row). `PATCH /settings` accepts a partial map, `{ key: value | null }`;
+// an unknown key is a 400 naming it, BEFORE any key in the same body is
+// applied (fail the whole request, not half of it) -- the same
+// all-or-nothing shape handlePatchProject's field check gives PATCH
+// /projects/{id}.
+function handleGetSettings(db: Db): RouteResult {
+  return { status: 200, body: getSettings(db) };
+}
+
+function handlePatchSettings(db: Db, body: unknown): RouteResult {
+  const b = requireJsonObjectBody(body);
+  const unknown = Object.keys(b).filter((k) => !(SETTINGS_KEYS as readonly string[]).includes(k));
+  if (unknown.length > 0) {
+    throw new ApiError(400, `unknown setting(s): ${unknown.join(', ')}`);
+  }
+
+  // Review fix #3: validate EVERY key/value pair before writing ANY of them
+  // -- same bug and same fix as handlePatchProject above. Review fix #9:
+  // `max_parallel_workers` alone may arrive as a JSON number, not just a
+  // string (a whole number converts to its own canonical decimal string;
+  // assertValidSettingValue/assertCanonicalMachineCap is what actually
+  // enforces "canonical", not this coercion).
+  const toSet: Array<[string, string]> = [];
+  const toUnset: string[] = [];
+  for (const [key, value] of Object.entries(b)) {
+    if (value === null) {
+      toUnset.push(key);
+      continue;
+    }
+    let stringValue: string;
+    if (typeof value === 'string') {
+      stringValue = value;
+    } else if (typeof value === 'number' && key === 'max_parallel_workers') {
+      stringValue = String(value);
+    } else {
+      throw new ApiError(
+        400,
+        `setting ${key} must be a string or null${key === 'max_parallel_workers' ? ' (a number is also accepted)' : ''}`
+      );
+    }
+    assertValidSettingValue(key, stringValue);
+    toSet.push([key, stringValue]);
+  }
+
+  withTransaction(db, () => {
+    for (const key of toUnset) unsetSetting(db, key);
+    for (const [key, value] of toSet) setSetting(db, key, value);
+  });
+  return { status: 200, body: getSettings(db) };
+}
+
 async function handleCancel(db: Db, loop: DaemonLoop, ticketId: string): Promise<RouteResult> {
   const ticket = getTicket(db, ticketId);
   if (!ticket) throw new ApiError(404, `no such ticket: ${ticketId}`);
@@ -370,13 +555,13 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
         pid: deps.pid,
         startedAt: deps.startedAt,
         uptimeMs: Date.now() - Date.parse(deps.startedAt),
-        slots: buildSlots(deps.db, deps.machineCap ?? null),
+        slots: buildSlots(deps.db, resolveMachineCap(deps.db, deps.machineCapFlag)),
       },
     };
   }
 
   if (method === 'GET' && path === '/board') {
-    return { status: 200, body: buildBoard(deps.db, requireQueryParam(url, 'project'), deps.machineCap ?? null) };
+    return { status: 200, body: buildBoard(deps.db, requireQueryParam(url, 'project'), resolveMachineCap(deps.db, deps.machineCapFlag)) };
   }
 
   if (method === 'GET' && path === '/inbox') {
@@ -422,6 +607,23 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     // error, never as a blank document.
     const scope = readScopeText(project);
     return { status: 200, body: { scopeText: scope.text, status: scope.status } };
+  }
+  // Ruling 35: the scope editor's write side -- same path, PUT instead of
+  // GET. See handlePutScope's own comment for the atomic write and the
+  // no-scope-path refusal.
+  if (method === 'PUT' && scopeMatch) {
+    const [, projectId] = scopeMatch;
+    return handlePutScope(deps.db, projectId, body);
+  }
+
+  // Ruling 35: global defaults. GET is read-only, like /projects above;
+  // PATCH is the one write site (handlePatchSettings validates every key
+  // and value before writing any of them).
+  if (method === 'GET' && path === '/settings') {
+    return handleGetSettings(deps.db);
+  }
+  if (method === 'PATCH' && path === '/settings') {
+    return handlePatchSettings(deps.db, body);
   }
 
   const conversationMatch = /^\/projects\/([^/]+)\/conversation$/.exec(path);
@@ -505,6 +707,17 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     if (action === 'set') return handleSetProject(deps.db, projectId, body);
     if (action === 'plan') return handlePlan(deps.db, projectId, body);
     if (action === 'discuss') return handleDiscuss(deps.db, projectId, body);
+  }
+
+  // Ruling 35: `PATCH /projects/{id}` -- the bare id, no action segment, so
+  // it cannot collide with PROJECT_ACTION_PATH above (that regex requires a
+  // trailing `/resume|set|plan|discuss`). See handlePatchProject's own
+  // comment for why this is a stricter sibling of the existing `.../set`
+  // action rather than a replacement for it.
+  const projectIdMatch = /^\/projects\/([^/]+)$/.exec(path);
+  if (method === 'PATCH' && projectIdMatch) {
+    const [, projectId] = projectIdMatch;
+    return handlePatchProject(deps.db, projectId, body);
   }
 
   throw new ApiError(404, 'not found');
@@ -745,11 +958,11 @@ export function createRequestHandler(deps: DaemonApiDeps): RequestHandler {
         return;
       }
       try {
-        // Batch 19 mini-phase 1A: `PATCH /profiles/{id}` joins POST as a
-        // body-carrying verb -- every route before this one either sent no
-        // body (GET) or was POST, so this check never had to distinguish
-        // more than the two.
-        const body = req.method === 'POST' || req.method === 'PATCH' ? await readBody(req) : undefined;
+        // Batch 19: PATCH (mini-phase 1A's /profiles/{id}, ruling 35's /settings and
+        // /projects/{id}) and PUT (/projects/{id}/scope) are bodied verbs alongside
+        // POST -- a GET never has one, same as before.
+        const hasBody = req.method === 'POST' || req.method === 'PATCH' || req.method === 'PUT';
+        const body = hasBody ? await readBody(req) : undefined;
         const result = await route(deps, req, url, body);
         sendJson(res, result.status, result.body);
       } catch (err) {
