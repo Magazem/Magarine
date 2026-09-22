@@ -47,8 +47,11 @@ Evidence labels: HARD = I read or ran it. SOFT = inferred. UNKNOWN = guessing.
    with its own organism, name, model and purpose; `#fleetCount` counts profiles, not tickets.
 2. While a ticket with profile Developer is IN_PROGRESS, that row reads `working` with the ticket's
    title and the live doing line; every other row still reads `idle`.
-3. Renaming a profile does not change its organism; changing its model does. Asserted on the drawn
-   seed, not on the API.
+3. Renaming a profile does not change its organism; changing its model **to another tier** does.
+   Asserted on the drawn seed, not on the API. **Corrected 2026-09-23 after the 3A review:** the
+   organism's family, symmetry and density come from the TIER, so a change within one tier (sonnet 4
+   to sonnet 4.5) draws identical cells, by design. The acceptance line as first written overclaimed;
+   the test and the element-field table both say "another tier", and they are right.
 4. The add form creates a profile that appears on the next read; a duplicate name shows the daemon's
    own sentence.
 5. Retiring a profile removes its row and leaves its tickets' cards readable.

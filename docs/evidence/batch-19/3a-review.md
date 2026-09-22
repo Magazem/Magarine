@@ -1,0 +1,14 @@
+# 3A review against ruling 38 (read-only). Reviewer 3A, 2026-09-23. Suite run: roster/page/copy/contrast/skin 61 pass, run.test 21 pass, GET /models 1 pass.
+
+Critical: none
+High: none
+Medium:
+- [Medium] packages/core/ui/app.js:1509 - the roster and GET /models are read only inside refreshProject, which never runs without a project; the roster is global (ruling 38) - a daemon with six seeded profiles and zero projects shows an empty #fleetList, no count, and an Add form whose model select is empty, so a profile cannot be added from the page.
+- [Medium] packages/core/ui/app.js:987 (via retireControl 701-719) - after the first Retire press the rebuilt row's first button is the CONFIRM Retire, and carryState moves focus onto it; the confirm step is defeated by keyboard - focus the row's Retire, press Enter twice (or hold Enter: auto-repeat keydown) and the profile is retired with no deliberate second choice. Harness has no focus model, so no test can see this.
+Low:
+- [Low] packages/core/ui/app.js:1559 - a failed GET /models is swallowed: the select stays empty and no sentence is shown, unlike the profiles read (roster-error). Input: daemon answers 500 to /models - the owner sees an empty select, no reason.
+- [Low] packages/core/ui/app.js:1127 - the Needs-you entry sig carries t.profile but not the roster profile's model, and askNode draws ticketOrg from that model; PATCH /profiles/{id} {model: opus} while an item names that ticket - the roster row changes tier, the Needs-you organism keeps sonnet until another sig field moves. Same for the conversation sig at 1213.
+- [Low] packages/core/ui/ELEMENT-FIELD-TABLE.md:94 - says a working row shows "no progress event recorded yet" when activity is absent, but app.js:688 draws no activity line at all when the working ticket is another project's (t null). Input: Tester working on project B's ticket, viewed from project A.
+- [Low] packages/core/src/ui/run.test.ts:341 - the test's claim ("this project's running tickets are not counted") is now unfalsifiable: the count no longer depends on tickets at all, so the line asserts the migration's seed constant, already asserted by roster.test.ts acceptance 1. Keep the slots assertion; drop or re-aim this line.
+- [Low] docs/strategy acceptance 3 vs packages/core/ui/organism.js:118 - "changing its model changes the organism" holds only across tiers; PATCH model sonnet-4 -> sonnet-4.5 draws identical cells. The test (roster.test.ts:174) and table row (line 79) both say "another tier" honestly; noting the gap against the acceptance line as written, not a code defect.
+Checked and clean: GET /models is after isAuthorized (daemonApi.ts:955-973), returns Object.keys(RATES) only; prohibition test scans all UI_ASSETS incl. new markup; domHarness nextSibling includes text nodes like the DOM, no divergence; no percentage/bar drawn; every page string is textContent.
