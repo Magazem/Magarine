@@ -94,10 +94,41 @@ export interface Ticket {
   automatic: boolean;
   /** Batch 15 item 4: set on create_ticket/update_ticket; null means the ticket carries no such list at all and keeps today's rule (no verification beyond "done requires something delivered," batch 13 ruling 1c). Non-null means DONE is verified against it -- see scheduler.ts. */
   expectedArtifacts: ExpectedArtifact[] | null;
+  /** Batch 19 mini-phase 1A (worker-profiles-design.md ruling 25): a non-retired `worker_profiles` row this ticket was assigned, or null for a ticket with no profile (every ticket before this batch, and any hand-made ticket that keeps using a bare `model`). Mutually exclusive with `model` -- see store.ts's createTicket, which rejects a command that sets both with "choose a profile or a model, not both". See store.ts's resolveModel for the one resolution function this participates in. */
+  profileId: string | null;
   resultJson: string | null;
   createdAt: string;
   updatedAt: string;
 }
+
+// Batch 19 mini-phase 1A: a named worker identity -- `batch-16-addendum-1-
+// worker-profiles-design.md` sections 1-2 (ruling 25). Global to the
+// database, not per project ("my agents" is how the owner spoke of them).
+// No allowed-tools field (the batch 1 spike proved `--allowedTools` is not a
+// containment boundary -- a field the product cannot enforce is inert
+// machinery, the addendum's own words). No memory, no state: status is
+// derived at read time from whether a run under this profile is in flight
+// (see store.ts's workerProfileStatus), never stored.
+export interface WorkerProfile {
+  id: string;
+  /** Unique, the display name -- `profile set --name` renames it without changing `id` (or the organism the id seeds, per the addendum's ruling: "renaming does not change the organism"). */
+  name: string;
+  /** One sentence, shown on the fleet row and appended (with `policy`) to the worker's system prompt as the profile's `--append-system-prompt` line (batch 19 mini-phase 2A). */
+  purpose: string;
+  /** Must be a model `pricing.ts` has a rate for -- store.ts's createWorkerProfile/updateWorkerProfile validate against `isKnownModel`. Changing it changes the seeded organism; renaming does not (addendum section 2). */
+  model: string;
+  /** Text appended to the worker's system prompt; may be empty. Seeded to the same sentence as `purpose` by migration 0017, until the owner writes a longer one. */
+  policy: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Null: assignable and shown. Non-null: retired -- hidden from `GET /profiles`/`profile list` and not assignable to a new ticket, but never deleted, so history (existing tickets/runs that already carry this id) stays readable. */
+  retiredAt: string | null;
+}
+
+/** `GET /profiles`' derived status for one profile: `working` with the ticket id of the run currently in flight under it, or `idle`. Never stored -- see store.ts's workerProfileStatus. */
+export type WorkerProfileStatus =
+  | { status: 'working'; ticketId: string }
+  | { status: 'idle'; ticketId: null };
 
 export type DependencyType = 'blocks' | 'related' | 'parent';
 
@@ -124,6 +155,8 @@ export interface Run {
   failureClass: string | null;
   /** Batch 18 ruling 31: 'work' (a worker or a Manager) or 'verify' (the second run that decides whether a worker's `done` is DONE). */
   kind: RunKind;
+  /** Batch 19 mini-phase 1A: the worker profile this run spawned under, or null for a profile-less ticket. Recorded on the run (not just the ticket) so cost and outcome per profile are derivable without a join through tickets, per the addendum's own ruling (section 4). Written at spawn time -- batch 19 mini-phase 2A's adapter wiring; this column exists from 1A on so 2A has somewhere to write it. */
+  profileId: string | null;
   // Raw JSON reported by the adapter for this run: token counts, cache
   // hit/miss, cost, etc. Shape is adapter-defined; the daemon does not
   // validate it, only stores and displays it.

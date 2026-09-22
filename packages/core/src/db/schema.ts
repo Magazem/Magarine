@@ -1,4 +1,5 @@
 import { dirname } from 'node:path';
+import { newId } from '../id.ts';
 import type { Db } from './index.ts';
 
 // Schema migrations. Each migration is applied at most once, tracked in
@@ -402,5 +403,81 @@ export const MIGRATIONS: Migration[] = [
       );
       INSERT INTO automatic_manager_mark (id, since_sequence) SELECT 1, COALESCE(MAX(sequence), 0) FROM events;
     `,
+  },
+  {
+    // Batch 19 mini-phase 1A (docs/strategy/batch-19-spec.md section 2), authority
+    // `batch-16-addendum-1-worker-profiles-design.md` sections 1, 2 and 5 (ruling
+    // 25): "the profile is the assignment; the model is the profile's." A
+    // `worker_profiles` row is a named agent -- an avatar's seed, a model, a
+    // one-sentence purpose that doubles as the policy text appended to the
+    // worker's system prompt, and a retirement marker that hides without
+    // deleting (history stays readable). GLOBAL to the database, not per
+    // project (addendum section 2: "my agents" is how the owner spoke of
+    // them). The addendum itself said migration 0015; 0015 (verifier run
+    // kind) and 0016 (ticket.automatic) were both taken by the time this
+    // batch actually ran, hence 0017 here.
+    //
+    // `tickets.profile_id` and `runs.profile_id` are both nullable ADD
+    // COLUMNs, same shape as every other optional override this schema has
+    // added since 0003_budget_fields -- existing rows get NULL, meaning "no
+    // profile", not an invented default. No FOREIGN KEY clause: consistent
+    // with 0007_manager_kind's own ruling (status-like/reference columns in
+    // this schema are validated in application code, store.ts here, not by
+    // sqlite), and ALTER TABLE ADD COLUMN cannot add a REFERENCES clause to
+    // an existing table's column without a rebuild anyway.
+    //
+    // Seeded six default rows, all renamable, all retirable (addendum section
+    // 2's roster; Manager is deliberately NOT one of the six -- "Manager
+    // tickets run on resolveManagerModel and are not assignable", addendum
+    // section 2). Model ids are the EXACT strings pricing.ts's RATES table
+    // uses (verified HARD against pricing.ts at the time this migration was
+    // written) -- store.ts's createWorkerProfile/updateWorkerProfile validate
+    // any FUTURE profile the same way, but a migration seeding known-good
+    // rows needs no runtime check of itself. `policy` is the purpose sentence
+    // again, verbatim, per addendum section 2: "The purposes above are the
+    // policy text too, one sentence each, until the owner writes better
+    // ones."
+    id: '0017_worker_profiles',
+    run: (db) => {
+      db.exec(`
+        CREATE TABLE worker_profiles (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          purpose TEXT NOT NULL,
+          model TEXT NOT NULL,
+          policy TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          retired_at TEXT
+        );
+        -- Review fix (batch 19 mini-phase 1A, Medium 6 / Low 7): uniqueness is
+        -- case-insensitive (COLLATE NOCASE) and applies only among NON-retired
+        -- rows -- a partial index, not a column-level UNIQUE, so a retired
+        -- name can be reused by a new profile while the retired row itself
+        -- stays (never deleted, per addendum section 2). 0017 has not shipped
+        -- yet, so the table is defined this way from the start rather than
+        -- migrated again.
+        CREATE UNIQUE INDEX idx_worker_profiles_name_active ON worker_profiles(name COLLATE NOCASE) WHERE retired_at IS NULL;
+        ALTER TABLE tickets ADD COLUMN profile_id TEXT;
+        ALTER TABLE runs ADD COLUMN profile_id TEXT;
+      `);
+
+      const now = new Date().toISOString();
+      const seed: Array<{ name: string; purpose: string; model: string }> = [
+        { name: 'Architect', purpose: 'deep design with real trade-offs', model: 'claude-opus-5' },
+        { name: 'Developer', purpose: 'implementation', model: 'claude-sonnet-5' },
+        { name: 'Reviewer', purpose: 'reads and judges, writes only review notes', model: 'claude-sonnet-5' },
+        { name: 'Tester', purpose: 'writes and runs tests', model: 'claude-sonnet-5' },
+        { name: 'Researcher', purpose: 'read-only survey and summary', model: 'claude-haiku-4-5-20251001' },
+        { name: 'Scribe', purpose: 'docs and mechanical edits', model: 'claude-haiku-4-5-20251001' },
+      ];
+      const insert = db.prepare(
+        `INSERT INTO worker_profiles (id, name, purpose, model, policy, created_at, updated_at, retired_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`
+      );
+      for (const row of seed) {
+        insert.run(newId('prof'), row.name, row.purpose, row.model, row.purpose, now, now);
+      }
+    },
   },
 ];

@@ -37,6 +37,7 @@ import {
   MIN_BUDGET_USD,
   pauseProjectAdapter,
   projectSpendUsd,
+  getWorkerProfile,
   resolveMaxBudgetUsd,
   resolveModel,
   setRunUsage,
@@ -178,7 +179,15 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
     allowedTools: [],
     expectedOutputFormat: 'Write .orchestrator/result.json matching the WorkerResult schema.',
     maxBudgetUsd: resolveMaxBudgetUsd(project, ticket),
-    model: resolveModel(project, ticket),
+    // Batch 19 mini-phase 1A review fix (High 1): the ONE resolution
+    // function takes the ticket's own profile, looked up fresh here rather
+    // than trusted from anywhere cached -- `ticket.model` and a real
+    // `profile` are already mutually exclusive by the time a ticket exists
+    // (store.ts's createTicket), so this is never actually choosing between
+    // the first two for a valid row; it just makes sure a profile ticket's
+    // spawn sees `profile.model` instead of silently falling through to the
+    // project default.
+    model: resolveModel(project, ticket, ticket.profileId != null ? getWorkerProfile(db, ticket.profileId) : null),
     // Batch 15 item 4: absent (not an empty array) when the ticket carries
     // no such list at all -- see envelope.ts's buildWorkerPrompt for why
     // that distinction, not just "empty vs non-empty," is what decides
@@ -1151,6 +1160,12 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       attempt,
       adapter: deps.adapter.id,
       workspaceRef: ws.path,
+      // Batch 19 mini-phase 1A review fix (High 2): recorded on the RUN, not
+      // just the ticket, per the addendum's own ruling (section 4) -- so
+      // cost/outcome per profile and GET /profiles' derived "working" status
+      // (store.ts's workerProfileStatus, which reads runs.profile_id) both
+      // work from 1A on, without waiting for 2A's adapter wiring.
+      profileId: ticket.profileId,
     });
 
     recordTicketTransition(deps.db, {

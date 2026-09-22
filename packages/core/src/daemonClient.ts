@@ -24,7 +24,11 @@ export class DaemonUnreachableError extends Error {}
 // comes from Node's fetch/undici and does not carry the request we sent.
 export async function daemonRequest<T = unknown>(
   info: Pick<DaemonFileInfo, 'port' | 'token'>,
-  method: 'GET' | 'POST',
+  // Batch 19 mini-phase 1A: 'PATCH' joins 'GET'/'POST' for `PATCH
+  // /profiles/{id}` (profile set) -- everything else about this function
+  // (auth header, JSON body, the DaemonUnreachableError wrapping) is
+  // unchanged and applies identically to the new verb.
+  method: 'GET' | 'POST' | 'PATCH',
   path: string,
   body?: unknown
 ): Promise<DaemonResponse<T>> {

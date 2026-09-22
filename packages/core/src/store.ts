@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { newId } from './id.ts';
 import { classify } from './policy.ts';
+import { isKnownModel, knownModelIds } from './pricing.ts';
 import { isReadinessRule } from './readiness.ts';
 import type {
   PauseReason,
@@ -18,6 +19,8 @@ import type {
   TicketDependency,
   TicketKind,
   TicketStatus,
+  WorkerProfile,
+  WorkerProfileStatus,
   WorkspaceType,
 } from './types.ts';
 
@@ -319,9 +322,20 @@ export function resolveMaxBudgetUsd(project: Project, ticket: Ticket): number {
   return ticket.maxBudgetUsdOverride ?? project.maxBudgetUsd;
 }
 
-// Same shape as resolveMaxBudgetUsd above, for the model to pin this run to.
-export function resolveModel(project: Project, ticket: Ticket): string {
-  return ticket.model ?? project.defaultModel;
+// Batch 19 mini-phase 1A ruling 25: the ONE resolution function --
+// `ticket.model ?? profile.model ?? project.defaultModel`. `profile` is
+// optional and defaults to undefined so every existing 2-argument call
+// (scheduler.ts, unchanged by this mini-phase) keeps resolving exactly as
+// before; 2A's envelope-building wiring is the caller that will start
+// passing the ticket's own profile (looked up via `ticket.profileId` and
+// `getWorkerProfile`). `ticket.model` and a real `profile` are already
+// mutually exclusive by the time a ticket exists (createTicket's
+// `assertProfileModelExclusive`), so the `??` chain never actually has to
+// choose between the first two for a valid row -- it is written this way
+// regardless, per the ruling's own exact wording, rather than asserting
+// exclusivity a second time here.
+export function resolveModel(project: Project, ticket: Ticket, profile?: WorkerProfile | null): string {
+  return ticket.model ?? profile?.model ?? project.defaultModel;
 }
 
 // Batch 18 ruling 31: the model a VERIFIER run uses -- the project's own
@@ -395,6 +409,7 @@ interface TicketRow {
   kind: string;
   automatic: number;
   expected_artifacts_json: string | null;
+  profile_id: string | null;
   result_json: string | null;
   created_at: string;
   updated_at: string;
@@ -420,10 +435,25 @@ function rowToTicket(row: TicketRow): Ticket {
     kind: row.kind as TicketKind,
     automatic: row.automatic === 1,
     expectedArtifacts: row.expected_artifacts_json != null ? JSON.parse(row.expected_artifacts_json) : null,
+    profileId: row.profile_id,
     resultJson: row.result_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+// Batch 19 mini-phase 1A ruling 25, verbatim: "A bare model override on a
+// ticket stays legal only for a ticket with no profile ... Setting both on
+// one command is rejected with one sentence: choose a profile or a model,
+// not both." Shared so `createTicket` below and any future `update_ticket`
+// path (2A) can never phrase the refusal differently. Exported for the
+// validator (2A) to reuse rather than re-deriving the same rule.
+export const PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE = 'choose a profile or a model, not both';
+
+export function assertProfileModelExclusive(model: string | null | undefined, profileRef: string | null | undefined): void {
+  if (model != null && profileRef != null) {
+    throw new Error(PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE);
+  }
 }
 
 export function createTicket(
@@ -445,10 +475,25 @@ export function createTicket(
     automatic?: boolean;
     /** Batch 15 item 4: null (the default) means no such list at all -- see types.ts's Ticket.expectedArtifacts. */
     expectedArtifacts?: ExpectedArtifact[] | null;
+    /**
+     * Batch 19 mini-phase 1A: a worker profile's id OR its name (`ticket add
+     * --profile <name>`, `POST /tickets`'s `profile` field) -- resolved here,
+     * the one place `createTicket` is ever called from either surface, so
+     * the CLI's direct-write path and the daemon route can never validate
+     * this differently. Mutually exclusive with `model` (ruling 25); must
+     * name a profile that exists and is not retired.
+     */
+    profile?: string | null;
   }
 ): Ticket {
   if (input.maxBudgetUsdOverride != null) {
     assertAboveFloor(input.maxBudgetUsdOverride, 'a ticket\'s max_budget_usd_override');
+  }
+  assertProfileModelExclusive(input.model, input.profile);
+  let profileId: string | null = null;
+  if (input.profile != null) {
+    profileId = resolveWorkerProfileRef(db, input.profile);
+    assertAssignableProfile(getWorkerProfile(db, profileId), input.profile);
   }
 
   const now = new Date().toISOString();
@@ -457,8 +502,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, max_budget_usd_override, model, model_reason, kind, automatic, expected_artifacts_json, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, model, model_reason, kind, automatic, expected_artifacts_json, profile_id, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -486,6 +531,7 @@ export function createTicket(
     input.kind ?? 'work',
     input.automatic ? 1 : 0,
     input.expectedArtifacts != null ? JSON.stringify(input.expectedArtifacts) : null,
+    profileId,
     now,
     now
   );
@@ -529,14 +575,50 @@ export function updateTicketFields(
     description?: string;
     acceptanceCriteria?: string[];
     maxBudgetUsdOverride?: number;
-    model?: string;
+    /**
+     * Batch 19 mini-phase 1A re-review fix (Medium 1): `null` clears the
+     * override back to "use the project default" -- the same semantics
+     * `profile` below already has, so a caller can move a ticket FROM a
+     * bare model TO a profile in one call (`{ model: null, profile: 'X' }`)
+     * exactly as it can already move the other way
+     * (`{ profile: null, model: 'X' }`). `undefined` (the default) leaves
+     * the ticket's existing model untouched.
+     */
+    model?: string | null;
     modelReason?: string;
+    /**
+     * Batch 19 mini-phase 1A review fix (High 3): a worker profile's id or
+     * name, or `null` to clear it. `undefined` (the default) leaves the
+     * ticket's existing profile untouched. Mutually exclusive with `model`
+     * against the RESULTING row, not just this one call's own fields --
+     * setting `model` on a ticket that already carries a profile (and vice
+     * versa) is refused with the same sentence createTicket uses, so
+     * update_ticket (2A's managerApply.ts caller) can never sneak past the
+     * rule create_ticket already enforces. Move a ticket the other way with
+     * `{ profile: null, model: 'X' }`.
+     */
+    profile?: string | null;
     /** Batch 15 item 4: `undefined` (the default) leaves the ticket's existing list untouched; `null` explicitly clears it back to "no such list"; a real array replaces it whole. */
     expectedArtifacts?: ExpectedArtifact[] | null;
   }
 ): void {
   if (fields.maxBudgetUsdOverride != null) {
     assertAboveFloor(fields.maxBudgetUsdOverride, 'a ticket\'s max_budget_usd_override');
+  }
+
+  const existing = getTicket(db, ticketId);
+  const resultingModel = fields.model !== undefined ? fields.model : (existing?.model ?? null);
+  const resultingProfileRef = fields.profile !== undefined ? fields.profile : existing?.profileId ?? null;
+  assertProfileModelExclusive(resultingModel, resultingProfileRef);
+
+  let profileIdToSet: string | null | undefined;
+  if (fields.profile !== undefined) {
+    if (fields.profile == null) {
+      profileIdToSet = null;
+    } else {
+      profileIdToSet = resolveWorkerProfileRef(db, fields.profile);
+      assertAssignableProfile(getWorkerProfile(db, profileIdToSet), fields.profile);
+    }
   }
 
   const sets: string[] = [];
@@ -568,6 +650,10 @@ export function updateTicketFields(
   if (fields.expectedArtifacts !== undefined) {
     sets.push('expected_artifacts_json = ?');
     values.push(fields.expectedArtifacts != null ? JSON.stringify(fields.expectedArtifacts) : null);
+  }
+  if (fields.profile !== undefined) {
+    sets.push('profile_id = ?');
+    values.push(profileIdToSet);
   }
   if (sets.length === 0) return;
 
@@ -683,6 +769,7 @@ interface RunRow {
   failure_class: string | null;
   usage_json: string | null;
   kind: string;
+  profile_id: string | null;
 }
 
 function rowToRun(row: RunRow): Run {
@@ -699,19 +786,40 @@ function rowToRun(row: RunRow): Run {
     failureClass: row.failure_class,
     usageJson: row.usage_json,
     kind: row.kind === 'verify' ? 'verify' : 'work',
+    profileId: row.profile_id,
   };
 }
 
 export function createRun(
   db: Db,
-  input: { ticketId: string; attempt: number; adapter: string; workspaceRef?: string | null; kind?: RunKind }
+  input: {
+    ticketId: string;
+    attempt: number;
+    adapter: string;
+    workspaceRef?: string | null;
+    kind?: RunKind;
+    /** Batch 19 mini-phase 1A: the profile this run spawns under (2A's adapter wiring is the real writer of this in production; the column and this parameter exist from 1A so that wiring has somewhere to write). Null for a profile-less ticket. */
+    profileId?: string | null;
+  }
 ): Run {
+  // Re-review guard (reviewer-suggested): a Manager ticket is never a
+  // worker profile's own concern -- "Manager is not a profile" (addendum
+  // section 2) -- so a run spawned under a manager-kind ticket must never
+  // carry a profile_id, whatever 2A's adapter wiring eventually passes
+  // here. Checked at the one write site for `runs`, not left to whichever
+  // caller happens to remember the rule.
+  if (input.profileId != null) {
+    const ticket = getTicket(db, input.ticketId);
+    if (ticket?.kind === 'manager') {
+      throw new Error('a manager ticket may never spawn a run under a worker profile');
+    }
+  }
   const now = new Date().toISOString();
   const id = newId('run');
   db.prepare(
-    `INSERT INTO runs (id, ticket_id, attempt, adapter, worker_session_ref, workspace_ref, status, started_at, finished_at, failure_class, kind)
-     VALUES (?, ?, ?, ?, NULL, ?, 'running', ?, NULL, NULL, ?)`
-  ).run(id, input.ticketId, input.attempt, input.adapter, input.workspaceRef ?? null, now, input.kind ?? 'work');
+    `INSERT INTO runs (id, ticket_id, attempt, adapter, worker_session_ref, workspace_ref, status, started_at, finished_at, failure_class, kind, profile_id)
+     VALUES (?, ?, ?, ?, NULL, ?, 'running', ?, NULL, NULL, ?, ?)`
+  ).run(id, input.ticketId, input.attempt, input.adapter, input.workspaceRef ?? null, now, input.kind ?? 'work', input.profileId ?? null);
   return getRun(db, id)!;
 }
 
@@ -1007,4 +1115,302 @@ export function findConflictingArtifact(
     )
     .get(projectId, pathOrUri, excludeTicketId) as ArtifactRow | undefined;
   return row ? rowToArtifact(row) : undefined;
+}
+
+// --- Worker profiles: batch 19 mini-phase 1A ---------------------------
+// `batch-16-addendum-1-worker-profiles-design.md` sections 1, 2 and 5
+// (ruling 25). Global to the database, not per project (migration 0017).
+
+export class NoSuchWorkerProfileError extends Error {}
+
+interface WorkerProfileRow {
+  id: string;
+  name: string;
+  purpose: string;
+  model: string;
+  policy: string;
+  created_at: string;
+  updated_at: string;
+  retired_at: string | null;
+}
+
+function rowToWorkerProfile(row: WorkerProfileRow): WorkerProfile {
+  return {
+    id: row.id,
+    name: row.name,
+    purpose: row.purpose,
+    model: row.model,
+    policy: row.policy,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    retiredAt: row.retired_at,
+  };
+}
+
+// Same "unrecognized model is a plain, named refusal" rule the addendum's
+// CLI section asks for ("--model in profile add/set is validated against
+// pricing.ts"), enforced once here rather than separately in cli.ts and
+// daemonApi.ts, matching this file's own existing convention (e.g.
+// assertValidMaxParallelWorkers) of one validator shared by every surface.
+// Re-review fix (Low 3): `typeof` checked before `isKnownModel` ever runs --
+// a non-string `model` (a number, an object, from a raw JSON body) gets the
+// same one-sentence "unknown model" refusal a typo'd string does, not a
+// value that stringifies confusingly into the message.
+function assertKnownProfileModel(model: unknown): asserts model is string {
+  if (typeof model !== 'string' || !isKnownModel(model)) {
+    throw new Error(`unknown model "${String(model)}" for a worker profile; known models: ${knownModelIds().join(', ')}`);
+  }
+}
+
+export function getWorkerProfile(db: Db, id: string): WorkerProfile | undefined {
+  const row = db.prepare('SELECT * FROM worker_profiles WHERE id = ?').get(id) as WorkerProfileRow | undefined;
+  return row ? rowToWorkerProfile(row) : undefined;
+}
+
+// Review fix (batch 19 mini-phase 1A, Medium 6 / Low 7): case-insensitive
+// (`COLLATE NOCASE`, matching migration 0017's partial unique index), and
+// only ever matches a NON-retired row -- a retired name may be reused by a
+// new profile (the index only enforces uniqueness among active rows), so
+// once more than one row could share a name case-insensitively, "the one
+// this name means" can only be the active one. A caller that needs the
+// (possibly retired) row a specific id names still uses getWorkerProfile.
+export function getWorkerProfileByName(db: Db, name: string): WorkerProfile | undefined {
+  const row = db
+    .prepare('SELECT * FROM worker_profiles WHERE name = ? COLLATE NOCASE AND retired_at IS NULL')
+    .get(name) as WorkerProfileRow | undefined;
+  return row ? rowToWorkerProfile(row) : undefined;
+}
+
+// Every NON-RETIRED profile, in the SEEDED/created order (addendum section
+// 2's six default rows, in the order they were seeded). Review fix (Low 9):
+// migration 0017 seeds all six rows with the same `created_at` timestamp
+// (one `now` read before the seed loop), so `created_at ASC` alone ties;
+// `rowid ASC` (SQLite's implicit rowid -- this table has no INTEGER PRIMARY
+// KEY and is not WITHOUT ROWID) breaks the tie in insertion order, which for
+// both the seed and any later `createWorkerProfile` call IS creation order.
+// What `GET /profiles` and `profile list` show (addendum section 2: a
+// retired profile "is not assignable and not shown, never deleted, so
+// history stays readable"). Anything that needs to see a retired row too
+// (assignment validation, which must distinguish "no such profile" from
+// "retired") reads getWorkerProfile/getWorkerProfileByName directly instead
+// of this list.
+export function listWorkerProfiles(db: Db): WorkerProfile[] {
+  const rows = db
+    .prepare('SELECT * FROM worker_profiles WHERE retired_at IS NULL ORDER BY created_at ASC, rowid ASC')
+    .all() as WorkerProfileRow[];
+  return rows.map(rowToWorkerProfile);
+}
+
+// Review fix (Low 8): `prof_` is the prefix `newId('prof')` generates ids
+// with (see id.ts) -- the same reason cli.ts's resolveProjectRef/
+// resolveWorkerProfileRef can try an id lookup before a name lookup without
+// ever colliding. A profile NAMED like an id would break that assumption
+// silently (an id-shaped name would resolve as an id, never reachable by
+// name again), so it is refused outright, one sentence, rather than left to
+// cause a confusing "no such profile" for exactly the name someone typed.
+function assertNotIdShapedProfileName(name: string): void {
+  if (name.startsWith('prof_')) {
+    throw new Error('a worker profile name may not start with "prof_" -- that prefix is reserved for generated ids');
+  }
+}
+
+// Review fix (Medium 5, Low 3): the store validates `name`/`purpose` itself
+// -- non-empty, and (re-review) a REAL string in the first place, not just
+// the CLI's flag parsing or the daemon route's own `as` cast. A caller that
+// hands a number, an object, or `undefined` through `POST /profiles`'s raw
+// JSON body gets the same one-sentence refusal an empty string would,
+// rather than a raw `value.trim is not a function` crash reaching the API
+// as a 500.
+function assertNonEmptyProfileText(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`a worker profile's ${label} must not be empty`);
+  }
+}
+
+// Review fix (Low 2): SQLite's `COLLATE NOCASE` folds ASCII only -- 'École'
+// and 'école' are NOT the same value to it, so migration 0017's partial
+// unique index (and getWorkerProfileByName's own NOCASE lookup) both miss
+// that pair. `toLocaleLowerCase()` is Unicode-aware and catches it. Checked
+// on top of, not instead of, the SQL-level check: the SQL check is exact for
+// the common ASCII case and is what actually enforces the invariant under
+// concurrent writers; this is the belt to that braces for the case it
+// cannot see. Scans only ACTIVE profiles (listWorkerProfiles), matching the
+// rule that uniqueness applies among non-retired profiles only (Low 7).
+// `excludeId` lets a rename check against every OTHER active profile
+// without clashing with its own unchanged name.
+function findActiveWorkerProfileNameClash(db: Db, name: string, excludeId?: string): WorkerProfile | undefined {
+  const sqlMatch = getWorkerProfileByName(db, name);
+  if (sqlMatch && sqlMatch.id !== excludeId) return sqlMatch;
+  const lower = name.toLocaleLowerCase();
+  return listWorkerProfiles(db).find((p) => p.id !== excludeId && p.name.toLocaleLowerCase() === lower);
+}
+
+export function createWorkerProfile(
+  db: Db,
+  input: { name: string; purpose: string; model: string; policy?: string | null }
+): WorkerProfile {
+  assertNonEmptyProfileText(input.name, 'name');
+  assertNonEmptyProfileText(input.purpose, 'purpose');
+  assertNotIdShapedProfileName(input.name);
+  assertKnownProfileModel(input.model);
+  const existing = findActiveWorkerProfileNameClash(db, input.name);
+  if (existing) {
+    throw new Error(`a worker profile named "${input.name}" already exists (${existing.id})`);
+  }
+  const now = new Date().toISOString();
+  const id = newId('prof');
+  db.prepare(
+    `INSERT INTO worker_profiles (id, name, purpose, model, policy, created_at, updated_at, retired_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`
+  ).run(id, input.name, input.purpose, input.model, input.policy ?? '', now, now);
+  return getWorkerProfile(db, id)!;
+}
+
+// `profile set --name/--model/--purpose/--policy`, `PATCH /profiles/{id}`:
+// every field optional, only the ones present are written -- same shape as
+// `updateTicketFields` above. Renaming keeps the id (and the organism it
+// seeds, per addendum section 2's own ruling); nothing here touches
+// `retired_at` -- see retireWorkerProfile. Renaming/changing the model of a
+// RETIRED profile is still allowed (this is row maintenance, not
+// assignment) -- only `createTicket`'s assignment path refuses a retired
+// profile.
+export function updateWorkerProfile(
+  db: Db,
+  id: string,
+  fields: { name?: string; model?: string; purpose?: string; policy?: string }
+): WorkerProfile {
+  const profile = getWorkerProfile(db, id);
+  if (!profile) throw new NoSuchWorkerProfileError(`no such worker profile: ${id}`);
+
+  if (fields.model !== undefined) assertKnownProfileModel(fields.model);
+  if (fields.purpose !== undefined) assertNonEmptyProfileText(fields.purpose, 'purpose');
+  if (fields.name !== undefined) {
+    assertNonEmptyProfileText(fields.name, 'name');
+    assertNotIdShapedProfileName(fields.name);
+    // Case-insensitive: renaming to a name that differs only by case from
+    // its OWN current name is not a clash; anything else that matches
+    // case-insensitively (ASCII via SQL, any locale via the JS fallback) is.
+    if (fields.name.toLocaleLowerCase() !== profile.name.toLocaleLowerCase()) {
+      const clash = findActiveWorkerProfileNameClash(db, fields.name, id);
+      if (clash) throw new Error(`a worker profile named "${fields.name}" already exists (${clash.id})`);
+    }
+  }
+
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  if (fields.name !== undefined) {
+    sets.push('name = ?');
+    values.push(fields.name);
+  }
+  if (fields.model !== undefined) {
+    sets.push('model = ?');
+    values.push(fields.model);
+  }
+  if (fields.purpose !== undefined) {
+    sets.push('purpose = ?');
+    values.push(fields.purpose);
+  }
+  if (fields.policy !== undefined) {
+    sets.push('policy = ?');
+    values.push(fields.policy);
+  }
+  if (sets.length > 0) {
+    sets.push('updated_at = ?');
+    values.push(new Date().toISOString());
+    values.push(id);
+    db.prepare(`UPDATE worker_profiles SET ${sets.join(', ')} WHERE id = ?`).run(...(values as []));
+  }
+  return getWorkerProfile(db, id)!;
+}
+
+// Never deletes the row (addendum section 2): idempotent -- retiring an
+// already-retired profile leaves its original `retired_at` untouched rather
+// than moving the timestamp forward, so "when was this actually retired"
+// stays answerable.
+export function retireWorkerProfile(db: Db, id: string): WorkerProfile {
+  const profile = getWorkerProfile(db, id);
+  if (!profile) throw new NoSuchWorkerProfileError(`no such worker profile: ${id}`);
+  if (profile.retiredAt == null) {
+    db.prepare('UPDATE worker_profiles SET retired_at = ?, updated_at = ? WHERE id = ?').run(
+      new Date().toISOString(),
+      new Date().toISOString(),
+      id
+    );
+  }
+  return getWorkerProfile(db, id)!;
+}
+
+// `ref` is either a profile's own id OR its exact name -- the same
+// id-or-name convention cli.ts's resolveProjectRef uses for `--project`,
+// mirrored here for `--profile`/`profile` (id can never collide with a name
+// a person would type: createWorkerProfile generates ids as `prof_<uuid>`).
+// Returns the id whether or not the profile is retired -- retirement is
+// checked separately (assertAssignableProfile) so "no such profile" and
+// "that profile is retired" stay two distinct, correctly worded refusals.
+export function resolveWorkerProfileRef(db: Db, ref: string): string {
+  if (getWorkerProfile(db, ref)) return ref;
+  const byName = getWorkerProfileByName(db, ref);
+  if (byName) return byName.id;
+  throw new NoSuchWorkerProfileError(`no such worker profile: ${ref}`);
+}
+
+// Re-review fix (Low 4): `profile set`/`profile retire` (row MAINTENANCE,
+// not assignment) must still be able to name a retired profile -- the store
+// documents a retired row as reachable, never deleted, but
+// `resolveWorkerProfileRef` above only finds an ACTIVE row by name (Low 7:
+// a retired name may be reused, so a name-only search can no longer assume
+// uniqueness across every row). This is the admin counterpart: id first
+// (any status, unchanged), then the active row by name (unchanged), and
+// ONLY THEN a case-insensitive/locale-aware scan of RETIRED rows sharing
+// that name -- exactly one match resolves; more than one refuses by listing
+// every matching id (same ambiguity shape cli.ts's resolveProjectRef uses
+// for a project name with no uniqueness constraint), rather than silently
+// picking one. Never used by createTicket/updateTicketFields's ASSIGNMENT
+// path -- those keep calling resolveWorkerProfileRef, which cannot resolve
+// a retired name at all, so "no such profile" (not this function's richer
+// retired-and-ambiguous handling) is what an assignment attempt sees.
+export function resolveWorkerProfileRefForAdmin(db: Db, ref: string): string {
+  const byId = getWorkerProfile(db, ref);
+  if (byId) return byId.id;
+  const active = getWorkerProfileByName(db, ref);
+  if (active) return active.id;
+  const lower = ref.toLocaleLowerCase();
+  const retiredMatches = (db.prepare('SELECT * FROM worker_profiles WHERE retired_at IS NOT NULL').all() as WorkerProfileRow[])
+    .map(rowToWorkerProfile)
+    .filter((p) => p.name.toLocaleLowerCase() === lower);
+  if (retiredMatches.length === 1) return retiredMatches[0].id;
+  if (retiredMatches.length > 1) {
+    throw new NoSuchWorkerProfileError(
+      `"${ref}" matches ${retiredMatches.length} retired worker profiles -- use one of these ids instead: ${retiredMatches
+        .map((p) => p.id)
+        .join(', ')}`
+    );
+  }
+  throw new NoSuchWorkerProfileError(`no such worker profile: ${ref}`);
+}
+
+// Ruling 25's other half: "A retired profile is not assignable." `ref` is
+// only for the error message (whatever the caller originally typed -- an id
+// or a name), so the refusal echoes what was actually given rather than
+// always the resolved id.
+export function assertAssignableProfile(profile: WorkerProfile | undefined, ref: string): WorkerProfile {
+  if (!profile) throw new NoSuchWorkerProfileError(`no such worker profile: ${ref}`);
+  if (profile.retiredAt != null) {
+    throw new Error(`worker profile "${profile.name}" is retired and cannot be assigned`);
+  }
+  return profile;
+}
+
+// `GET /profiles`' derived status (addendum section 2): "working" with the
+// ticket id when a run under this profile is in flight ('running', never
+// stored/cached), else "idle". Reads `runs.profile_id` directly rather than
+// joining through `tickets.profile_id`, matching the addendum's own reason
+// for recording the profile on the RUN too (section 4): a ticket could in
+// principle be reassigned between runs, so the run's own profile_id is the
+// one that answers "is a worker running UNDER THIS PROFILE right now."
+export function workerProfileStatus(db: Db, profileId: string): WorkerProfileStatus {
+  const row = db
+    .prepare(`SELECT ticket_id FROM runs WHERE profile_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1`)
+    .get(profileId) as { ticket_id: string } | undefined;
+  return row ? { status: 'working', ticketId: row.ticket_id } : { status: 'idle', ticketId: null };
 }
