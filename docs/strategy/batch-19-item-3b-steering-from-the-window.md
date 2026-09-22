@@ -78,3 +78,23 @@ copy or derived. `new Notification` and `beforeunload` stay prohibited.
 
 Project creation in the window is batch 20. The drill-down into a running worker is mini-phase 4,
 and still needs its own ruling about the command text the adapter drops on purpose.
+
+## 4. Amendment, 2026-09-23: the cap's copy says which case it is actually in
+
+The designer found that `resolveMachineCap` (`store.ts` 153-157, read by the lead) returns the
+`serve --max-parallel` flag whenever one was given and never reads the setting in that case, so the
+spec's flat "applies on the next tick, no restart" is true only for a daemon started without the
+flag. Their proposed fix was a permanent caveat in the copy. Refused: a sentence that is usually
+false teaches the owner to ignore the copy.
+
+Ruled instead — the panel says which case it is in, derived from data the page already holds:
+
+- Effective cap = `board.slots.cap`. Saved setting = `GET /settings`.
+- They agree: the plain true sentence, "Applies on the next tick, with no restart."
+- They differ: the panel says this daemon was started with `--max-parallel N`, which wins until it is
+  restarted, and shows BOTH numbers, the one in force and the one saved. Saving still saves; it is
+  simply not in force yet.
+- The row is marked **derived** in `ELEMENT-FIELD-TABLE.md`, stating that rule, not as a field.
+
+If the two can diverge for any reason other than the flag, the honest fix is for the daemon to say
+whether a flag is in force, ruled then as a small daemon change, the way `GET /models` was.
