@@ -99,8 +99,8 @@ test('a database migrated only to 0001-0007 picks up 0008 (project scope path) o
  '0014_max_parallel_workers_nullable',
  '0015_verifier_run_kind', '0016_ticket_automatic', '0017_worker_profiles',
     // Batch 19: same reason as the migrations above it -- HEAD in this tree
-    // is 0018_settings (0017_worker_profiles lands from a separate worktree).
-    '0018_settings',
+    // is 0019_ticket_profile_reason (0017_worker_profiles lands from a separate worktree).
+    '0018_settings', '0019_ticket_profile_reason',
   ]);
   assert.equal(
     snapshot.scopePathBeforeSet,

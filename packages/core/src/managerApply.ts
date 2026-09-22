@@ -9,6 +9,7 @@ import {
   createTicket,
   getDependencies,
   getProject,
+  getWorkerProfileByName,
   insertEvent,
   listTickets,
   setTicketPriority,
@@ -67,9 +68,22 @@ function buildProposalBoard(db: Db, projectId: string): ProposalBoard {
       .map((d) => ({ ticketId: t.id, dependsOnTicketId: d.dependsOnTicketId }))
   );
   return {
-    tickets: tickets.map((t) => ({ id: t.id, title: t.title, kind: t.kind, status: t.status })),
+    tickets: tickets.map((t) => ({ id: t.id, title: t.title, kind: t.kind, status: t.status, model: t.model, profileId: t.profileId })),
     dependencies,
     hasScopePath: getProject(db, projectId)!.scopePath != null,
+    // Batch 19 mini-phase 2A review fix (High 2 / Low 5): literally
+    // store.ts's own getWorkerProfileByName -- global to the database, not
+    // this one project (worker-profiles-design.md section 2), name only
+    // (never an id), COLLATE NOCASE and non-retired-only exactly as that
+    // function already enforces. Passing the function itself (not a
+    // hand-folded copy of its result set) is what makes proposal.ts's
+    // validator structurally unable to disagree with what this SAME
+    // function will do again at apply time (createTicket/updateTicketFields
+    // both call it, via resolveWorkerProfileRef).
+    resolveActiveProfileByName: (name: string) => {
+      const p = getWorkerProfileByName(db, name);
+      return p ? { id: p.id } : undefined;
+    },
   };
 }
 
@@ -153,6 +167,8 @@ export function applyManagerProposal(
         acceptanceCriteria: c.acceptance_criteria,
         model: c.model,
         modelReason: c.model_reason,
+        profile: c.profile,
+        profileReason: c.profile_reason,
         maxBudgetUsdOverride: c.max_budget_usd,
         expectedArtifacts: c.expected_artifacts,
       });
@@ -229,6 +245,8 @@ export function applyManagerProposal(
             maxBudgetUsdOverride: c.max_budget_usd,
             model: c.model,
             modelReason: c.model_reason,
+            profile: c.profile,
+            profileReason: c.profile_reason,
             expectedArtifacts: c.expected_artifacts,
           });
           break;

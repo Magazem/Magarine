@@ -13,20 +13,23 @@ import { getSetting, getSettings, setSetting } from '../store.ts';
 // table, appended straight after 0016 in THIS tree (the parallel worktree
 // building mini-phase 1A owns 0017_worker_profiles; it has not landed here
 // yet -- see schema.ts's own comment on 0018). Exercised against a LEGACY
-// database built by running every REAL migration this tree currently has
-// EXCEPT the last one (0018 itself), not a hand-written schema, and not a
-// hard-coded migration count -- `MIGRATIONS.length - 1` stays correct
-// whether or not 0017 has been merged in by the time this runs.
+// database built by running every REAL migration up to (not including)
+// 0018 itself, not a hand-written schema. `MIGRATIONS.length - 1` no longer
+// names 0018 now that batch 19 mini-phase 2A appended 0019 after it, so this
+// looks 0018 up by id instead -- correct regardless of how many migrations
+// land after it in the future.
 
 const testRoot = testTempRoot('settingsmigration');
 after(testRoot.cleanup);
+
+const SETTINGS_MIGRATION_INDEX = MIGRATIONS.findIndex((m) => m.id === '0018_settings');
 
 function buildLegacyDatabase(file: string): void {
   const raw = new DatabaseSync(file);
   try {
     raw.exec('PRAGMA foreign_keys = ON;');
     raw.exec('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);');
-    for (const migration of MIGRATIONS.slice(0, MIGRATIONS.length - 1)) {
+    for (const migration of MIGRATIONS.slice(0, SETTINGS_MIGRATION_INDEX)) {
       raw.exec('BEGIN');
       if (migration.sql) raw.exec(migration.sql);
       if (migration.run) migration.run(raw);
@@ -45,7 +48,7 @@ test('0018 adds the settings table on top of a legacy database, empty until some
   const dir = mkdtempSync(join(testRoot.root, 'magarine-migrate-0018-'));
   const file = join(dir, 'db.sqlite');
   try {
-    assert.equal(MIGRATIONS[MIGRATIONS.length - 1]!.id, '0018_settings');
+    assert.equal(MIGRATIONS[SETTINGS_MIGRATION_INDEX]!.id, '0018_settings');
     buildLegacyDatabase(file);
     const db = openDb(file);
     try {

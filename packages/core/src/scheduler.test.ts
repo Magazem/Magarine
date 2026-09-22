@@ -10,6 +10,7 @@ import { rmSyncResilient } from './db/testSupport.ts';
 import {
   addDependency,
   createProject,
+  createRun,
   createTicket,
   getProject,
   getRun,
@@ -449,6 +450,55 @@ test('a manager ticket\'s done result declaring zero artifacts (not even the pro
   await s.done;
 
   assert.equal(getTicket(db, managerTicket.id)!.status, 'DONE', 'a manager ticket needs no artefact to land DONE');
+});
+
+// Batch 19 mini-phase 2A fix round (defensive, reviewer-found): before this
+// fix, an exception thrown INSIDE applyManagerProposal's transaction (two
+// validator bugs this round fixed both reached exactly this) escaped
+// applyManagerTicketDone uncaught -- the run row stayed 'running' forever
+// (its `done` promise never resolved, so `runUntilIdle`/any caller awaiting
+// it would hang) and the ticket stayed stuck IN_PROGRESS. Reproduced here
+// through the REAL scheduler path (tick -> a manager ticket's real 'done'
+// result -> applyManagerTicketDone -> applyManagerProposal) using the SAME
+// test-only hook managerApply.test.ts's own rollback tests use
+// (failAfterCommand), now threaded through SchedulerDeps for exactly this.
+test('a throwing Manager proposal apply settles the run and the ticket (retryable), and does not hang the tick', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'Plan: mission', kind: 'manager', workspaceType: 'NONE' });
+
+  const deps = {
+    readiness: 'skip' as const,
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    projectId: project.id,
+    workspaceBaseDir,
+    applyManagerProposalTestHooks: { failAfterCommand: 0 },
+  };
+  const { started } = await tick(deps);
+  const s = started[0];
+  const workspacePath = adapter.startedWith.get(s.handle.id)!.workspace!.path!;
+  mkdirSync(join(workspacePath, '.orchestrator'), { recursive: true });
+  writeFileSync(
+    join(workspacePath, '.orchestrator', 'proposal.json'),
+    JSON.stringify({ rationale: 'r', commands: [{ type: 'create_ticket', title: 'New work', description: 'd', acceptance_criteria: [] }] })
+  );
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'proposing', artifacts: [], checks: [], blockers: [], questions: [] },
+  });
+  // Must resolve on its own -- proves the tick is not hung waiting on a run
+  // that never settles. A real hang would fail this test by timing out.
+  await s.done;
+
+  const run = getRun(db, s.runId)!;
+  assert.notEqual(run.status, 'running', 'the run must be settled (failed), never left running forever');
+  const ticketAfter = getTicket(db, managerTicket.id)!;
+  assert.notEqual(ticketAfter.status, 'IN_PROGRESS', 'the ticket must not be left stuck IN_PROGRESS');
+  assert.equal(listTicketsByStatus(db, project.id, 'OPEN').length, 0, 'the test-injected throw rolled back the transaction: no ticket was created');
 });
 
 test('a worker question keeps the ticket IN_PROGRESS and the run continues to a final result', async () => {
@@ -1866,5 +1916,92 @@ test('a ticket assigned to a profile spawns pinned to the PROFILE\'s model, not 
   await s.done;
 
   assert.deepEqual(workerProfileStatus(db, architect.id), { status: 'idle', ticketId: null }, 'idle again once the run has finished');
+});
+
+// --- Batch 19 mini-phase 2A (ruling 37): profile reaches the ADAPTER, and only the right runs ---
+
+test('a profile ticket\'s envelope carries the exact profile { id, name, purpose, policy }; a profile-less ticket\'s envelope carries none', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 2 });
+  const developer = getWorkerProfileByName(db, 'Developer')!;
+  const adapter = new TestAdapter();
+  const withProfile = createTicket(db, { projectId: project.id, title: 'implement it', workspaceType: 'NONE', profile: developer.id });
+  const withoutProfile = createTicket(db, { projectId: project.id, title: 'no profile', workspaceType: 'NONE' });
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 2, projectId: project.id, workspaceBaseDir });
+
+  const withProfileHandle = started.find((s) => s.ticketId === withProfile.id)!.handle.id;
+  assert.deepEqual(adapter.startedWith.get(withProfileHandle)!.ticket.profile, {
+    id: developer.id,
+    name: 'Developer',
+    purpose: developer.purpose,
+    policy: developer.policy,
+  });
+
+  const withoutProfileHandle = started.find((s) => s.ticketId === withoutProfile.id)!.handle.id;
+  assert.equal(adapter.startedWith.get(withoutProfileHandle)!.ticket.profile, undefined);
+});
+
+test('a profile ticket that reaches REVIEW spawns a verifier run whose envelope carries no profile', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const developer = getWorkerProfileByName(db, 'Developer')!;
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, {
+    projectId: project.id,
+    title: 'implement it',
+    workspaceType: 'NONE',
+    profile: developer.id,
+    acceptanceCriteria: ['it works'],
+  });
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const workStart = started.find((s) => s.ticketId === ticket.id)!;
+  assert.ok(adapter.startedWith.get(workStart.handle.id)!.ticket.profile, 'sanity: the work run itself does carry the profile');
+
+  adapter.emit(workStart.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'review', summary: 'ready for review', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
+  });
+  await workStart.done; // waits for the chained verifier run too (scheduler.ts's own await verifyReviewTicket(...).done)
+
+  const verifyEntry = [...adapter.startedWith.entries()].find(
+    ([handleId, v]) => handleId !== workStart.handle.id && v.ticket.ticketId === ticket.id
+  );
+  assert.ok(verifyEntry, 'a verifier run must have started for the REVIEW ticket');
+  assert.equal(verifyEntry![1].ticket.runKind, 'verify');
+  assert.equal(verifyEntry![1].ticket.profile, undefined, 'a verifier envelope must never carry a profile');
+});
+
+// Second reviewer's Low 9: the plain "no profile" assertion below is
+// vacuous on its own -- no surface can give a manager ticket a profile in
+// the first place, so it proves nothing about a REFUSAL. This now exercises
+// both guards directly: createTicket's write-site refusal (store.ts's
+// assertProfileNotOnManagerTicket, the 2A fix-round Medium finding) AND
+// createRun's own backstop (in case some future caller ever reaches it with
+// a manager ticket's id and a profileId despite that), before falling back
+// to the ordinary real-tick assertion that an actually profile-less manager
+// ticket's envelope carries none.
+test('a manager ticket cannot be given a profile at all: createTicket refuses it, createRun backstops it, and a real tick\'s envelope carries none', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const developer = getWorkerProfileByName(db, 'Developer')!;
+
+  assert.throws(
+    () => createTicket(db, { projectId: project.id, title: 'Plan: refused', kind: 'manager', profile: 'Developer' }),
+    /a manager ticket may never be assigned a worker profile/
+  );
+
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'Plan: mission', kind: 'manager', workspaceType: 'NONE' });
+  assert.throws(
+    () => createRun(db, { ticketId: managerTicket.id, attempt: 1, adapter: 'fake', profileId: developer.id }),
+    /a manager ticket may never spawn a run under a worker profile/
+  );
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+
+  assert.equal(started.length, 1);
+  assert.equal(adapter.startedWith.get(started[0]!.handle.id)!.ticket.profile, undefined);
 });
 

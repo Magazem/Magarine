@@ -95,7 +95,7 @@ test('0014 makes max_parallel_workers nullable while every existing row KEEPS it
     await rmSyncResilient(dir);
   }
 
-  assert.deepEqual(u.appliedIds, [...LEGACY_IDS, '0014_max_parallel_workers_nullable', '0015_verifier_run_kind', '0016_ticket_automatic', '0017_worker_profiles', '0018_settings'].sort());
+  assert.deepEqual(u.appliedIds, [...LEGACY_IDS, '0014_max_parallel_workers_nullable', '0015_verifier_run_kind', '0016_ticket_automatic', '0017_worker_profiles', '0018_settings', '0019_ticket_profile_reason'].sort());
   assert.equal(u.notNull, 0, 'the column must no longer be NOT NULL');
   assert.equal(u.afterInsertCap, null, 'a project with no cap of its own must be writable');
 

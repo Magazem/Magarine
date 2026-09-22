@@ -10,12 +10,28 @@ import { MIN_BUDGET_USD } from './store.ts';
 // cycle, a cap breach, a manager/work crossing, a dangling reference) and
 // proves it is rejected WHOLE, with a reason, never partially applied.
 
-function emptyBoard(): ProposalBoard {
-  return { tickets: [], dependencies: [], hasScopePath: true };
+// Batch 19 mini-phase 2A review fix (High 2 / Low 5): `resolveActiveProfileByName`
+// replaces the old `activeProfiles` list -- a plain, case-INSENSITIVE-by-name
+// (never by id) lookup here is exactly what these tests need; the review's
+// finding was about the REAL implementation (managerApply.ts's, which calls
+// store.ts's own getWorkerProfileByName) disagreeing with a second, hand-rolled
+// fold, not about this test double's own folding rule needing to replicate
+// SQLite's COLLATE NOCASE -- that specific disagreement is covered by
+// managerApply.test.ts's real, db-backed "Éditeur"/"éditeur" test instead.
+function activeProfileResolver(profiles: Array<{ id: string; name: string }>): ProposalBoard['resolveActiveProfileByName'] {
+  return (name: string) => profiles.find((p) => p.name.toLowerCase() === name.toLowerCase());
 }
 
-function boardWith(tickets: ProposalBoard['tickets'], dependencies: ProposalBoard['dependencies'] = []): ProposalBoard {
-  return { tickets, dependencies, hasScopePath: true };
+function emptyBoard(): ProposalBoard {
+  return { tickets: [], dependencies: [], hasScopePath: true, resolveActiveProfileByName: activeProfileResolver([]) };
+}
+
+function boardWith(
+  tickets: ProposalBoard['tickets'],
+  dependencies: ProposalBoard['dependencies'] = [],
+  activeProfiles: Array<{ id: string; name: string }> = []
+): ProposalBoard {
+  return { tickets, dependencies, hasScopePath: true, resolveActiveProfileByName: activeProfileResolver(activeProfiles) };
 }
 
 test('a minimal valid proposal (one create_ticket) is accepted', () => {
@@ -585,7 +601,7 @@ test('update_scope with a valid string content is accepted', () => {
 // stays so that a future path around the check still fails with a clean
 // validation error rather than an unhandled write failure.
 test('update_scope is rejected as a clean validation error, not an unhandled write failure, when the project has no scope_path set yet (unreachable in practice: readiness pauses such a project first)', () => {
-  const board: ProposalBoard = { tickets: [], dependencies: [], hasScopePath: false };
+  const board: ProposalBoard = { tickets: [], dependencies: [], hasScopePath: false, resolveActiveProfileByName: activeProfileResolver([]) };
   const result = validateProposal({ rationale: 'r', commands: [{ type: 'update_scope', content: 'x' }] }, board);
   assert.equal(result.valid, false);
   assert.match((result as { errors: string[] }).errors.join(' '), /no scope_path set/);
@@ -689,4 +705,229 @@ test('every error is reported together, not just the first one found', () => {
   assert.equal(result.valid, false);
   const errors = (result as { errors: string[] }).errors;
   assert.ok(errors.length >= 3, `expected at least 3 distinct errors (one ticket + two from add_dependency), got: ${JSON.stringify(errors)}`);
+});
+
+// --- Batch 19 mini-phase 2A (ruling 37): "profile" / "profile_reason" ---
+
+test('create_ticket assigning an active profile by name, with a reason, is accepted', () => {
+  const board = boardWith([], [], [{ id: 'prof_dev', name: 'Developer' }]);
+  const result = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        {
+          type: 'create_ticket',
+          title: 'T',
+          description: 'd',
+          acceptance_criteria: [],
+          profile: 'Developer',
+          profile_reason: 'ordinary implementation work',
+        },
+      ],
+    },
+    board
+  );
+  assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+});
+
+test('create_ticket matches a profile name case-insensitively, the same lookup 1A uses', () => {
+  const board = boardWith([], [], [{ id: 'prof_dev', name: 'Developer' }]);
+  const result = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        { type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], profile: 'developer', profile_reason: 'why' },
+      ],
+    },
+    board
+  );
+  assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+});
+
+test('create_ticket setting profile without profile_reason is rejected; an empty profile_reason is also rejected', () => {
+  const board = boardWith([], [], [{ id: 'prof_dev', name: 'Developer' }]);
+  const withoutReason = validateProposal(
+    { rationale: 'r', commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], profile: 'Developer' }] },
+    board
+  );
+  assert.equal(withoutReason.valid, false);
+  assert.match((withoutReason as { errors: string[] }).errors.join(' '), /profile_reason/);
+
+  const emptyReason = validateProposal(
+    {
+      rationale: 'r',
+      commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], profile: 'Developer', profile_reason: '' }],
+    },
+    board
+  );
+  assert.equal(emptyReason.valid, false, 'an empty string must not satisfy the requirement');
+});
+
+// Refusal 1: an unknown or retired profile name.
+test('create_ticket assigning a profile name that is not on the active roster is rejected -- covers both "does not exist" and "is retired" (retired profiles are simply absent from activeProfiles)', () => {
+  const board = boardWith([], [], [{ id: 'prof_dev', name: 'Developer' }]);
+  const result = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        { type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], profile: 'Nonexistent', profile_reason: 'why' },
+      ],
+    },
+    board
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /not a known, active worker profile/);
+});
+
+// Review fix (Low 5): ruling 37 and the grammar say "profile" is a NAME,
+// never an id -- a `prof_...` id must be refused the same as any other
+// unrecognized string, even when it is the real id of a real active
+// profile.
+test('create_ticket assigning a profile by its id (not its name) is rejected -- "profile" is a name only', () => {
+  const board = boardWith([], [], [{ id: 'prof_dev', name: 'Developer' }]);
+  const result = validateProposal(
+    {
+      rationale: 'r',
+      commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], profile: 'prof_dev', profile_reason: 'why' }],
+    },
+    board
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /not a known, active worker profile/);
+});
+
+// Refusal 2: profile together with model.
+test('create_ticket setting both profile and model is rejected with the "choose a profile or a model" sentence, and update_ticket too', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }], [], [{ id: 'prof_dev', name: 'Developer' }]);
+
+  const created = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        {
+          type: 'create_ticket',
+          title: 'T',
+          description: 'd',
+          acceptance_criteria: [],
+          profile: 'Developer',
+          profile_reason: 'why',
+          model: 'claude-sonnet-5',
+          model_reason: 'why',
+        },
+      ],
+    },
+    board
+  );
+  assert.equal(created.valid, false);
+  assert.match((created as { errors: string[] }).errors.join(' '), /choose a profile or a model, not both/);
+
+  const updated = validateProposal(
+    {
+      rationale: 'r',
+      commands: [
+        { type: 'update_ticket', ticket_id: 'tkt_x', profile: 'Developer', profile_reason: 'why', model: 'claude-sonnet-5', model_reason: 'why' },
+      ],
+    },
+    board
+  );
+  assert.equal(updated.valid, false);
+  assert.match((updated as { errors: string[] }).errors.join(' '), /choose a profile or a model, not both/);
+});
+
+// Review fix (High 1): the exclusivity check must also catch a command that
+// only touches ONE of the two fields when the ticket's OWN existing row
+// already carries the other -- not just both set on the same command.
+test('update_ticket adding a profile to a ticket that already has a bare model is rejected against the RESULTING row', () => {
+  const board = boardWith(
+    [{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN', model: 'claude-sonnet-5' }],
+    [],
+    [{ id: 'prof_dev', name: 'Developer' }]
+  );
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', profile: 'Developer', profile_reason: 'why' }] },
+    board
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /choose a profile or a model, not both/);
+});
+
+test('update_ticket adding a model to a ticket that already has a profile is rejected against the RESULTING row', () => {
+  const board = boardWith(
+    [{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN', profileId: 'prof_dev' }],
+    [],
+    [{ id: 'prof_dev', name: 'Developer' }]
+  );
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', model: 'claude-sonnet-5', model_reason: 'why' }] },
+    board
+  );
+  assert.equal(result.valid, false);
+  assert.match((result as { errors: string[] }).errors.join(' '), /choose a profile or a model, not both/);
+});
+
+test('update_ticket setting only "model" (no "profile" in the command) on a ticket that has neither yet is accepted -- the resulting-row check does not false-positive on an ordinary model set', () => {
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }]);
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', model: 'claude-sonnet-5', model_reason: 'why' }] },
+    board
+  );
+  assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+});
+
+// Refusal 3: update_ticket changing the profile of a ticket that is IN_PROGRESS or REVIEW.
+for (const lockedStatus of ['IN_PROGRESS', 'REVIEW']) {
+  test(`update_ticket changing the profile of a ${lockedStatus} ticket is rejected`, () => {
+    const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: lockedStatus as never }], [], [{ id: 'prof_dev', name: 'Developer' }]);
+    const result = validateProposal(
+      { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', profile: 'Developer', profile_reason: 'why' }] },
+      board
+    );
+    assert.equal(result.valid, false);
+    assert.match((result as { errors: string[] }).errors.join(' '), new RegExp(lockedStatus));
+  });
+}
+
+for (const openStatus of ['OPEN', 'READY']) {
+  test(`update_ticket changing the profile of an ${openStatus} ticket is accepted`, () => {
+    const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: openStatus as never }], [], [{ id: 'prof_dev', name: 'Developer' }]);
+    const result = validateProposal(
+      { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', profile: 'Developer', profile_reason: 'why' }] },
+      board
+    );
+    assert.equal(result.valid, true, result.valid ? '' : JSON.stringify((result as { errors: string[] }).errors));
+  });
+}
+
+test('create_ticket/update_ticket with no profile set at all needs no profile_reason', () => {
+  const result = validateProposal(
+    { rationale: 'r', commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [] }] },
+    emptyBoard()
+  );
+  assert.equal(result.valid, true);
+});
+
+// Second reviewer's Low 8: the pairing runs both ways -- a reason with no
+// profile to justify it is meaningless and is rejected outright, the mirror
+// of "profile requires a reason".
+test('create_ticket/update_ticket setting profile_reason WITHOUT profile is rejected', () => {
+  const createResult = validateProposal(
+    { rationale: 'r', commands: [{ type: 'create_ticket', title: 'T', description: 'd', acceptance_criteria: [], profile_reason: 'orphaned reason' }] },
+    emptyBoard()
+  );
+  assert.equal(createResult.valid, false);
+  assert.match((createResult as { errors: string[] }).errors.join(' '), /profile_reason must not be set without profile/);
+
+  const board = boardWith([{ id: 'tkt_x', title: 'X', kind: 'work', status: 'OPEN' }]);
+  const updateResult = validateProposal(
+    { rationale: 'r', commands: [{ type: 'update_ticket', ticket_id: 'tkt_x', profile_reason: 'orphaned reason' }] },
+    board
+  );
+  assert.equal(updateResult.valid, false);
+  assert.match((updateResult as { errors: string[] }).errors.join(' '), /profile_reason must not be set without profile/);
+});
+
+test('MANAGER_COMMAND_SCHEMA_DESCRIPTION mentions profile and profile_reason on both create_ticket and update_ticket', () => {
+  assert.match(MANAGER_COMMAND_SCHEMA_DESCRIPTION, /"profile"/);
+  assert.match(MANAGER_COMMAND_SCHEMA_DESCRIPTION, /"profile_reason"/);
+  assert.match(MANAGER_COMMAND_SCHEMA_DESCRIPTION, /choose a profile or a model, not both/);
 });

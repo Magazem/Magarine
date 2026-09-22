@@ -412,6 +412,20 @@ export function isTestRunnerCommand(command: string): boolean {
     .some((sub) => subcommandIsTestRunner(sub.trim().split(/\s+/).filter(Boolean)));
 }
 
+// Batch 19 mini-phase 2A (ruling 37): the fixed rendering for
+// `--append-system-prompt` -- "You are <name>, <purpose>. <policy>", the
+// trailing policy omitted when it is empty. Exported so its exact text can
+// be asserted directly, the same way this file already exports other pure
+// renderers (e.g. verifyArtifacts) for a focused unit check -- the SAFETY
+// property (that whatever this returns is never shell-interpolated) is
+// proven separately, by the argv-capturing tests, since that property lives
+// in HOW the caller passes this string to spawnManaged, not in this
+// function's own text.
+export function renderProfileSystemPrompt(profile: { name: string; purpose: string; policy: string }): string {
+  const base = `You are ${profile.name}, ${profile.purpose}.`;
+  return profile.policy.length > 0 ? `${base} ${profile.policy}` : base;
+}
+
 function describeProgress(line: Record<string, unknown>): string | null {
   if (line.type === 'assistant') {
     const content = (line.message as Record<string, unknown> | undefined)?.content;
@@ -538,7 +552,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
     const isVerifier = input.ticket.runKind === 'verify';
     const prompt = isVerifier ? buildVerifierPrompt(input.ticket, ws.path) : buildWorkerPrompt(input.ticket, ws.path);
 
-    const args = [
+    const args: string[] = [
       ...(this.options.argsPrefix ?? []),
       '-p',
       prompt,
@@ -574,6 +588,20 @@ export class ClaudeCliAdapter implements AgentAdapter {
       '--model',
       input.ticket.model,
     ];
+
+    // Batch 19 mini-phase 2A (ruling 37): absent on `input.ticket.profile`
+    // for a profile-less ticket, a verifier envelope (buildVerifierEnvelope)
+    // and a Manager envelope (buildManagerEnvelope) alike -- neither of the
+    // latter two ever sets this field, so this branch structurally never
+    // fires for either kind of run, with no separate `isVerifier`/kind check
+    // needed here. Pushed onto the SAME argv array every other flag above
+    // goes through (spawnManaged spawns with `shell: false`, process.ts's own
+    // header comment), so the rendered line is passed as one argv element,
+    // never shell-interpolated, whatever characters the profile's name,
+    // purpose or policy happen to contain.
+    if (input.ticket.profile) {
+      args.push('--append-system-prompt', renderProfileSystemPrompt(input.ticket.profile));
+    }
 
     const managed = spawnManaged({
       executable: this.options.claudeExe,

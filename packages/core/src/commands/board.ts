@@ -96,6 +96,8 @@ export interface BoardTicket {
   modelReason: string | null;
   /** Batch 19 mini-phase 1A (worker-profiles-design.md section 5): the assigned profile's id and name, or null for a profile-less ticket -- mutually exclusive with `model` (store.ts's createTicket). Looked up fresh on every board build rather than denormalized onto the ticket row, since a retired profile's name must still show here (retirement only hides it from `GET /profiles`/`profile list`, never from a ticket that already carries it). */
   profile: { id: string; name: string } | null;
+  /** Batch 19 mini-phase 2A (ruling 37): the Manager's own one-line justification for `profile`, shown alongside it the same way `modelReason` is shown alongside `model`. Null for a profile-less ticket, or one whose profile was set directly rather than through a Manager command. */
+  profileReason: string | null;
   /** Batch 13 ruling 1c: every artefact this ticket has declared, across every run -- so a DONE row is legible as what it actually produced, not just that it succeeded. */
   artifacts: BoardArtifact[];
   /** Batch 15 ruling 7: the current run's most recent worker_progress event, mapped to an activity state -- null for any ticket not currently IN_PROGRESS, or one that is but has not reported progress yet. See LatestActivity/computeLatestActivity above. */
@@ -250,6 +252,7 @@ export function buildBoard(db: Db, projectId: string, machineCap: number | null 
         model: t.model,
         modelReason: t.modelReason,
         profile: boardTicketProfile(db, t.profileId),
+        profileReason: t.profileReason,
         artifacts: listArtifactsForTicket(db, t.id).map((a) => ({
           kind: a.kind,
           content: a.kind === 'file' ? a.pathOrUri : (a.text ?? ''),
@@ -337,6 +340,10 @@ export function formatBoard(result: BoardResult): string {
       const attempts = `attempts ${t.attemptCount}/${t.maxAttempts}`;
       const cost = `cost ${formatSpend(t.costUsd, t.costIsEstimate, t.usedFallbackRate)}`;
       const model = t.model ? `model ${t.model}${t.modelReason ? ` (${t.modelReason})` : ''}` : '';
+      // Batch 19 mini-phase 2A fix round (second reviewer's Medium): shown
+      // the same way `model`/`modelReason` are above -- before this fix the
+      // rendered text board named neither the profile nor its reason at all.
+      const profile = t.profile ? `profile ${t.profile.name}${t.profileReason ? ` (${t.profileReason})` : ''}` : '';
       // Batch 13 ruling 1c: a DONE row must be legible as what it actually
       // produced, not just that it succeeded -- count and content, so
       // "reported done" and "delivered nothing" can never look the same on
@@ -347,7 +354,7 @@ export function formatBoard(result: BoardResult): string {
           : '';
       const blocked = t.blockedBy.length > 0 ? `blocked by ${t.blockedBy.join(', ')}` : '';
       const failureReason = t.lastFailureReason ? `reason: ${t.lastFailureReason}` : '';
-      const parts = [t.id, t.status, title, attempts, cost, model, artifacts, blocked, failureReason].filter((p) => p.length > 0);
+      const parts = [t.id, t.status, title, attempts, cost, model, profile, artifacts, blocked, failureReason].filter((p) => p.length > 0);
       return parts.join('\t');
     })
     .join('\n');

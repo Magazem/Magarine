@@ -96,6 +96,8 @@ export interface Ticket {
   expectedArtifacts: ExpectedArtifact[] | null;
   /** Batch 19 mini-phase 1A (worker-profiles-design.md ruling 25): a non-retired `worker_profiles` row this ticket was assigned, or null for a ticket with no profile (every ticket before this batch, and any hand-made ticket that keeps using a bare `model`). Mutually exclusive with `model` -- see store.ts's createTicket, which rejects a command that sets both with "choose a profile or a model, not both". See store.ts's resolveModel for the one resolution function this participates in. */
   profileId: string | null;
+  /** Batch 19 mini-phase 2A (ruling 37): the Manager's own one-line justification for `profile`, required by proposal.ts's validateCommandShape whenever a create_ticket/update_ticket command sets `profile`, shown on the board next to it -- same shape as `modelReason` above. Null for a ticket whose profile was never explicitly set through a Manager command. */
+  profileReason: string | null;
   resultJson: string | null;
   createdAt: string;
   updatedAt: string;
@@ -225,6 +227,8 @@ export interface TicketEnvelope {
   maxBudgetUsd: number;
   /** Batch 6: ticket override if set, else the project default (see store.ts's resolveModel). The adapter passes this via `--model` and records it in usage_json -- nothing about a worker's cost or capability may depend on the owner's desktop default. */
   model: string;
+  /** Batch 19 mini-phase 2A (ruling 37): the ticket's assigned worker profile, absent for a profile-less ticket -- and always absent on a verifier envelope (buildVerifierEnvelope) or a Manager envelope (buildManagerEnvelope), neither of which ever sets this field. The adapter (claudeCli.ts) renders it as `--append-system-prompt "You are <name>, <purpose>. <policy>"` (the trailing policy omitted when empty); envelope.ts's buildWorkerPrompt names it in the prompt's first line. */
+  profile?: { id: string; name: string; purpose: string; policy: string };
   /** Batch 15 item 4: the ticket's own declared expectation, carried through so the worker sees what it is expected to produce. Absent (not an empty array) when the ticket has no such list -- see envelope.ts's buildWorkerPrompt for the rendering rule this distinction drives. */
   expectedArtifacts?: ExpectedArtifact[];
   /** Batch 18 ruling 31: absent or 'work' is an ordinary worker; 'verify' asks the adapter for a VERIFIER run -- a different prompt (verifier.ts) and a different result schema (a verdict per acceptance criterion, never artefacts). */

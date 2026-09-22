@@ -40,6 +40,16 @@ function cutWithoutSplittingSurrogatePair(text: string, maxLength: number): stri
 export function buildWorkerPrompt(envelope: TicketEnvelope, workspacePath: string): string {
   const sections: string[] = [];
 
+  // Batch 19 mini-phase 2A (ruling 37): "buildWorkerPrompt's first line
+  // names the profile" -- absent for a profile-less ticket. The rendered
+  // `--append-system-prompt` line (claudeCli.ts) already tells the worker
+  // WHO it is at the OS-process level; this is the same fact restated as the
+  // prompt's own opening line, so it survives even if a future adapter never
+  // wires the flag.
+  if (envelope.profile) {
+    sections.push(`You are ${envelope.profile.name}, ${envelope.profile.purpose}.`);
+  }
+
   sections.push(`Project brief:\n${envelope.projectBrief || '(none provided)'}`);
 
   sections.push(

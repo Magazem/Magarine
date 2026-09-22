@@ -506,4 +506,16 @@ export const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    // Batch 19 mini-phase 2A (docs/strategy/batch-19-item-2a-profiles-in-the-loop.md
+    // section 1, ruling 37): the Manager's own one-line justification for
+    // `create_ticket`/`update_ticket`'s `profile` field -- required by
+    // proposal.ts's validateCommandShape whenever `profile` is set, same
+    // pairing rule 0011_ticket_model_reason already established for
+    // `model`/`model_reason`. Nullable: a ticket whose profile was set
+    // directly (`ticket add --profile`, no Manager involved) or never set at
+    // all has no reason to record. Every existing row gets NULL.
+    id: '0019_ticket_profile_reason',
+    sql: `ALTER TABLE tickets ADD COLUMN profile_reason TEXT;`,
+  },
 ];

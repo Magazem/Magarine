@@ -938,6 +938,59 @@ test('createRun refuses a profileId for a manager-kind ticket', () => {
   assert.equal(run.profileId, null);
 });
 
+// Batch 19 mini-phase 2A review fix (Medium): the createRun guard above is
+// not end to end on its own -- before this fix, createTicket(kind:'manager',
+// profile:'X') and updateTicketFields on a manager ticket both silently
+// succeeded, and only the LATER createRun call (inside tick()) threw,
+// aborting that tick with the ticket stuck READY rather than the assignment
+// itself being refused. Refused at the write site now, so the bad row is
+// never created in the first place.
+test('createTicket refuses a profile on a manager-kind ticket, one sentence, at the write site', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  createWorkerProfile(db, { name: 'Guarded2', purpose: 'p', model: 'claude-sonnet-5' });
+
+  assert.throws(
+    () => createTicket(db, { projectId: project.id, title: 'Manager: plan', kind: 'manager', profile: 'Guarded2' }),
+    /a manager ticket may never be assigned a worker profile/
+  );
+  // A profile-less manager ticket is unaffected.
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'Manager: plan 2', kind: 'manager' });
+  assert.equal(managerTicket.profileId, null);
+});
+
+test('updateTicketFields refuses assigning a profile to an existing manager-kind ticket, one sentence, at the write site', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  createWorkerProfile(db, { name: 'Guarded3', purpose: 'p', model: 'claude-sonnet-5' });
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'Manager: plan', kind: 'manager' });
+
+  assert.throws(
+    () => updateTicketFields(db, managerTicket.id, { profile: 'Guarded3' }),
+    /a manager ticket may never be assigned a worker profile/
+  );
+  assert.equal(getTicket(db, managerTicket.id)!.profileId, null, 'the refused write must not have taken effect');
+});
+
+// Batch 19 mini-phase 2A review fix (Low): a null profile_reason next to a
+// null profile -- clearing the assignment must clear its own reason too, so
+// a ticket that no longer has a profile never shows a stale reason on the
+// board.
+test('updateTicketFields clearing a profile also clears its profile_reason', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  createWorkerProfile(db, { name: 'Cleared', purpose: 'p', model: 'claude-sonnet-5' });
+  const ticket = createTicket(db, { projectId: project.id, title: 'T', profile: 'Cleared', profileReason: 'was needed' });
+  assert.equal(getTicket(db, ticket.id)!.profileReason, 'was needed');
+
+  updateTicketFields(db, ticket.id, { profile: null, model: 'claude-sonnet-5' });
+
+  const cleared = getTicket(db, ticket.id)!;
+  assert.equal(cleared.profileId, null);
+  assert.equal(cleared.profileReason, null, 'profile_reason must be cleared alongside profile_id');
+  assert.equal(cleared.model, 'claude-sonnet-5');
+});
+
 // --- Batch 19 ruling 35: settings (global defaults) ---
 
 test('getSetting/getSettings: absent by default, direct reads see exactly what setSetting wrote', () => {

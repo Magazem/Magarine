@@ -3,17 +3,22 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import { applyManagerProposal, type ManagerProposalAppliedPayload } from './managerApply.ts';
+import { buildBoard } from './commands/board.ts';
 import { decide } from './commands/decide.ts';
 import { readScopeText } from './manager.ts';
 import {
   createProject,
   createTicket,
+  createWorkerProfile,
   getDependencies,
   getProject,
   getTicket,
+  getWorkerProfileByName,
   listEventsForEntity,
   listEventsForProject,
   listTickets,
+  retireWorkerProfile,
+  updateTicketFields,
 } from './store.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import { testTempRoot } from './testSupport.ts';
@@ -414,4 +419,175 @@ test('rollback: cancel_ticket and update_ticket both roll back with the rest of 
 
   assert.equal(getTicket(db, toCancel.id)!.status, 'OPEN', 'cancel_ticket must roll back along with the rest of the transaction');
   assert.equal(getTicket(db, toUpdate.id)!.title, 'Update me', 'update_ticket must roll back along with the rest of the transaction');
+});
+
+// --- Batch 19 mini-phase 2A (ruling 37): "profile" / "profile_reason" ---
+
+test('acceptance line 2: a proposal assigning profile "developer" with a reason creates a ticket whose profile_id is Developer\'s and whose board row shows the reason', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const developer = getWorkerProfileByName(db, 'Developer')!;
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'assign the roster',
+    commands: [
+      {
+        type: 'create_ticket',
+        title: 'Implement the widget',
+        description: 'd',
+        acceptance_criteria: [],
+        profile: 'developer', // lower-case: proves the case-insensitive lookup reaches all the way through apply
+        profile_reason: 'ordinary implementation work',
+      },
+    ],
+  });
+
+  assert.equal(result.outcome, 'applied');
+  if (result.outcome !== 'applied') return;
+  const created = getTicket(db, result.created[0]!.ticketId)!;
+  assert.equal(created.profileId, developer.id);
+  assert.equal(created.profileReason, 'ordinary implementation work');
+  assert.equal(created.model, null, 'the model comes from the profile, not a bare override');
+
+  const board = buildBoard(db, project.id);
+  const boardRow = board.tickets.find((t) => t.id === created.id)!;
+  assert.deepEqual(boardRow.profile, { id: developer.id, name: 'Developer' });
+  assert.equal(boardRow.profileReason, 'ordinary implementation work');
+});
+
+test('update_ticket reassigning a profile persists the new profile_id and profile_reason', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const target = createTicket(db, { projectId: project.id, title: 'Target' });
+  const tester = getWorkerProfileByName(db, 'Tester')!;
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [{ type: 'update_ticket', ticket_id: target.id, profile: 'Tester', profile_reason: 'needs a test pass' }],
+  });
+
+  assert.equal(result.outcome, 'applied');
+  const updated = getTicket(db, target.id)!;
+  assert.equal(updated.profileId, tester.id);
+  assert.equal(updated.profileReason, 'needs a test pass');
+});
+
+test('a proposal assigning an unknown profile name is rejected as malformed, applying nothing -- not a raw NoSuchWorkerProfileError escaping the transaction', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [
+      { type: 'create_ticket', title: 'Never created', description: 'd', acceptance_criteria: [], profile: 'Nonexistent', profile_reason: 'why' },
+    ],
+  });
+
+  assert.equal(result.outcome, 'malformed');
+  assert.deepEqual(listTickets(db, project.id).map((t) => t.title), ['Plan: mission']);
+});
+
+test('a proposal assigning a retired profile name is rejected as malformed, applying nothing', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const architect = getWorkerProfileByName(db, 'Architect')!;
+  retireWorkerProfile(db, architect.id);
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [
+      { type: 'create_ticket', title: 'Never created', description: 'd', acceptance_criteria: [], profile: 'Architect', profile_reason: 'why' },
+    ],
+  });
+
+  assert.equal(result.outcome, 'malformed');
+  assert.deepEqual(listTickets(db, project.id).map((t) => t.title), ['Plan: mission']);
+});
+
+// Batch 19 mini-phase 2A fix round (review High 1): a proposal that sets
+// "profile" on an existing ticket that already carries a bare "model" (the
+// RESULTING row, not just this one command) is rejected as a clean
+// malformed result -- not a thrown "choose a profile or a model, not both"
+// escaping the apply transaction. Same for the reverse direction.
+test('a proposal adding a profile to a ticket that already has a bare model is rejected as malformed, applying nothing (not a thrown exception)', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const target = createTicket(db, { projectId: project.id, title: 'Has a model already', model: 'claude-sonnet-5' });
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [{ type: 'update_ticket', ticket_id: target.id, profile: 'Developer', profile_reason: 'why' }],
+  });
+
+  assert.equal(result.outcome, 'malformed');
+  const unchanged = getTicket(db, target.id)!;
+  assert.equal(unchanged.model, 'claude-sonnet-5', 'the target ticket must be untouched');
+  assert.equal(unchanged.profileId, null);
+});
+
+test('a proposal adding a bare model to a ticket that already has a profile is rejected as malformed, applying nothing', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  const target = createTicket(db, { projectId: project.id, title: 'Has a profile already', profile: 'Developer' });
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [{ type: 'update_ticket', ticket_id: target.id, model: 'claude-sonnet-5', model_reason: 'why' }],
+  });
+
+  assert.equal(result.outcome, 'malformed');
+  const unchanged = getTicket(db, target.id)!;
+  assert.equal(unchanged.model, null, 'the target ticket must be untouched');
+  assert.equal(unchanged.profileId, getWorkerProfileByName(db, 'Developer')!.id);
+});
+
+// Batch 19 mini-phase 2A fix round (review High 2): the validator must never
+// disagree with store.ts's OWN case-insensitive lookup (getWorkerProfileByName,
+// SQL COLLATE NOCASE -- ASCII only). Reproduces the reviewer's exact probe: a
+// profile named "Éditeur" (capital E-acute), assigned by the Manager as
+// "éditeur" (lower-case e-acute) -- a pair COLLATE NOCASE does NOT fold. Before
+// the fix, the validator's own Unicode-aware toLocaleLowerCase() fold
+// accepted this pair when the store's lookup would not, so validateProposal
+// passed and store.ts's resolveWorkerProfileRef threw
+// NoSuchWorkerProfileError out of the apply transaction. After the fix
+// (validateSemantics calls the board's resolveActiveProfileByName, which IS
+// getWorkerProfileByName), the two can no longer disagree: this is rejected
+// as a clean malformed result instead.
+test('a profile name that only matches by a NON-ASCII case fold (COLLATE NOCASE does not fold it) is rejected as malformed, not thrown', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  createWorkerProfile(db, { name: 'Éditeur', purpose: 'edits things', model: 'claude-sonnet-5' });
+
+  const result = applyManagerProposal(db, managerTicket, getProject(db, project.id)!, 'run_1', {
+    rationale: 'r',
+    commands: [
+      { type: 'create_ticket', title: 'Never created', description: 'd', acceptance_criteria: [], profile: 'éditeur', profile_reason: 'why' },
+    ],
+  });
+
+  assert.equal(result.outcome, 'malformed');
+  assert.deepEqual(listTickets(db, project.id).map((t) => t.title), ['Plan: mission']);
+});
+
+// Batch 19 mini-phase 2A fix round (review Medium): defence in depth --
+// update_ticket already refuses ANY manager-ticket target before this point
+// (proposal.ts's own check), so this proves store.ts's write-site guard
+// backstops it independently, not just via the earlier proposal-level check.
+test('updateTicketFields (the write site applyManagerProposal itself calls) refuses a profile on a manager ticket even if somehow reached', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const managerTicket = makeManagerTicket(db, project.id);
+  createWorkerProfile(db, { name: 'NeverAssigned', purpose: 'p', model: 'claude-sonnet-5' });
+
+  assert.throws(
+    () => updateTicketFields(db, managerTicket.id, { profile: 'NeverAssigned' }),
+    /a manager ticket may never be assigned a worker profile/
+  );
 });

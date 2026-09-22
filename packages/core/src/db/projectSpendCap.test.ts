@@ -99,9 +99,10 @@ test('a database migrated only to 0001-0004 picks up 0005 (project spend cap) on
  '0014_max_parallel_workers_nullable',
  '0015_verifier_run_kind', '0016_ticket_automatic', '0017_worker_profiles',
     // Batch 19: same reason 0008/0009 were added above -- this snapshot runs
-    // every migration up to HEAD, and 0018_settings is HEAD in this tree
-    // (0017_worker_profiles lands from a separate worktree, not yet merged).
-    '0018_settings',
+    // every migration up to HEAD, and 0019_ticket_profile_reason is HEAD in
+    // this tree (0017_worker_profiles lands from a separate worktree, not
+    // yet merged).
+    '0018_settings', '0019_ticket_profile_reason',
   ]);
   assert.equal(snapshot.maxSpendUsdBeforeUpdate, null, 'existing project rows must get NULL (no cap), not a numeric default');
   assert.equal(snapshot.maxSpendUsdAfterUpdate, 10);

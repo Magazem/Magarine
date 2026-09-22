@@ -1,5 +1,5 @@
 import { ARTIFACT_KINDS, type ArtifactKind } from './resultContract.ts';
-import { MIN_BUDGET_USD } from './store.ts';
+import { MIN_BUDGET_USD, PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE } from './store.ts';
 import type { ExpectedArtifact, TicketStatus } from './types.ts';
 
 // The Manager's typed command schema, per docs/strategy/batch-9-spec.md
@@ -47,6 +47,10 @@ export interface CreateTicketCommand {
   model?: string;
   /** Batch 12 item 3: required whenever `model` is set (see validateCommandShape) -- the Manager's own one-line justification for the choice, recorded on the ticket and shown on the board. */
   model_reason?: string;
+  /** Batch 19 mini-phase 2A (ruling 37): a worker profile's NAME, never an id (see validateCommandShape's shape check and the review fix on ProposalBoard.resolveActiveProfileByName). Mutually exclusive with `model` -- store.ts's `PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE` -- must resolve through the board's `resolveActiveProfileByName` (an unknown or retired name is refused). */
+  profile?: string;
+  /** Batch 19 mini-phase 2A: required whenever `profile` is set (see validateCommandShape), same pairing rule `model_reason` already has with `model`. */
+  profile_reason?: string;
   max_budget_usd?: number;
   /** Batch 15 item 4: the ticket's own declared expectation of what DONE must have produced -- see types.ts's ExpectedArtifact. Absent means no such list at all, keeping today's rule (batch 13 ruling 1c). */
   expected_artifacts?: ExpectedArtifact[];
@@ -113,6 +117,10 @@ export interface UpdateTicketCommand {
   model?: string;
   /** Batch 12 item 3: required whenever `model` is set, same rule as create_ticket's own field above. */
   model_reason?: string;
+  /** Batch 19 mini-phase 2A (ruling 37): same shape and validation as create_ticket's own field above. May not be set on a ticket that is IN_PROGRESS or REVIEW (validateSemantics) -- a run may already be using the ticket's current profile. There is no way to CLEAR a profile through a proposal, matching every other optional field on this command. */
+  profile?: string;
+  /** Batch 19 mini-phase 2A: required whenever `profile` is set, same rule as create_ticket's own field above. */
+  profile_reason?: string;
   /** Batch 15 item 4: same shape and validation as create_ticket's own field above. Absent leaves the ticket's existing list untouched (store.ts's updateTicketFields); there is no way to CLEAR one through a proposal, matching every other optional field on this command. */
   expected_artifacts?: ExpectedArtifact[];
 }
@@ -147,15 +155,15 @@ export const MAX_CREATE_TICKET_COMMANDS = 15;
 export const MANAGER_COMMAND_SCHEMA_DESCRIPTION = `A proposal is a JSON object: { "commands": [...], "rationale": "<string>" }.
 At most ${MAX_COMMANDS} commands total, at most ${MAX_CREATE_TICKET_COMMANDS} of them "create_ticket". Every command must be one of exactly these seven shapes -- no others exist:
 
-- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "max_budget_usd"?: <number>, "expected_artifacts"?: [{ "kind": "file", "path": "<string>" } | { "kind": "text" | "url" | "reference" }, ...] }
+- { "type": "create_ticket", "title": "<string>", "description": "<string>", "acceptance_criteria": ["<string>", ...], "depends_on"?: ["<existing ticket id or another create_ticket's title in this same proposal>", ...], "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "profile"?: "<a worker profile's name, case-insensitive>", "profile_reason"?: "<string, required whenever profile is set>", "max_budget_usd"?: <number>, "expected_artifacts"?: [{ "kind": "file", "path": "<string>" } | { "kind": "text" | "url" | "reference" }, ...] }
 - { "type": "add_dependency", "ticket_id": "<existing ticket id>", "depends_on_ticket_id": "<existing ticket id>" }
 - { "type": "change_priority", "ticket_id": "<existing ticket id>", "priority": <number> }
 - { "type": "request_user_decision", "question": "<string>", "context": "<string>" }
 - { "type": "update_scope", "content": "<string, the WHOLE scope document, replacing what is there now>" }
 - { "type": "cancel_ticket", "ticket_id": "<existing, non-manager ticket id>" }
-- { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "expected_artifacts"?: [{ "kind": "file", "path": "<string>" } | { "kind": "text" | "url" | "reference" }, ...] } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
+- { "type": "update_ticket", "ticket_id": "<existing, non-manager ticket id>", "title"?: "<string>", "description"?: "<string>", "acceptance_criteria"?: ["<string>", ...], "max_budget_usd"?: <number>, "model"?: "<string>", "model_reason"?: "<string, required whenever model is set>", "profile"?: "<a worker profile's name, case-insensitive>", "profile_reason"?: "<string, required whenever profile is set>", "expected_artifacts"?: [{ "kind": "file", "path": "<string>" } | { "kind": "text" | "url" | "reference" }, ...] } -- never "status"; a ticket's status has exactly one write site and a proposal may never set it directly
 
-"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. Setting "model" on create_ticket or update_ticket without a non-empty "model_reason" is rejected: if you choose a model deliberately, say why in one line. Neither command accepts "workspace_type" -- every work ticket runs in the project's own one directory; there is no choice to make here. "expected_artifacts", when set on create_ticket or update_ticket, declares what DONE must have produced: each entry names a "kind" ("file", "text", "url", "reference", "manager_reply" or "manager_assessment"), and only kind "file" carries a "path" -- a declared file the worker does not produce fails the run, naming that file. Tickets with no "expected_artifacts" at all keep the ordinary rule ("done" requires at least one delivered artefact, no more specific check). The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
+"depends_on" on create_ticket may name another create_ticket's title in THIS proposal (that ticket has no id yet) or an existing ticket's id. "add_dependency", "change_priority", "cancel_ticket" and "update_ticket" may only name an EXISTING ticket's id, never a title. A dependency cycle, anywhere in the combined graph of the existing board plus this proposal, rejects the whole proposal. A manager ticket and a work ticket may never depend on each other, and "cancel_ticket"/"update_ticket" may never target a manager ticket. "cancel_ticket" may only target a ticket that is not already DONE, FAILED or CANCELLED. Setting "model" on create_ticket or update_ticket without a non-empty "model_reason" is rejected: if you choose a model deliberately, say why in one line. "profile" assigns a worker from the roster instead of a bare model -- it is only valid for a profile whose name (case-insensitive) is active and not retired, "profile" and "model" may never both be set on the same command (choose a profile or a model, not both), setting "profile" without a non-empty "profile_reason" is rejected the same way an unexplained "model" is, and update_ticket may not change "profile" on a ticket that is currently IN_PROGRESS or REVIEW. Neither command accepts "workspace_type" -- every work ticket runs in the project's own one directory; there is no choice to make here. "expected_artifacts", when set on create_ticket or update_ticket, declares what DONE must have produced: each entry names a "kind" ("file", "text", "url", "reference", "manager_reply" or "manager_assessment"), and only kind "file" carries a "path" -- a declared file the worker does not produce fails the run, naming that file. Tickets with no "expected_artifacts" at all keep the ordinary rule ("done" requires at least one delivered artefact, no more specific check). The whole proposal is validated before any of it is applied: one invalid command rejects everything, not just that command.`;
 
 const COMMAND_TYPES = new Set<ManagerCommand['type']>([
   'create_ticket',
@@ -177,6 +185,14 @@ const COMMAND_TYPES = new Set<ManagerCommand['type']>([
 // this validator should silently follow.
 const CANCELLABLE_STATUSES = new Set<TicketStatus>(['OPEN', 'READY', 'IN_PROGRESS', 'REVIEW']);
 
+// Batch 19 mini-phase 2A (ruling 37): "update_ticket changing the profile of
+// a ticket that is IN_PROGRESS or REVIEW" is refused -- a run under the
+// ticket's CURRENT profile may already be in flight (IN_PROGRESS) or awaiting
+// verification (REVIEW), and store.ts's own resolution (resolveModel) is only
+// ever consulted again at the NEXT spawn, so changing the profile out from
+// under a live run would silently strand it on a stale value until then.
+const PROFILE_LOCKED_STATUSES = new Set<TicketStatus>(['IN_PROGRESS', 'REVIEW']);
+
 // The board data validateProposal needs, deliberately narrow (the compact
 // shape scheduler.ts's envelope builder already produces for the Manager's
 // own prompt, per batch-9-spec.md section 2 -- this is not a coincidence,
@@ -189,6 +205,10 @@ export interface ProposalBoardTicket {
   kind: 'work' | 'manager';
   /** Batch 11: needed for `cancel_ticket`'s own status check (see CANCELLABLE_STATUSES) -- the one field this board shape gained beyond batch 9's original id/title/kind. */
   status: TicketStatus;
+  /** Batch 19 mini-phase 2A review fix (High 1): the ticket's CURRENT bare-model override (null if it has none), so update_ticket's profile/model exclusivity can be validated against the RESULTING row -- this plus whichever of the two fields the command itself sets -- not just whether the command sets both in the same breath. Optional (rather than required) only so a test board that does not care about this rule can omit it; managerApply.ts's real buildProposalBoard always sets it. Absent is read the same as null (no override). */
+  model?: string | null;
+  /** Batch 19 mini-phase 2A review fix (High 1): the ticket's CURRENT profile id (null if it has none), same reasoning and same "absent reads as null" convention as `model` above. */
+  profileId?: string | null;
 }
 
 export interface ProposalBoardDependency {
@@ -201,6 +221,24 @@ export interface ProposalBoard {
   dependencies: ProposalBoardDependency[];
   /** Batch 11 item 1: whether `projects.scope_path` is set. `update_scope`'s applier (managerApply.ts) writes straight to that path and throws if it is null -- checked here, at validation time, so a project with no scope file yet produces a clean, retryable validation error instead of an unhandled throw escaping the application transaction. */
   hasScopePath: boolean;
+  /**
+   * Batch 19 mini-phase 2A review fix (High 2 / Low 5): resolves a `profile`
+   * command field to an id, or undefined for "no such ACTIVE profile by
+   * that name" -- covering both "does not exist" and "is retired" with one
+   * answer, the same way `store.ts`'s `getWorkerProfileByName` already
+   * does, because managerApply.ts's real implementation of this callback
+   * IS that function. Deliberately the board's OWN lookup, not a second,
+   * independently-folded name comparison in this file: the review found
+   * that a hand-rolled `toLocaleLowerCase()` fold here (Unicode-aware)
+   * disagreed with the store's SQL `COLLATE NOCASE` fold (ASCII-only) for a
+   * name like "Éditeur"/"éditeur" -- the validator accepted it, then
+   * store.ts's own resolution threw NoSuchWorkerProfileError out of the
+   * apply transaction. Calling the exact same function here makes that
+   * disagreement structurally impossible, not just less likely. Name only,
+   * never an id, per ruling 37's grammar (`getWorkerProfileByName` has no
+   * id-lookup half to begin with).
+   */
+  resolveActiveProfileByName: (name: string) => { id: string } | undefined;
 }
 
 export type ProposalValidationResult =
@@ -255,6 +293,37 @@ export function validateExpectedArtifacts(value: unknown, prefix: string, fieldL
   return errors;
 }
 
+// Batch 19 mini-phase 2A (ruling 37): the structural half of "profile"'s
+// rules, shared by create_ticket and update_ticket (the same DRY reason
+// "model"/"model_reason" already share nothing duplicated between the two
+// cases below) -- profile must be a string when present, profile_reason is
+// required and non-empty whenever profile is set, and profile+model on the
+// SAME command is rejected with store.ts's own exclusivity message (reused,
+// not re-derived, per the brief's own instruction). The existence/retired
+// check (needs the board's activeProfiles) and the IN_PROGRESS/REVIEW lock
+// (update_ticket only) are semantic (phase 2) -- see validateSemantics.
+function validateProfileShape(command: Record<string, unknown>, prefix: string): string[] {
+  const errors: string[] = [];
+  if (command.profile !== undefined && typeof command.profile !== 'string') {
+    errors.push(`${prefix}.profile must be a string when present`);
+  }
+  if (command.profile !== undefined && (typeof command.profile_reason !== 'string' || command.profile_reason.length === 0)) {
+    errors.push(`${prefix}.profile_reason must be a non-empty string whenever profile is set`);
+  }
+  // Second reviewer's Low 8: the pairing runs BOTH ways -- a reason with no
+  // profile to justify is meaningless, and would otherwise sit persisted on
+  // a profile-less ticket (store.ts's createTicket/updateTicketFields write
+  // whatever profileReason they are given, whether or not profile is also
+  // set on that same call).
+  if (command.profile === undefined && command.profile_reason !== undefined) {
+    errors.push(`${prefix}.profile_reason must not be set without profile`);
+  }
+  if (command.profile !== undefined && command.model !== undefined) {
+    errors.push(`${prefix}: ${PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE}`);
+  }
+  return errors;
+}
+
 // Phase 1: structural. Validates each command's own shape against its own
 // variant of the schema -- independent of the board, independent of every
 // OTHER command in the proposal. Returns every error found (not just the
@@ -306,6 +375,7 @@ function validateCommandShape(command: unknown, index: number): string[] {
       if (command.model !== undefined && (typeof command.model_reason !== 'string' || command.model_reason.length === 0)) {
         errors.push(`${prefix}.model_reason must be a non-empty string whenever model is set`);
       }
+      errors.push(...validateProfileShape(command, prefix));
       if (command.max_budget_usd !== undefined) {
         if (typeof command.max_budget_usd !== 'number') {
           errors.push(`${prefix}.max_budget_usd must be a number when present`);
@@ -376,6 +446,7 @@ function validateCommandShape(command: unknown, index: number): string[] {
       if (command.model !== undefined && (typeof command.model_reason !== 'string' || command.model_reason.length === 0)) {
         errors.push(`${prefix}.model_reason must be a non-empty string whenever model is set`);
       }
+      errors.push(...validateProfileShape(command, prefix));
       if (command.max_budget_usd !== undefined) {
         if (typeof command.max_budget_usd !== 'number') {
           errors.push(`${prefix}.max_budget_usd must be a number when present`);
@@ -484,6 +555,17 @@ function validateSemantics(commands: ManagerCommand[], board: ProposalBoard): st
       errors.push(`create_ticket title "${c.title}" is declared more than once in this proposal`);
     }
     seenNewTitles.add(c.title);
+    // Batch 19 mini-phase 2A review fix (High 2 / Low 5): resolved through
+    // the board's OWN lookup -- literally store.ts's getWorkerProfileByName
+    // (see managerApply.ts's buildProposalBoard), never a second, hand-rolled
+    // folding rule -- so this can never disagree with what
+    // managerApply.ts's createTicket will actually do with the SAME name at
+    // apply time. Name only, per ruling 37's grammar: `resolveActiveProfileByName`
+    // takes no id shortcut, so a `prof_...` id is refused the same as any
+    // other unrecognized string.
+    if (c.profile !== undefined && !board.resolveActiveProfileByName(c.profile)) {
+      errors.push(`create_ticket "${c.title}".profile "${c.profile}" is not a known, active worker profile, by name`);
+    }
   }
 
   // Dependency graph: existing board edges, plus every edge this proposal
@@ -585,6 +667,39 @@ function validateSemantics(commands: ManagerCommand[], board: ProposalBoard): st
         errors.push(`update_ticket.ticket_id "${c.ticket_id}" is not an existing ticket on this board`);
       } else if (ticket.kind === 'manager') {
         errors.push(`update_ticket.ticket_id "${c.ticket_id}" is a manager ticket -- update_ticket may never target a manager ticket`);
+      } else {
+        // Batch 19 mini-phase 2A review fix (High 1): validated against the
+        // RESULTING row -- this ticket's CURRENT model/profileId, overridden
+        // by whichever of the two THIS command actually sets -- not just
+        // whether the command sets both in the same breath. A command that
+        // adds "profile" to a ticket that already carries a bare "model"
+        // (or "model" to a ticket that already carries a profile) is
+        // rejected here, before application, with the SAME one sentence
+        // store.ts's own assertProfileModelExclusive throws -- catching it
+        // here is what stops that throw from ever reaching
+        // applyManagerProposal's transaction (see this file's own header
+        // comment: a clean validation error, not an unhandled throw, is the
+        // whole point of this module).
+        if (c.profile !== undefined || c.model !== undefined) {
+          const resultingHasModel = (c.model !== undefined ? c.model : ticket.model) != null;
+          const resultingHasProfile = (c.profile !== undefined ? c.profile : ticket.profileId) != null;
+          if (resultingHasModel && resultingHasProfile) {
+            errors.push(`update_ticket.ticket_id "${c.ticket_id}": ${PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE}`);
+          }
+        }
+        // The other two profile-specific refusals: an unknown/retired name
+        // (same lookup create_ticket's own loop above runs) and changing the
+        // profile of a ticket a run may already be using.
+        if (c.profile !== undefined) {
+          if (!board.resolveActiveProfileByName(c.profile)) {
+            errors.push(`update_ticket.ticket_id "${c.ticket_id}".profile "${c.profile}" is not a known, active worker profile, by name`);
+          }
+          if (PROFILE_LOCKED_STATUSES.has(ticket.status)) {
+            errors.push(
+              `update_ticket.ticket_id "${c.ticket_id}" is ${ticket.status} -- its profile cannot be changed while a run may already be using it`
+            );
+          }
+        }
       }
     }
   }

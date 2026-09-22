@@ -7,7 +7,7 @@ import { maybeCreateAutomaticManagerTurn } from './autoManager.ts';
 import { beginVerifyRun, startVerification } from './verifier.ts';
 import { isManagerDailyCapReached, MANAGER_DAILY_CAP_DEFAULT } from './manager.ts';
 import { classifyProgressMessage, parseProgressTool, type ActivityState } from './commands/activity.ts';
-import { applyManagerProposal } from './managerApply.ts';
+import { applyManagerProposal, type ApplyManagerProposalTestHooks } from './managerApply.ts';
 import { buildManagerEnvelope } from './managerEnvelope.ts';
 import { classify } from './policy.ts';
 import { artifactContent, validateWorkerResult } from './resultContract.ts';
@@ -70,6 +70,19 @@ export interface SchedulerDeps {
   readiness: ReadinessMode;
   /** Passed straight through to `prepareWorkspace`'s `baseDir` for NONE-mode runs. Test-only; production default (the OS temp directory) is unchanged. See workspace.ts's WorkspaceOptions.baseDir. */
   workspaceBaseDir?: string;
+  /**
+   * Test-only seam, always undefined in production -- forwarded verbatim to
+   * `applyManagerProposal` (managerApply.ts) for a manager ticket's `done`
+   * result. Same idiom as `workspaceBaseDir` above and managerApply.ts's own
+   * `ApplyManagerProposalTestHooks` (already used by managerApply.test.ts's
+   * rollback tests): a way to force a deterministic throw INSIDE the
+   * application transaction, but reachable through the REAL scheduler path
+   * this time -- see scheduler.test.ts's "a throwing Manager proposal apply
+   * settles the run" test, which proves the defensive fix below (an
+   * exception here used to leave the run 'running' forever and the ticket
+   * stuck IN_PROGRESS; see applyManagerTicketDone's own try/catch).
+   */
+  applyManagerProposalTestHooks?: ApplyManagerProposalTestHooks;
 }
 
 export interface StartedRun {
@@ -127,6 +140,12 @@ function previousAttemptFor(db: Db, ticket: Ticket): TicketEnvelope['previousAtt
 }
 
 function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope {
+  // Batch 19 mini-phase 2A (ruling 37): looked up once, fresh, and shared by
+  // both `model` (resolveModel's own ??-chain) and the new `profile` field
+  // below -- the SAME review-fix discipline 1A's own comment on `model`
+  // documents (never trusted from anywhere cached).
+  const profile = ticket.profileId != null ? getWorkerProfile(db, ticket.profileId) : null;
+
   const completedDependencies = getDependencies(db, ticket.id)
     .filter((d) => d.dependencyType === 'blocks')
     .map((d) => {
@@ -187,7 +206,14 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
     // the first two for a valid row; it just makes sure a profile ticket's
     // spawn sees `profile.model` instead of silently falling through to the
     // project default.
-    model: resolveModel(project, ticket, ticket.profileId != null ? getWorkerProfile(db, ticket.profileId) : null),
+    model: resolveModel(project, ticket, profile),
+    // Batch 19 mini-phase 2A (ruling 37): absent for a profile-less ticket --
+    // the adapter (claudeCli.ts) checks for this field's presence, not the
+    // ticket's own profileId, so verifier envelopes (buildVerifierEnvelope)
+    // and Manager envelopes (buildManagerEnvelope), which never set it, get
+    // no `--append-system-prompt` regardless of what either builds this
+    // function never runs for.
+    ...(profile ? { profile: { id: profile.id, name: profile.name, purpose: profile.purpose, policy: profile.policy } } : {}),
     // Batch 15 item 4: absent (not an empty array) when the ticket carries
     // no such list at all -- see envelope.ts's buildWorkerPrompt for why
     // that distinction, not just "empty vs non-empty," is what decides
@@ -437,6 +463,8 @@ interface ApplyEventContext {
   model: string;
   /** Asks the adapter to stop the worker. Kept as a closure so this module never needs the adapter/handle types directly. */
   stopWorker: () => Promise<void>;
+  /** Test-only, forwarded from SchedulerDeps -- see that field's own doc comment. */
+  applyManagerProposalTestHooks?: ApplyManagerProposalTestHooks;
 }
 
 // Batch 5 section 1 ruling 1: "first terminal outcome wins." A run's live
@@ -575,7 +603,27 @@ function applyManagerTicketDone(db: Db, ticket: Ticket, run: Run, ctx: ApplyEven
     proposalRaw = undefined;
   }
 
-  const result = applyManagerProposal(db, ticket, project, run.id, proposalRaw);
+  let result: ReturnType<typeof applyManagerProposal>;
+  try {
+    result = applyManagerProposal(db, ticket, project, run.id, proposalRaw, ctx.applyManagerProposalTestHooks);
+  } catch (err) {
+    // Batch 19 mini-phase 2A fix round (defensive, reviewer-found): a
+    // proposal can pass validateProposal's own checks and still throw
+    // INSIDE the application transaction when reality disagrees with what
+    // validation assumed (two 2A validator bugs this round fixed reached
+    // exactly this: an update_ticket's resulting profile/model exclusivity,
+    // and a profile name resolved differently by the validator than by the
+    // store). withTransaction (db/index.ts) rolls the write back either
+    // way, but nothing here used to catch the re-thrown error: this run's
+    // own terminal transition never ran, so the run row stayed 'running'
+    // forever (its `done` promise never resolved, hanging any caller
+    // awaiting it) and the ticket stayed stuck IN_PROGRESS. Settled exactly
+    // like an ordinary malformed proposal below -- same failureClass, same
+    // retryable worker_failure vocabulary -- since from the ticket's own
+    // perspective the outcome is identical: this attempt produced nothing
+    // appliable, try again.
+    result = { outcome: 'malformed', errors: [err instanceof Error ? err.message : String(err)] };
+  }
 
   if (result.outcome === 'malformed') {
     // Same shape as an ordinary malformed WorkerResult (this function's own
@@ -1228,6 +1276,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       ceilingUsd: envelope.maxBudgetUsd,
       model: envelope.model,
       stopWorker: () => deps.adapter.stop(handle),
+      applyManagerProposalTestHooks: deps.applyManagerProposalTestHooks,
     };
 
     let timeoutTimer: NodeJS.Timeout | undefined;

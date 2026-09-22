@@ -3,13 +3,14 @@ import { reasonFor } from './commands/inbox.ts';
 import type { Db } from './db/index.ts';
 import { lastManagerActivitySeq, workTicketsFinishedSince } from './autoManager.ts';
 import { readScopeText } from './manager.ts';
-import { inputRateUsd, knownModelIds } from './pricing.ts';
+import { inputRateUsd, isKnownModel, knownModelIds } from './pricing.ts';
 import {
   getDependencies,
   listArtifactsForTicket,
   listEventsForEntity,
   listEventsForProject,
   listTickets,
+  listWorkerProfiles,
   resolveManagerModel,
   resolveMaxBudgetUsd,
   ticketSpendUsd,
@@ -105,6 +106,8 @@ export interface ManagerBriefing {
   scopePath: string | null;
   /** Batch 11 item 3. */
   conversation: ManagerConversationEntry[];
+  /** Batch 19 mini-phase 2A (ruling 37): the roster paragraph -- REPLACES the old model-guidance paragraph. See renderRoster. */
+  roster: string;
   /** Batch 11 item 2: true when the scope is empty OR the board has no work tickets yet (the manager ticket about to run is always on the board itself by this point -- see buildBoard's own doc comment -- so this filters to `kind === 'work'`). Drives renderManagerBrief's interview-mode framing; not itself a hard gate on what the Manager may do (it may still return questions only or propose, per its own judgement) -- the prompt frames the two outcomes, it does not enforce one. */
   isFreshProject: boolean;
 }
@@ -262,6 +265,7 @@ export function buildManagerBriefing(db: Db, project: Project, ticket: Ticket): 
     scopePath: project.scopePath,
     conversation: buildConversation(db, project.id),
     isFreshProject: scopeText.trim().length === 0 || board.filter((b) => b.kind === 'work').length === 0,
+    roster: renderRoster(db),
   };
 }
 
@@ -313,33 +317,30 @@ const REPLAN_MODE_FRAMING =
   'change_priority -- correct the scope document via update_scope if it needs it, or ask a further question via request_user_decision. ' +
   'A proposal with an empty commands array is valid when you have nothing to change right now.';
 
-// Batch 12 item 3 (batch-12-spec.md section 1 ruling 3): "The envelope
-// gains one short paragraph: the available models, what each is for in the
-// architecture document's terms ... and their relative price as a ratio."
-// Names every model by its exact id (rather than "the cheap one") so
-// `create_ticket`/`update_ticket`'s own `model` field can be copied
-// verbatim from this paragraph. The role assignment (mechanical/read-only,
-// implementation/normal debugging, deep design) is the ruling's own
-// wording, fixed at three tiers regardless of how many models
-// `knownModelIds()` returns; the price-ratio line is generated FROM that
-// list, so a model pricing.ts adds or removes is never missing from, or
-// stale in, this paragraph -- see managerEnvelope.test.ts's own check that
-// the paragraph names exactly pricing.ts's list, nothing more or less.
-export function renderModelGuidance(): string {
+// Batch 19 mini-phase 2A (ruling 37, batch-16 addendum 1 section 3): REPLACES
+// renderModelGuidance -- "the envelope's model guidance paragraph the Manager
+// reads today ... is already a description of roles by tier. A profile makes
+// that paragraph into rows the owner can see and rename." One line per
+// NON-RETIRED profile (store.ts's listWorkerProfiles already excludes
+// retired rows), naming its model and the same price-ratio-vs-cheapest-known
+// figure the old paragraph computed, plus its purpose -- so
+// `create_ticket`/`update_ticket`'s own `profile` field can be copied
+// verbatim from a line here. Model guidance survives only as the closing
+// sentence: a bare "model" is legal only for a ticket with no profile.
+// managerEnvelope.test.ts's own exact-names check: adding or retiring a
+// profile changes this paragraph, and it names exactly the non-retired ones.
+export function renderRoster(db: Db): string {
+  const profiles = listWorkerProfiles(db);
   const ids = knownModelIds();
   const cheapest = Math.min(...ids.map(inputRateUsd));
-  const ratioLine = ids
-    .slice()
-    .sort((a, b) => inputRateUsd(a) - inputRateUsd(b))
-    .map((id) => `${id} ${(inputRateUsd(id) / cheapest).toFixed(1)}x`)
-    .join(' : ');
+  const ratio = (model: string): string => (isKnownModel(model) ? `${(inputRateUsd(model) / cheapest).toFixed(1)}x` : 'unknown price');
+  const rosterLines =
+    profiles.length > 0
+      ? profiles.map((p) => `- ${p.name} (${p.model}, ${ratio(p.model)} the cheapest known model's input price): ${p.purpose}`).join('\n')
+      : '(no worker profiles exist yet)';
   return (
-    'Model guidance: you may set "model" on create_ticket/update_ticket to any of these models -- ' +
-    `${ids.join(', ')}. Choose deliberately, not by default. claude-haiku-4-5-20251001 is for mechanical, ` +
-    'read-only work; claude-sonnet-5 is for ordinary implementation and normal debugging; claude-opus-5 and ' +
-    'claude-fable-5-1, the top-priced tier, are for deep design with real trade-offs to weigh. Relative price ' +
-    `(input tokens, cheapest = 1x): ${ratioLine}. Whenever you set "model", "model_reason" is required -- a ` +
-    'one-line justification for the choice, recorded on the ticket and shown on the board.'
+    `Roster: assign "profile" on create_ticket/update_ticket to one of these worker profiles by name (case-insensitive), with a one-line "profile_reason" -- the Manager's own justification, recorded on the ticket and shown on the board:\n${rosterLines}\n\n` +
+    'A bare "model" (with "model_reason") on create_ticket/update_ticket is only valid for a ticket that has no profile -- once a ticket has a profile, its model comes from the profile.'
   );
 }
 
@@ -395,7 +396,7 @@ export function renderManagerBrief(briefing: ManagerBriefing): string {
 
   sections.push(`Command schema:\n${MANAGER_COMMAND_SCHEMA_DESCRIPTION}`);
 
-  sections.push(renderModelGuidance());
+  sections.push(briefing.roster);
 
   return sections.join('\n\n');
 }

@@ -119,6 +119,33 @@ test('buildBoard/formatBoard carry model and modelReason for a ticket whose mode
   assert.doesNotMatch(withoutModelLine, /model /, 'a ticket with no explicit model must show no model column');
 });
 
+// Batch 19 mini-phase 2A (ruling 37): "the board rows carry profileReason
+// beside profile, the same way modelReason is shown today" -- mirrors the
+// modelReason test immediately above.
+test('buildBoard/formatBoard carry profile and profileReason for a ticket whose profile was explicitly set, and show neither for one that was not', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const withProfile = createTicket(db, { projectId: project.id, title: 'Assigned to Developer' });
+  updateTicketFields(db, withProfile.id, { profile: 'Developer', profileReason: 'ordinary implementation work' });
+  const withoutProfile = createTicket(db, { projectId: project.id, title: 'No profile' });
+
+  const board = buildBoard(db, project.id);
+  const withProfileEntry = board.tickets.find((t) => t.id === withProfile.id)!;
+  assert.equal(withProfileEntry.profile?.name, 'Developer');
+  assert.equal(withProfileEntry.profileReason, 'ordinary implementation work');
+  const withoutProfileEntry = board.tickets.find((t) => t.id === withoutProfile.id)!;
+  assert.equal(withoutProfileEntry.profile, null);
+  assert.equal(withoutProfileEntry.profileReason, null);
+
+  // Second reviewer's Medium: formatBoard's own rendered TEXT must name the
+  // profile and its reason too, the same way it already names model/modelReason.
+  const text = formatBoard(board);
+  const withProfileLine = text.split('\n').find((line) => line.includes(withProfile.id))!;
+  assert.match(withProfileLine, /profile Developer \(ordinary implementation work\)/);
+  const withoutProfileLine = text.split('\n').find((line) => line.includes(withoutProfile.id))!;
+  assert.doesNotMatch(withoutProfileLine, /profile /, 'a ticket with no profile must show no profile column');
+});
+
 test('formatBoard tags a manager ticket\'s row with [MANAGER], and leaves a work ticket\'s row unmarked', () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p' });

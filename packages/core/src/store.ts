@@ -520,6 +520,7 @@ interface TicketRow {
   automatic: number;
   expected_artifacts_json: string | null;
   profile_id: string | null;
+  profile_reason: string | null;
   result_json: string | null;
   created_at: string;
   updated_at: string;
@@ -546,6 +547,7 @@ function rowToTicket(row: TicketRow): Ticket {
     automatic: row.automatic === 1,
     expectedArtifacts: row.expected_artifacts_json != null ? JSON.parse(row.expected_artifacts_json) : null,
     profileId: row.profile_id,
+    profileReason: row.profile_reason,
     resultJson: row.result_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -563,6 +565,26 @@ export const PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE = 'choose a profile or a model,
 export function assertProfileModelExclusive(model: string | null | undefined, profileRef: string | null | undefined): void {
   if (model != null && profileRef != null) {
     throw new Error(PROFILE_AND_MODEL_EXCLUSIVE_MESSAGE);
+  }
+}
+
+// Batch 19 mini-phase 2A review fix (Medium): "Manager is not a profile"
+// (worker-profiles-design.md section 2) -- a manager-kind ticket may never
+// carry a worker profile at all, the same rule createRun (below) already
+// enforces at spawn time, but enforced HERE too, at the write site, so a
+// manager ticket can never even be GIVEN a profile in the first place. The
+// review found the createRun guard alone is not end to end: before this,
+// createTicket(kind:'manager', profile:'X') and updateTicketFields on a
+// manager ticket both silently succeeded, and only the LATER createRun call
+// (inside tick()) threw -- aborting that tick with the ticket stuck READY,
+// rather than the assignment itself being refused. No real caller reaches
+// this today (proposal.ts's validator already refuses any update_ticket
+// targeting a manager ticket outright, and no CLI/HTTP path can create a
+// manager-kind ticket with a profile), but a write-site guard does not
+// depend on every future caller remembering that.
+export function assertProfileNotOnManagerTicket(kind: TicketKind, profileRef: string | null | undefined): void {
+  if (kind === 'manager' && profileRef != null) {
+    throw new Error('a manager ticket may never be assigned a worker profile');
   }
 }
 
@@ -594,12 +616,15 @@ export function createTicket(
      * name a profile that exists and is not retired.
      */
     profile?: string | null;
+    /** Batch 19 mini-phase 2A (ruling 37): the Manager's own one-line justification for `profile`, required by proposal.ts's validateCommandShape whenever a create_ticket command sets `profile` -- same pairing rule `modelReason` already has with `model`. Null/undefined when `profile` is not set (a direct `ticket add --profile` carries no reason). */
+    profileReason?: string | null;
   }
 ): Ticket {
   if (input.maxBudgetUsdOverride != null) {
     assertAboveFloor(input.maxBudgetUsdOverride, 'a ticket\'s max_budget_usd_override');
   }
   assertProfileModelExclusive(input.model, input.profile);
+  assertProfileNotOnManagerTicket(input.kind ?? 'work', input.profile);
   let profileId: string | null = null;
   if (input.profile != null) {
     profileId = resolveWorkerProfileRef(db, input.profile);
@@ -612,8 +637,8 @@ export function createTicket(
     `INSERT INTO tickets (
        id, project_id, title, description, acceptance_criteria_json, status,
        priority, assignee, attempt_count, max_attempts, workspace_type,
-       workspace_ref, max_budget_usd_override, model, model_reason, kind, automatic, expected_artifacts_json, profile_id, result_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
+       workspace_ref, max_budget_usd_override, model, model_reason, kind, automatic, expected_artifacts_json, profile_id, profile_reason, result_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, 'OPEN', ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -642,6 +667,7 @@ export function createTicket(
     input.automatic ? 1 : 0,
     input.expectedArtifacts != null ? JSON.stringify(input.expectedArtifacts) : null,
     profileId,
+    input.profile != null ? (input.profileReason ?? null) : null,
     now,
     now
   );
@@ -708,6 +734,8 @@ export function updateTicketFields(
      * `{ profile: null, model: 'X' }`.
      */
     profile?: string | null;
+    /** Batch 19 mini-phase 2A (ruling 37): the Manager's own one-line justification for `profile`, same independent-field shape `modelReason` already has with `model` -- `undefined` (the default) leaves the ticket's existing reason untouched; a caller that sets `profile` passes this alongside it (managerApply.ts always does, since proposal.ts's validator requires the pair). */
+    profileReason?: string;
     /** Batch 15 item 4: `undefined` (the default) leaves the ticket's existing list untouched; `null` explicitly clears it back to "no such list"; a real array replaces it whole. */
     expectedArtifacts?: ExpectedArtifact[] | null;
   }
@@ -720,6 +748,7 @@ export function updateTicketFields(
   const resultingModel = fields.model !== undefined ? fields.model : (existing?.model ?? null);
   const resultingProfileRef = fields.profile !== undefined ? fields.profile : existing?.profileId ?? null;
   assertProfileModelExclusive(resultingModel, resultingProfileRef);
+  assertProfileNotOnManagerTicket(existing?.kind ?? 'work', fields.profile);
 
   let profileIdToSet: string | null | undefined;
   if (fields.profile !== undefined) {
@@ -764,6 +793,18 @@ export function updateTicketFields(
   if (fields.profile !== undefined) {
     sets.push('profile_id = ?');
     values.push(profileIdToSet);
+  }
+  // Batch 19 mini-phase 2A review fix (Low): clearing the profile
+  // (`profile: null`) clears `profile_reason` too, taking priority over
+  // any `profileReason` value passed alongside -- a reason for a null
+  // profile is meaningless, and board.ts would otherwise keep showing the
+  // old reason next to a ticket that no longer has a profile at all.
+  if (fields.profile !== undefined && fields.profile == null) {
+    sets.push('profile_reason = ?');
+    values.push(null);
+  } else if (fields.profileReason !== undefined) {
+    sets.push('profile_reason = ?');
+    values.push(fields.profileReason);
   }
   if (sets.length === 0) return;
 

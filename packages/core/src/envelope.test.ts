@@ -176,3 +176,19 @@ test('a previousAttempt.reason where the 4000-cut would split a surrogate pair b
   assert.ok(!prompt.includes('\u{1F600}'), 'the emoji itself must not appear');
   assert.ok(!prompt.includes('\uD83D'), 'the lone high surrogate must not appear unpaired');
 });
+
+// --- Batch 19 mini-phase 2A ruling 37: the profile's first line ---
+
+test('the first line of the prompt names the assigned profile', () => {
+  const prompt = buildWorkerPrompt(
+    ticket({ profile: { id: 'prof_1', name: 'Developer', purpose: 'implementation', policy: 'Be terse.' } }),
+    '/tmp/ws'
+  );
+  assert.equal(prompt.split('\n')[0], 'You are Developer, implementation.');
+});
+
+test('a profile-less ticket\'s prompt has no "You are" line at all', () => {
+  const prompt = buildWorkerPrompt(ticket({ profile: undefined }), '/tmp/ws');
+  assert.doesNotMatch(prompt.split('\n\n')[0]!, /^You are/);
+  assert.doesNotMatch(prompt, /^You are /m);
+});
