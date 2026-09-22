@@ -54,3 +54,23 @@ Evidence labels: HARD = I read or ran it. SOFT = inferred. UNKNOWN = guessing.
 5. CLI repeated `--answer` and the route's `answers` both reach the same path; `answer`+`answers` is 400.
 6. Inbox and conversation JSON carry `questions`.
 7. Suite passes; mutations each fail a test.
+
+## 3. Amendment after the Opus review, 2026-09-22
+
+The first build passed the full suite (945/946, 1 skip) and a fresh reviewer still found two High
+defects, both from this ruling being too narrow. Amended:
+
+- **Only a MANAGER ticket's `questions` count.** A worker's result contract requires `questions`
+  (`resultContract.ts` 99), so a real worker can fill it, and the scheduler stores the whole result as
+  the payload. `pendingQuestions` takes the ticket's kind and reads `questions` only for a
+  manager-kind ticket; a work ticket is always one question, as before.
+- **A single `answer` on an N-question ticket is still accepted**, as ONE answer to all of them
+  together (the pre-2B behaviour, recorded as one `decisions` entry whose question is the joined
+  text). Otherwise the page, which sends one `answer` until 3B, could not unblock any
+  multi-question Manager ticket, and neither could the inbox's own `decide --answer` hint. `answers`
+  with the wrong count or an empty entry is still refused.
+- A single empty `answer` stays legal, as it was (the route accepted it on purpose). A bare
+  `--answer` with no value is refused by the CLI in one sentence, and never recorded as "true".
+- Wrong types (`answers` not an array of strings, `answer` not a string) get the one sentence, not
+  a TypeError.
+- For a ticket with N > 1 questions, the inbox hint shows the repeated `--answer` form.
