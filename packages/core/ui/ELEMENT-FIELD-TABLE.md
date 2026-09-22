@@ -44,6 +44,10 @@ Routes used, and the page requests nothing else:
 | `GET /events?since=` | Role A's stream. Events are event rows as JSON. |
 | `POST /tickets/{id}/{decide,approve,reject,retry}` | existing write routes |
 | `POST /projects/{id}/{set,resume,discuss}` | existing write routes |
+| `GET /profiles` | `src/daemonApi.ts` → every non-retired `WorkerProfile` plus `status` (`working`/`idle`) and `ticketId`. Batch 19 |
+| `POST /profiles` | `src/daemonApi.ts` → the created `WorkerProfile`; **400** with `{ error }` when refused. Batch 19 |
+| `POST /profiles/{id}/retire` | `src/daemonApi.ts` → the retired `WorkerProfile`. Batch 19 |
+| `GET /models` | `src/daemonApi.ts` → `pricing.ts`'s `knownModelIds()`, the models a profile may use. Batch 19, ruling 38 amended |
 | `GET /ui/<name>` | the static assets: this page and its five files |
 
 ---
@@ -67,23 +71,51 @@ Routes used, and the page requests nothing else:
 | `live` / `polling` word | derived | `true` only while a stream is genuinely open. See section 7. |
 | OLED / Navy / Paper | copy | palette switch, `data-theme` on the root. Not data. |
 
-## 2. Fleet
+## 2. Fleet — the roster
 
-**One row per ticket in `IN_PROGRESS`.** The daemon has no agent entity, no
-roster and no idle worker, so the fleet is exactly the set of running tickets.
+**Ruling 38 (batch 19).** The region keeps its id `#fleet`; its heading reads
+**Roster**. One row per non-retired profile from `GET /profiles`, in the order
+the daemon returns them, then the Manager's row while a Manager turn is
+running, then — under one copy line — any running ticket that has no profile.
+There is **no percentage and no completion bar**: nothing measures completion.
 
 | element | kind | source |
 |---|---|---|
-| worker count | derived | count of `BoardTicket.status === 'IN_PROGRESS'` |
-| organism shape | derived | `ui/organism.js` seeded by the model id; see section 8 |
-| organism colour | field | `BoardTicket.status` |
-| name line | derived | the tier, from `organism.js`'s `tierOf(model)` — the ONE derivation |
-| model line | field | `BoardTicket.model`, or `ProjectListEntry.defaultModel` when null |
-| model line when both are absent | copy | "tickets.model is null and the project has no default" |
-| activity line | field | `BoardTicket.latestActivity.state` and `.tool` |
-| activity line when absent | copy | "no progress event recorded yet" — never a guessed state |
-| empty fleet | copy | "no ticket is IN_PROGRESS" |
-| Manager turn's name | field | `BoardTicket.kind` is `manager`: the row's name reads "Manager" instead of a model tier |
+| heading "Roster" | copy | — |
+| roster count | derived | `GET /profiles` length, "N profiles". Counts profiles, not tickets |
+| slots line | field | `BoardResult.slots.used` / `.cap`, unchanged |
+| profile row: organism shape | derived | `organism.js`'s `organism('mg.v1:' + WorkerProfile.id, WorkerProfile.model)`: the cell draw hashes the profile id, family and symmetry come from the model's tier. Renaming does not change it; a model in another tier does |
+| profile row: organism colour | field | the running ticket's `BoardTicket.status` when the profile is `working` on a ticket in this project's board; none otherwise |
+| profile row: name | field | `WorkerProfile.name` |
+| profile row: model | field | `WorkerProfile.model` |
+| profile row: purpose | field | `WorkerProfile.purpose` |
+| profile row: "idle" | field | `status === 'idle'` |
+| profile row: "working · <title>" | field | `status === 'working'`; the title is `BoardTicket.title` of the ticket `ticketId` names. When that ticket is not on this project's board, the full `ticketId` is shown instead of a title |
+| profile row: activity line | field | `BoardTicket.latestActivity` of that ticket, on a working row whose ticket is on this project's board; "no progress event recorded yet" when that field is null. An idle row has no activity line, and neither does a working row whose ticket belongs to another project: this page reads only its own project's board, so it has no activity to show |
+| profile row: "Retire" | copy | posts `POST /profiles/{id}/retire` after a confirm step |
+| retire confirm: "Retire <name>? This cannot be undone from this page." | derived + copy | the name is `WorkerProfile.name`; offers "Keep" first, then "Retire", so focus carried from the first press lands on Keep |
+| retire error | field | the daemon's own `error` sentence, verbatim |
+| Manager row | field | a `BoardTicket` with `kind === 'manager'` and `status === 'IN_PROGRESS'`: "Manager" or "Manager (automatic)", its model, the batch 18 line and the activity line. Organism seeded `mg.v1:manager` with the Manager ticket's model for the tier |
+| "Running, not on the roster" | copy | one line heading the running work tickets the roster does not cover: no profile, or a profile retired since the ticket started. Absent when there are none |
+| not-on-roster row: name | derived | `BoardTicket.profile.name` for a retired profile; otherwise the tier, from `organism.js`'s `tierOf(model)` |
+| profile-less row: model | field | `BoardTicket.model`, or `ProjectListEntry.defaultModel` when null |
+| profile-less row: model when both are absent | copy | "tickets.model is null and the project has no default" |
+| profile-less row: organism | derived | seeded by the model id, as before batch 19 |
+| empty roster | copy | "no profiles — add one below"; shown only when `GET /profiles` is empty |
+| roster read failure | field | the daemon's `error` sentence from `GET /profiles`, verbatim, in the list's place |
+| roster with no project | field | `GET /profiles` is read on every pass whether or not `GET /projects` returned anything: profiles are global, not per project |
+
+### Add a profile (inside the roster)
+
+| element | kind | source |
+|---|---|---|
+| "Add a profile" heading | copy | — |
+| name, purpose, policy inputs | copy | labels only; the values are what the owner types |
+| model select | field | `GET /models`, in the daemon's order. No model is offered that the daemon does not know. Read whether or not a project exists: the roster is global |
+| model list read failure | field | the daemon's own `error` sentence from `GET /models`, verbatim, under the empty select; asked again on the next pass |
+| "Add" button | copy | posts `POST /profiles` with `name`, `model`, `purpose`, and `policy` when it is not empty |
+| error line | field | the daemon's own `error` sentence from the 400, verbatim — never reworded |
+| after success | — | the inputs clear and the roster re-reads `GET /profiles`; the new row is the daemon's, not an optimistic one |
 
 ## 3. Board
 
@@ -98,7 +130,9 @@ terminal lane with `DONE`, struck through, rather than being dropped.
 | Board / List toggle | copy | `data-board-view` on `#board`; both views show the same tickets |
 | card short id | derived | `BoardTicket.id` up to the first `-`. The full id is in the list view, Needs you and the conversation. |
 | card title | field | `BoardTicket.title` |
-| card organism | derived | as section 2 |
+| card organism | derived | as section 2. A ticket with a profile is seeded `mg.v1:<BoardTicket.profile.id>` with that profile's `model` from `GET /profiles`; a retired profile is not in that list, so its tickets' organisms fall back to tier "unknown" rather than a guessed model |
+| card profile name | field | `BoardTicket.profile.name`, beside the organism; absent when `profile` is null. A retired profile's name still shows (the board looks it up fresh) |
+| card "Why this profile: …" | field | `BoardTicket.profileReason`, verbatim; absent when null |
 | card cost | field | `BoardTicket.costUsd` |
 | "at least … live estimate" | field | `BoardTicket.costIsEstimate` |
 | card activity line | field | `BoardTicket.latestActivity` — replaces the cost line while running |
@@ -144,6 +178,7 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | item set | field | `GET /inbox` — `buildInbox`'s own resolution rules decide what is still pending |
 | "N · autonomous work has stopped and handed back" | derived + copy | N is the item count |
 | who: tier | derived | tier of the named ticket's model |
+| who: profile name | field | `BoardTicket.profile.name` of the named ticket, in place of the tier, when it has a profile. Its organism is the profile's, as on the board. Batch 19 |
 | who: event type | field | `InboxItem.eventType`, shown raw rather than prettified |
 | ticket id | field | `InboxItem.ticketId`, or `.projectId` for a project-scoped item |
 | "12m ago" | derived | now − `InboxItem.createdAt` |
@@ -211,7 +246,7 @@ and `docs/design/pass3/check-organism.js` reads that same file.
 
 | channel | source |
 |---|---|
-| **shape (identity)** | `organism(seed)` where seed is `BoardTicket.model`, or `ProjectListEntry.defaultModel` when the ticket's is null. Tier = family + symmetry. |
+| **shape (identity)** | `organism(seed)` where seed is `BoardTicket.model`, or `ProjectListEntry.defaultModel` when the ticket's is null. Tier = family + symmetry. A profile is `organism('mg.v1:' + id, model)`: the id gives the cell draw, the model gives the tier (batch 16 addendum 1, ruling 38 amended). The Manager's roster row is `organism('mg.v1:manager', model)`. |
 | **colour (status)** | `BoardTicket.status`, via `[data-status]` in `tokens.css` |
 | **motion (activity)** | fires ONCE on a `worker_progress` event from the stream, in the state **the daemon mapped** (`payload.state`). The tool-to-state map is the daemon's and is not duplicated on the page. |
 
@@ -230,9 +265,9 @@ not draw them. **This list is the deliverable, not a caveat.**
 |---|---|
 | **"Simulate event" button** | It existed only in the mock screens. The organisms tick when a real event lands or not at all. |
 | **Notification bell (`bell · 16`)** | An OS notification needs the window host; no field, no route. |
-| **The Manager as a standing agent (`mgr`)** | There is no agent entity. A Manager run is a ticket with `kind: 'manager'`, and it appears on the board as one. |
-| **Idle agents in the fleet** | No roster exists. Only running tickets can be listed, so only they are. |
-| **Per-agent names ("Haiku", "Opus" as individuals)** | The daemon has no agent name. The page shows the model tier, which is what it actually has. |
+| **The Manager as a standing agent (`mgr`)** | The Manager is not a profile (batch 16 addendum 1). A Manager run is a ticket with `kind: 'manager'`: it appears on the board as one, and on the roster only while it is running. |
+| ~~Idle agents in the fleet~~ | **Drawn since batch 19**: `GET /profiles` is a real roster with a derived `idle` status. See section 2. |
+| ~~Per-agent names~~ | **Drawn since batch 19**: `WorkerProfile.name`. A ticket with no profile is still named by its tier. |
 | **"idle · last assessed 08:42"** | Nothing records when an agent last did anything outside its ticket's events. |
 | **`planning` and `reviewing` activity states** | Nothing emits them. Still open; still undrawn. |
 | **Progress percentages** | Nothing measures completion. This is rule 8's original example. |

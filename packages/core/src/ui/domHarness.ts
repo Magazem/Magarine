@@ -89,6 +89,15 @@ class FakeElement {
   set hidden(v: boolean) { if (v) this.attributes.set('hidden', ''); else this.attributes.delete('hidden'); }
   get children(): FakeElement[] { return this.childNodes.filter((n): n is FakeElement => n instanceof FakeElement); }
   get firstChild(): Node | null { return this.childNodes[0] ?? null; }
+  // reconcileList walks its kept rows with this. Until batch 19's roster no
+  // test rebuilt one row while keeping the next, so it was never reached --
+  // and a missing getter answers `undefined`, which is exactly the plausible
+  // non-answer rule 2 forbids.
+  get nextSibling(): Node | null {
+    if (!this.parentNode) return null;
+    const siblings = this.parentNode.childNodes;
+    return siblings[siblings.indexOf(this) + 1] ?? null;
+  }
   get offsetWidth(): number { return 0; }          // read only to force a reflow
 
   get textContent(): string { return this.childNodes.map((n) => n.textContent).join(''); }
@@ -238,6 +247,8 @@ export interface PageOptions {
   hash?: string;
   /** See pageFetch: changes a real JSON response before the page reads it. Off unless a test names it. */
   rewriteJson?: (path: string, body: any) => unknown;
+  /** See pageFetch: a route the real daemon never fails, answered with this status and `{ error }` instead. Off unless a test names it. */
+  refuse?: { path: string; status: number; error: string };
 }
 
 export interface Page {
@@ -304,9 +315,19 @@ export function openPage(opts: PageOptions): Page {
   // cannot be made to produce over the wire (`slots.cap: null` is only ever
   // sent to the offline CLI). The test that passes it says so by name; the
   // response is still the daemon's, with only the named field changed.
+  //
+  // AND ONE MORE, `opts.refuse` (batch 19): a read the real daemon cannot be
+  // made to fail -- `GET /models` is a constant list -- answered with a named
+  // status and error sentence instead, so the page's own failure branch runs.
+  // The request still goes to the daemon; only its answer is replaced.
   const pageFetch = (path: string, init?: RequestInit) => {
     requests.push(path);
     let p: Promise<Response> = fetch(new URL(path, opts.baseUrl), init);
+    const refuse = opts.refuse;
+    if (refuse && path.split('?')[0] === refuse.path) {
+      p = p.then(() => new Response(JSON.stringify({ error: refuse.error }),
+        { status: refuse.status, headers: { 'Content-Type': 'application/json' } }));
+    }
     const rewrite = opts.rewriteJson;
     if (rewrite) {
       p = p.then(async (res) => {

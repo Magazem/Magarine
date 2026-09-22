@@ -12,6 +12,7 @@ import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { createProject, getSetting, listEventsForProject, setProjectScopePath, setSetting } from './store.ts';
 import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
+import { knownModelIds } from './pricing.ts';
 
 // Cross-process coverage for the daemon's HTTP API itself: everything here
 // spawns the real `magarine serve` CLI command and talks to it over a real
@@ -1355,6 +1356,25 @@ test('POST /profiles, PATCH /profiles/{id} and POST /profiles/{id}/retire: 401 w
   } finally {
     await handle.kill();
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// Batch 19 ruling 38, amended: the page's "Add a profile" select reads the
+// models the daemon knows from here, so a model no profile uses yet is still
+// choosable. Read-only, and behind the token like every other data route.
+test('GET /models returns the known model ids from pricing.ts with a token, and 401 without one', async () => {
+  const db = openDb(':memory:');
+  const { port, close } = await startTestServer(db);
+  try {
+    const noToken = await api(port, '', 'GET', '/models');
+    assert.equal(noToken.status, 401);
+    const withToken = await api(port, TEST_TOKEN, 'GET', '/models');
+    assert.equal(withToken.status, 200, withToken.text);
+    assert.deepEqual(withToken.json, knownModelIds());
+    assert.ok((withToken.json as string[]).length >= 4, 'the model list came back nearly empty');
+  } finally {
+    await close();
+    db.close();
   }
 });
 

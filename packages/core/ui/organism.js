@@ -105,12 +105,18 @@
     return ((r + c) % 2 === 0) ? 4 : -4;   // lattice
   }
 
-  function organism(seed) {
+  // `model` is optional. A worker profile is seeded by its id, which names no
+  // tier, so its model is passed beside the seed: the id's hash gives the cell
+  // draw and the model gives family and symmetry (batch 16 addendum 1, ruling
+  // 38 amended). Renaming a profile changes neither; moving it to a model in
+  // another tier changes the tier. Without `model` nothing is different.
+  function organism(seed, model) {
     var rnd = rngFrom(seedHash(seed));
     var bare = splitSeed(seed).bare;
     // hasOwnProperty, not a bare lookup: a seed named toString or constructor
     // would otherwise resolve to an Object.prototype member.
-    var tier = Object.prototype.hasOwnProperty.call(TIER_TRAITS, bare) ? bare : tierOf(bare);
+    var tier = model ? tierOf(model)
+      : (Object.prototype.hasOwnProperty.call(TIER_TRAITS, bare) ? bare : tierOf(bare));
     var t = TIER_TRAITS[tier];
 
     var cells = new Array(GRID * GRID);

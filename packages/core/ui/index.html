@@ -163,10 +163,29 @@
 </section>
 
 <!-- ===================================================== REGION: fleet === -->
+<!-- RULING 38 (batch 19): the fleet is the ROSTER. One row per profile the
+     daemon returns, idle or working, then the Manager while a turn runs, then
+     any running ticket with no profile. The region keeps its id. -->
 <section id="fleet" aria-labelledby="fleetHead" tabindex="0">
-  <div class="panel-head"><h2 id="fleetHead">Fleet</h2><span class="count" id="fleetCount"></span><span class="count" id="fleetSlots"></span></div>
+  <div class="panel-head"><h2 id="fleetHead">Roster</h2><span class="count" id="fleetCount"></span><span class="count" id="fleetSlots"></span></div>
   <div id="fleetList"></div>
 
+  <!-- Posts POST /profiles. The model list is the daemon's own (GET /models),
+       and a refusal is shown as the daemon's sentence, word for word. -->
+  <div class="roster-add" id="rosterAdd">
+    <h3 class="roster-add-head">Add a profile</h3>
+    <label class="sr-only" for="profileName">Profile name</label>
+    <input class="field" id="profileName" type="text" autocomplete="off" placeholder="name">
+    <label class="sr-only" for="profileModel">Model</label>
+    <select class="field" id="profileModel"></select>
+    <div class="roster-error" id="modelsError" role="alert" hidden></div>
+    <label class="sr-only" for="profilePurpose">Purpose</label>
+    <input class="field" id="profilePurpose" type="text" autocomplete="off" placeholder="purpose, one sentence">
+    <label class="sr-only" for="profilePolicy">Policy (optional)</label>
+    <textarea class="field" id="profilePolicy" rows="2" placeholder="policy (optional)"></textarea>
+    <button class="btn btn-go" type="button" id="addProfile">Add</button>
+    <div class="roster-error" id="profileError" role="alert" hidden></div>
+  </div>
 </section>
 
 <!-- ===================================================== REGION: board === -->

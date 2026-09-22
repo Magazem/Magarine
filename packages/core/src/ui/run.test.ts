@@ -334,7 +334,13 @@ test('the fleet header shows the daemon\'s machine-wide slots, not this project\
     await selectProject(page, d.idle);
     await pollUntil(page, () => page.text('fleetSlots').startsWith('1 of 3 slots'),
       `the daemon's real 1 of 3 (header says "${page.text('fleetSlots')}")`);
-    assert.equal(page.text('fleetCount'), '0 workers', 'this project has no running ticket of its own');
+    // Ruling 38 (batch 19) re-aimed this line, and says so. It asserted the
+    // header's count, "0 workers" -- this project's running tickets -- which is
+    // now the roster's profile count and cannot move with tickets at all. The
+    // claim it guarded still can: another project's running ticket (it has no
+    // profile) is not drawn in this project's column, only counted in slots.
+    assert.doesNotMatch(page.text('fleetList'), /long job|Running, not on the roster/,
+      'another project\'s running ticket was drawn in this project\'s column');
   });
 });
 

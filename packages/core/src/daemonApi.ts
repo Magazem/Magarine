@@ -21,7 +21,7 @@ import { summarizeScopeChange } from './managerApply.ts';
 import { buildConversation } from './commands/conversation.ts';
 import { classify } from './policy.ts';
 import { planWithMission } from './commands/plan.ts';
-import { isKnownModel } from './pricing.ts';
+import { isKnownModel, knownModelIds } from './pricing.ts';
 import { validateExpectedArtifacts } from './proposal.ts';
 import { probeScopeFile } from './scopeProbe.ts';
 import {
@@ -646,6 +646,13 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
   // /profiles/{id}/retire."
   if (method === 'GET' && path === '/profiles') {
     return handleListProfiles(deps.db);
+  }
+  // Batch 19 ruling 38, amended: the models a profile may use, for the page's
+  // "Add a profile" select. pricing.ts's own list -- the same one
+  // createWorkerProfile validates against -- so the page cannot offer a model
+  // the daemon would refuse, nor miss one that no profile happens to use yet.
+  if (method === 'GET' && path === '/models') {
+    return { status: 200, body: knownModelIds() };
   }
   if (method === 'POST' && path === '/profiles') {
     return handleCreateProfile(deps.db, body);

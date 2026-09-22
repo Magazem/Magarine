@@ -468,6 +468,44 @@
   }
   .fleet-row .doing[data-idle] { color: var(--fg-3); }
 
+  /* RULING 38: the roster. A profile row adds its purpose and a status word;
+     idle reads quieter than working, and nothing is drawn as a percentage or
+     a bar, because nothing measures completion. */
+  .fleet-row .purpose { font-size: var(--t-xs); color: var(--fg-2); overflow-wrap: anywhere; margin-top: 2px; }
+  .fleet-row .state {
+    font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg);
+    overflow-wrap: anywhere; margin-top: 2px;
+  }
+  .fleet-row .state[data-idle] { color: var(--fg-3); }
+  .fleet-row .retire {
+    flex: 0 1 auto; display: flex; flex-wrap: wrap; justify-content: flex-end;
+    gap: var(--s1); max-width: 55%;
+  }
+  .fleet-row .retire .confirm { font-size: var(--t-xs); color: var(--fg); overflow-wrap: anywhere; }
+  .roster-sub {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3);
+    margin: var(--s3) 0 var(--s1); padding-top: var(--s2);
+    border-top: var(--rule) solid var(--line);
+  }
+  /* The daemon's own sentence, whole, line breaks kept. */
+  .roster-error { font-size: var(--t-xs); color: var(--st-failed); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .roster-add {
+    display: flex; flex-direction: column; gap: var(--s2);
+    margin-top: var(--s4); padding-top: var(--s3);
+    border-top: var(--rule) solid var(--line);
+  }
+  .roster-add-head {
+    margin: 0; font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-2);
+  }
+  .roster-add .btn { align-self: flex-start; }
+  .ticket .profile {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-2);
+  }
+  .ticket .reason[data-role="profile-reason"] .v { color: var(--fg-2); }
+
   /* ============================================================= board ==== */
   .boardbar { display: flex; align-items: center; gap: var(--s2); margin-bottom: var(--s3); flex-wrap: wrap; }
 

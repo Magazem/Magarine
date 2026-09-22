@@ -285,6 +285,15 @@
     scopeStatus: null,
     scopeError: null,
     convFilter: 'all',
+    // Ruling 38. GET /profiles and GET /models. `profilesError` is the
+    // daemon's sentence when the roster could not be read, drawn in its place
+    // rather than as an empty roster; `retiring` is the profile whose Retire
+    // is waiting for its confirm.
+    profiles: [],
+    profilesError: null,
+    models: [],
+    retiring: null,
+    retireError: null,
     live: false,            // true only while a stream is genuinely open
     lastSequence: 0,
     // The project list as a key, so the selector is rebuilt only when it changed.
@@ -407,21 +416,37 @@
   // still in the organism's title and aria-label, where it is a name and not a
   // selector.
   function makeOrg(modelId, status, size) {
-    var seed = seedFor(modelId);
+    return drawOrg(seedFor(modelId), null, status, size);
+  }
+
+  // RULING 38 (batch 16 addendum 1, amended). A seed that names no tier -- a
+  // profile's `mg.v1:<id>`, the Manager's `mg.v1:manager` -- is drawn with its
+  // model beside it: the seed gives the cells, the model gives the tier. So a
+  // renamed profile keeps its organism and one moved to another tier does not.
+  function drawOrg(seed, model, status, size) {
     var node = el('span', 'org');
-    var tier = seed ? ORG.tierOf(seed) : 'unknown';
+    var tier = model ? ORG.tierOf(model) : (seed ? ORG.tierOf(seed) : 'unknown');
     if (size) node.setAttribute('data-size', size);
     if (status) node.setAttribute('data-status', status);
     node.setAttribute('role', 'img');
     node.setAttribute('aria-label', 'agent organism, model tier ' + tier);
-    node.title = (seed || 'no model recorded') + ' \u00B7 tier ' + tier;
-    var cells = ORG.organism(seed);
+    node.title = (model || seed || 'no model recorded') + ' \u00B7 tier ' + tier;
+    var cells = ORG.organism(seed, model);
     for (var i = 0; i < cells.length; i++) {
       var cell = el('i');
       if (cells[i]) cell.setAttribute('data-on', '1');
       node.appendChild(cell);
     }
     return node;
+  }
+
+  // A ticket's organism. A ticket with a profile is that profile's organism,
+  // with the model read off the roster; a retired profile is not on the
+  // roster, so its tickets draw tier "unknown" rather than a guessed model.
+  function ticketOrg(t, status, size) {
+    if (!t || !t.profile) return makeOrg(t && t.model, status, size);
+    var p = profileById(t.profile.id);
+    return drawOrg('mg.v1:' + t.profile.id, p ? p.model : null, status, size);
   }
 
   // ONE PASS. Called from exactly one place: syncMotion, when a ticket's
@@ -583,36 +608,217 @@
     return slots.used >= slots.cap ? text + ' — full, other tickets wait' : text;
   }
 
-  // ------------------------------------------------------------ fleet ----
-  // A row per ticket that is actually running. The daemon has no agent
-  // entity, no roster and no idle worker, so neither does this.
+  // ----------------------------------------------------------- roster ----
+  // RULING 38 (batch 19): the fleet is the roster. GET /profiles is every
+  // profile that is not retired, each `working` or `idle`, and this draws one
+  // row per profile in the daemon's order. Then the Manager, while a turn is
+  // running (the Manager is not a profile), then any running ticket the roster
+  // does not cover, under one line saying so -- a hand-made ticket is never
+  // invisible. Nothing measures completion, so there is no percentage and no
+  // bar anywhere in here.
+  //
+  // Drawn through reconcileList: a row holds the Retire confirm, and the
+  // four-second poll must not take it out from under the owner's hand.
+  function profileById(id) {
+    var ps = state.profiles || [];
+    for (var i = 0; i < ps.length; i++) if (ps[i].id === id) return ps[i];
+    return null;
+  }
+
+  function onRoster(t) { return !!t.profile && !!profileById(t.profile.id); }
+
+  // The model a ticket's profile draws its tier from, off the roster. Part of
+  // every row signature that draws a ticket's organism: a profile moved to
+  // another tier changes nothing on the ticket itself.
+  function profileModel(t) {
+    var p = t && t.profile ? profileById(t.profile.id) : null;
+    return p ? p.model : null;
+  }
+
   function renderFleet() {
     var list = $('fleetList');
-    clear(list);
+    var profiles = state.profiles || [];
     var running = ((state.board && state.board.tickets) || []).filter(function (t) {
       return t.status === 'IN_PROGRESS';
     });
-    $('fleetCount').textContent = running.length + (running.length === 1 ? ' worker' : ' workers');
+    $('fleetCount').textContent = state.profilesError ? '' :
+      profiles.length + (profiles.length === 1 ? ' profile' : ' profiles');
     $('fleetSlots').textContent = slotsText(state.board && state.board.slots);
-    if (!running.length) {
-      list.appendChild(el('div', 'empty', 'no ticket is IN_PROGRESS'));
-      return;
+
+    var entries = [];
+    if (state.profilesError) {
+      var said = state.profilesError;
+      entries.push({ key: 'error', sig: said, build: function () { return el('div', 'roster-error', said); } });
+    } else if (!profiles.length) {
+      entries.push({ key: 'empty', sig: '', build: function () { return el('div', 'empty', 'no profiles \u2014 add one below'); } });
     }
-    running.forEach(function (t) {
-      var r = el('div', 'fleet-row');
-      r.setAttribute('data-status', t.status);
-      r.appendChild(makeOrg(t.model, t.status));
-      var who = el('span', 'who');
-      var model = seedFor(t.model);
-      who.appendChild(el('span', 'name', isManager(t) ? (t.automatic ? 'Manager (automatic)' : 'Manager') : (model ? ORG.tierOf(model) : 'no model recorded')));
-      who.appendChild(el('span', 'tier', model || 'tickets.model is null and the project has no default'));
+    profiles.forEach(function (p) {
+      var t = p.status === 'working' && p.ticketId ? ticketById(p.ticketId) : null;
+      entries.push({
+        key: 'profile' + p.id,
+        sig: JSON.stringify([p, t ? [t.title, t.status, doingText(t)] : null,
+          state.retiring === p.id, state.retiring === p.id ? state.retireError : null]),
+        build: function () { return profileRow(p, t); }
+      });
+    });
+    running.filter(isManager).forEach(function (t) {
+      entries.push({ key: 'manager' + t.id, sig: JSON.stringify([t.automatic, t.model, doingText(t)]),
+        build: function () { return runningRow(t); } });
+    });
+    var loose = running.filter(function (t) { return !isManager(t) && !onRoster(t); });
+    if (loose.length) {
+      entries.push({ key: 'loose', sig: '', build: function () { return el('div', 'roster-sub', 'Running, not on the roster'); } });
+      loose.forEach(function (t) {
+        entries.push({ key: 'ticket' + t.id, sig: JSON.stringify([t.model, t.profile, doingText(t)]),
+          build: function () { return runningRow(t); } });
+      });
+    }
+    reconcileList(list, entries);
+  }
+
+  function profileRow(p, t) {
+    var r = el('div', 'fleet-row');
+    if (t) r.setAttribute('data-status', t.status);
+    r.appendChild(drawOrg('mg.v1:' + p.id, p.model, t ? t.status : null));
+    var who = el('span', 'who');
+    who.appendChild(el('span', 'name', p.name));
+    who.appendChild(el('span', 'tier', p.model));
+    who.appendChild(el('span', 'purpose', p.purpose));
+    // `working` names its ticket: the title when this project's board has it,
+    // the full id when the ticket belongs to another project. A status word
+    // this page does not know is shown as the daemon spelled it.
+    var working = p.status === 'working';
+    var word = working ? 'working' + (t ? ' \u00B7 ' + t.title : (p.ticketId ? ' \u00B7 ' + p.ticketId : ''))
+      : String(p.status);
+    var status = el('span', 'state', word);
+    if (p.status === 'idle') status.setAttribute('data-idle', '1');
+    who.appendChild(status);
+    if (working && t) {
       var doing = doingText(t);
-      var said = managerLine(t);
-      var line = el('span', 'doing', said ? (doing ? said + ' \u2014 ' + doing : said) : (doing || 'no progress event recorded yet'));
-      if (!doing && !said) line.setAttribute('data-idle', '1');
+      var line = el('span', 'doing', doing || 'no progress event recorded yet');
+      if (!doing) line.setAttribute('data-idle', '1');
       who.appendChild(line);
-      r.appendChild(who);
-      list.appendChild(r);
+    }
+    r.appendChild(who);
+    r.appendChild(retireControl(p));
+    return r;
+  }
+
+  // Retiring is not undoable from this page, so it takes two presses: the
+  // row's Retire, then the confirm. A refusal is the daemon's own sentence.
+  //
+  // KEEP COMES FIRST, AND THAT IS THE POINT. The first press rebuilds the row,
+  // and reconcileList hands focus to the new row's control in the same place
+  // as the one that had it -- the first. Were that the confirm, Enter twice (or
+  // a held Enter repeating) would retire with no second choice ever made. So
+  // the carried focus lands on Keep, and retiring means moving to the confirm
+  // on purpose.
+  function retireControl(p) {
+    var box = el('span', 'retire');
+    if (state.retiring !== p.id) {
+      var ask = el('button', 'btn', 'Retire');
+      ask.type = 'button';
+      ask.setAttribute('aria-label', 'Retire ' + p.name);
+      ask.addEventListener('click', function () {
+        state.retiring = p.id;
+        state.retireError = null;
+        renderFleet();
+      });
+      box.appendChild(ask);
+      return box;
+    }
+    box.appendChild(el('span', 'confirm', 'Retire ' + p.name + '? This cannot be undone from this page.'));
+    var yes = el('button', 'btn', 'Retire');
+    yes.type = 'button';
+    yes.setAttribute('aria-label', 'Confirm: retire ' + p.name);
+    yes.addEventListener('click', function () {
+      api('/profiles/' + encodeURIComponent(p.id) + '/retire', { method: 'POST', body: {} }).then(function () {
+        state.retiring = null;
+        return refreshProfiles();
+      }, function (err) {
+        if (err && err.message === 'unauthorized') return;
+        state.retireError = daemonSentence(err);
+        renderFleet();
+      });
+    });
+    var keep = el('button', 'btn', 'Keep');
+    keep.type = 'button';
+    keep.addEventListener('click', function () { state.retiring = null; renderFleet(); });
+    box.appendChild(keep);
+    box.appendChild(yes);
+    if (state.retireError) box.appendChild(el('span', 'roster-error', state.retireError));
+    return box;
+  }
+
+  // A running ticket the roster does not cover: the Manager, a ticket with no
+  // profile, or one whose profile has since been retired. Drawn as the fleet
+  // drew every row before batch 19 -- by tier and model.
+  function runningRow(t) {
+    var r = el('div', 'fleet-row');
+    r.setAttribute('data-status', t.status);
+    var model = seedFor(t.model);
+    r.appendChild(isManager(t) ? drawOrg('mg.v1:manager', model || null, t.status) : ticketOrg(t, t.status));
+    var who = el('span', 'who');
+    who.appendChild(el('span', 'name', isManager(t) ? (t.automatic ? 'Manager (automatic)' : 'Manager')
+      : (t.profile ? t.profile.name : (model ? ORG.tierOf(model) : 'no model recorded'))));
+    if (!t.profile) who.appendChild(el('span', 'tier', model || 'tickets.model is null and the project has no default'));
+    var doing = doingText(t);
+    var said = managerLine(t);
+    var line = el('span', 'doing', said ? (doing ? said + ' \u2014 ' + doing : said) : (doing || 'no progress event recorded yet'));
+    if (!doing && !said) line.setAttribute('data-idle', '1');
+    who.appendChild(line);
+    r.appendChild(who);
+    return r;
+  }
+
+  // The model select, rebuilt only when the daemon's list changed, so a
+  // choice the owner has made is not reset by the poll.
+  function renderModels() {
+    var sel = $('profileModel');
+    var key = (state.models || []).join('\u241E');
+    if (sel._key === key) return;
+    sel._key = key;
+    var chosen = sel.value;
+    clear(sel);
+    (state.models || []).forEach(function (m) {
+      var o = el('option', null, m);
+      o.value = m;
+      sel.appendChild(o);
+    });
+    sel.value = (state.models || []).indexOf(chosen) >= 0 ? chosen : ((state.models || [])[0] || '');
+  }
+
+  function setModelsError(text) {
+    var n = $('modelsError');
+    n.textContent = text || '';
+    n.hidden = !text;
+  }
+
+  function setProfileError(text) {
+    var n = $('profileError');
+    n.textContent = text || '';
+    n.hidden = !text;
+  }
+
+  // POST /profiles with what the owner typed. Nothing is checked here first:
+  // the daemon decides what a valid profile is, and says why when it is not.
+  function addProfile() {
+    var body = {
+      name: $('profileName').value.trim(),
+      model: $('profileModel').value,
+      purpose: $('profilePurpose').value.trim()
+    };
+    var policy = $('profilePolicy').value.trim();
+    if (policy) body.policy = policy;
+    api('/profiles', { method: 'POST', body: body }).then(function () {
+      $('profileName').value = '';
+      $('profilePurpose').value = '';
+      $('profilePolicy').value = '';
+      setProfileError(null);
+      return refreshProfiles();
+    }, function (err) {
+      if (err && err.message === 'unauthorized') return;
+      setProfileError(daemonSentence(err));
     });
   }
 
@@ -654,15 +860,19 @@
     card.appendChild(el('div', 'title', t.title));
 
     var meta = el('div', 'meta');
-    var org = makeOrg(t.model, t.status, 'sm');
+    var org = ticketOrg(t, t.status, 'sm');
     org.setAttribute('data-org-for', t.id);
     meta.appendChild(org);
+    // Ruling 38: the profile by name, where the tier was the only identity.
+    // The board looks the name up fresh, so a retired profile's still shows.
+    if (t.profile) meta.appendChild(el('span', 'profile', t.profile.name));
     var doing = doingText(t);
     var line = el('span', 'doing', doing || costText(t));
     if (!doing) line.setAttribute('data-idle', '1');
     meta.appendChild(line);
     card.appendChild(meta);
 
+    if (t.profileReason) card.appendChild(reasonLine('Why this profile', t.profileReason, 'profile-reason'));
     var said = managerLine(t);
     if (said) card.appendChild(el('div', 'note', said));
     if (t.status === 'REVIEW') card.appendChild(el('div', 'note', 'Being verified'));
@@ -875,10 +1085,10 @@
     ask.setAttribute('data-status', status);
 
     var head = el('div', 'ask-head');
-    head.appendChild(makeOrg(t && t.model, status, 'lg'));
+    head.appendChild(ticketOrg(t, status, 'lg'));
     var who = el('span', 'who');
     var model = seedFor(t && t.model);
-    who.appendChild(el('span', 'name', (isManager(t) ? (t.automatic ? 'Manager (automatic)' : 'Manager') : (model ? ORG.tierOf(model) : 'project')) + ' \u00B7 ' + labelFor(item.eventType)));
+    who.appendChild(el('span', 'name', (isManager(t) ? (t.automatic ? 'Manager (automatic)' : 'Manager') : (t && t.profile ? t.profile.name : (model ? ORG.tierOf(model) : 'project'))) + ' \u00B7 ' + labelFor(item.eventType)));
     who.appendChild(el('span', 'tid', item.ticketId || item.projectId || ''));
     head.appendChild(who);
     ask._when = el('span', 'when', ago(item.createdAt) + ' ago');
@@ -935,7 +1145,7 @@
       var act = t ? activityOf(t) : null;
       return {
         key: ['row', item.eventType, item.ticketId || '', item.projectId || '', item.createdAt].join(''),
-        sig: JSON.stringify([item.message, t ? [t.status, t.model, t.artifacts, doingText(t), act && act.at] : null]),
+        sig: JSON.stringify([item.message, t ? [t.status, t.model, t.profile, profileModel(t), t.artifacts, doingText(t), act && act.at] : null]),
         build: function () { return askNode(item); }
       };
     }));
@@ -1021,7 +1231,7 @@
       var t = e.ticketId ? ticketById(e.ticketId) : null;
       return {
         key: base + '' + seen[base],
-        sig: JSON.stringify([e, t ? [t.status, t.model] : null]),
+        sig: JSON.stringify([e, t ? [t.status, t.model, t.profile, profileModel(t)] : null]),
         build: function () { return conversationEntry(e); }
       };
     }));
@@ -1035,7 +1245,7 @@
     var t = e.ticketId ? ticketById(e.ticketId) : null;
     var who = el('div', 'who');
     if (e.kind !== 'owner_message' && e.kind !== 'scope_updated') {
-      who.appendChild(makeOrg(t && t.model, t && t.status, 'sm'));
+      who.appendChild(ticketOrg(t, t && t.status, 'sm'));
     }
     who.appendChild(labelNode('name', e.kind));
     who.appendChild(el('span', 'at', e.createdAt));
@@ -1148,7 +1358,7 @@
     var out = [];
     (state.projects || []).forEach(function (p) { out.push(p.name, p.id, p.defaultModel); });
     ((state.board && state.board.tickets) || []).forEach(function (t) {
-      out.push(t.title, t.id, t.status, t.model, t.modelReason);
+      out.push(t.title, t.id, t.status, t.model, t.modelReason, t.profile && t.profile.name, t.profileReason);
       (t.blockedBy || []).forEach(function (b) { out.push(b); });
       (t.artifacts || []).forEach(function (a) { out.push(a.kind, a.content); });
       var act = activityOf(t);
@@ -1158,7 +1368,9 @@
     (state.inbox || []).forEach(function (i) { out.push(i.message, i.eventType, i.ticketId, i.projectId); });
     (state.activity || []).forEach(function (e) { out.push(e.eventType, e.entityId); });
     (state.conversation || []).forEach(function (c) { out.push(c.text, c.kind, c.ticketId); });
-    out.push(state.scopeText);
+    (state.profiles || []).forEach(function (p) { out.push(p.name, p.model, p.purpose, p.ticketId); });
+    (state.models || []).forEach(function (m) { out.push(m); });
+    out.push(state.scopeText, state.profilesError, state.retireError);
     return out.filter(function (s) { return typeof s === 'string' && s.length > 0; });
   }
 
@@ -1315,7 +1527,11 @@
     // this read is even about.
     return api('/projects').then(function (list) {
       syncProjects(list);
-      return state.projectId ? refreshProject() : undefined;
+      // THE ROSTER IS GLOBAL (ruling 38), so it is read whether or not there is
+      // a project: a daemon with profiles and no project yet still shows them,
+      // and still lets the owner add one.
+      loadModels();
+      return Promise.all([refreshProfiles(), state.projectId ? refreshProject() : undefined]);
     }, fail);
   }
 
@@ -1327,6 +1543,53 @@
       if (j && typeof j.error === 'string') return j.error;
     } catch (e) { /* not JSON: show it as it came */ }
     return body;
+  }
+
+  // The daemon's own sentence out of a refused call. api() carries a non-2xx
+  // as "<status> <path>: <body>", and the body's `error` string is shown as it
+  // came -- never reworded (ruling 38).
+  function daemonSentence(err) {
+    var text = String((err && err.message) || err);
+    var m = /^\d+ [^:]*: ([\s\S]*)$/.exec(text);
+    return m ? scopeErrorText(m[1]) : text;
+  }
+
+  // The roster is global, not per project, and is re-read on every pass and
+  // straight after a profile is added or retired. A failed read is carried
+  // as its own state, so it neither takes the board down nor reads as "no
+  // profiles".
+  function readProfiles() {
+    return api('/profiles').then(function (list) {
+      return { list: list || [], error: null };
+    }, function (err) {
+      if (err && err.message === 'unauthorized') throw err;
+      return { list: [], error: daemonSentence(err) };
+    });
+  }
+
+  function takeProfiles(r) {
+    state.profiles = r.list;
+    state.profilesError = r.error;
+    if (state.retiring && !profileById(state.retiring)) state.retiring = null;
+  }
+
+  function refreshProfiles() {
+    return readProfiles().then(function (r) { takeProfiles(r); renderFleet(); }, fail);
+  }
+
+  // The models a profile may use. Asked for until the daemon has answered
+  // once; the list is pricing.ts's and does not change while it runs. A failed
+  // read says why, in the daemon's words, under the select it left empty.
+  function loadModels() {
+    if (state.models.length) return;
+    api('/models').then(function (list) {
+      state.models = list || [];
+      setModelsError(null);
+      renderModels();
+    }, function (err) {
+      if (err && err.message === 'unauthorized') return;
+      setModelsError(daemonSentence(err));
+    });
   }
 
   function refreshProject() {
@@ -1582,6 +1845,8 @@
       $('scopeToggle').textContent = open ? 'Hide scope' : 'Show scope';
       document.documentElement.setAttribute('data-scope', open ? 'open' : 'closed');
     });
+
+    $('addProfile').addEventListener('click', addProfile);
 
     $('send').addEventListener('click', function () {
       var text = $('say').value.trim();

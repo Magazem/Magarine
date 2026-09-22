@@ -429,6 +429,64 @@ test('batch 18 item 4: on the Manager tab the conversation takes the height and 
   });
 });
 
+// Batch 19, ruling 38, review finding (Medium): retiring a profile takes two
+// deliberate presses. The row is rebuilt by the first press and the page
+// carries focus across -- which control it lands on is a keyboard fact the DOM
+// harness can only approximate, so here it is pressed for real: Enter twice,
+// then a held Enter (auto-repeat), with no profile retired by any of it.
+test('Enter twice, or held, on a profile\'s Retire never retires it: the carried focus lands on Keep', async () => {
+  await withDaemon(root, async (d) => {
+    const browser = await launchBrowser(chrome.executable, mkdtempSync(join(root.root, 'chrome-')));
+    const until = async (expr: string, what: string) => {
+      for (let i = 0; i < 100; i++) {
+        if (await browser.cdp.eval<boolean>(expr)) return;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`the browser never reached: ${what}`);
+    };
+    const enter = (autoRepeat = false) => browser.cdp.send('Input.dispatchKeyEvent', {
+      type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r', autoRepeat,
+    }).then(() => autoRepeat ? undefined : browser.cdp.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    }));
+    const focused = () => browser.cdp.eval<string>(`(document.activeElement.getAttribute('aria-label') || document.activeElement.textContent)`);
+    const scribeListed = async () => {
+      const res = await fetch(`${d.baseUrl}/profiles`, { headers: { Authorization: `Bearer ${d.token}` } });
+      return ((await res.json()) as { name: string }[]).some((p) => p.name === 'Scribe');
+    };
+    try {
+      await browser.openPage(d.baseUrl, d.token);
+      await until(`!!document.querySelector('#fleetList button[aria-label="Retire Scribe"]')`, 'the Scribe row');
+      await browser.cdp.eval(`(document.querySelector('#fleetList button[aria-label="Retire Scribe"]').focus(), true)`);
+
+      await enter();
+      assert.equal(await focused(), 'Keep', 'the first Enter left focus on the confirm');
+      await enter();
+      assert.equal(await focused(), 'Retire Scribe', 'Keep did not hand focus back to Retire');
+
+      await enter();                                    // confirm row again, focus on Keep
+      for (let i = 0; i < 6; i++) await enter(true);   // a held Enter
+      await browser.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await new Promise((r) => setTimeout(r, 500));
+      assert.equal(await scribeListed(), true, 'Enter presses alone retired the profile');
+
+      // The deliberate path still works: move to the confirm, then press it.
+      // A held Enter toggles between the two states, so settle on the plain row first.
+      await browser.cdp.eval(`(() => { const c = document.querySelector('#fleetList button[aria-label="Confirm: retire Scribe"]');
+        if (c) c.parentNode.querySelector('button').click(); return true; })()`);
+      await until(`!!document.querySelector('#fleetList button[aria-label="Retire Scribe"]')`, 'the plain Scribe row');
+      await browser.cdp.eval(`(document.querySelector('#fleetList button[aria-label="Retire Scribe"]').click(), true)`);
+      await until(`!!document.querySelector('#fleetList button[aria-label="Confirm: retire Scribe"]')`, 'the confirm');
+      await browser.cdp.eval(`(document.querySelector('#fleetList button[aria-label="Confirm: retire Scribe"]').focus(), true)`);
+      await enter();
+      await until(`!document.querySelector('#fleetList button[aria-label="Retire Scribe"]') && !document.querySelector('#fleetList button[aria-label="Confirm: retire Scribe"]')`, 'the Scribe row to go');
+      assert.equal(await scribeListed(), false, 'the deliberate confirm did not retire');
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 }
 
 /** withDaemon, but on a state directory the caller has already seeded. */
