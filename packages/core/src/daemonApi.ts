@@ -23,9 +23,14 @@ import { probeScopeFile } from './scopeProbe.ts';
 import {
   addDependency,
   createTicket,
+  createWorkerProfile,
   getProject,
   getTicket,
+  getWorkerProfile,
   listEventsSince,
+  listWorkerProfiles,
+  NoSuchWorkerProfileError,
+  retireWorkerProfile,
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
@@ -33,6 +38,8 @@ import {
   setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
+  updateWorkerProfile,
+  workerProfileStatus,
 } from './store.ts';
 import type { AgentAdapter, DependencyType, EventRow, ExpectedArtifact, WorkspaceType } from './types.ts';
 
@@ -163,6 +170,7 @@ function toApiError(err: unknown): ApiError {
     err instanceof RejectError ||
     err instanceof ResumeError ||
     err instanceof ManagerError ||
+    err instanceof NoSuchWorkerProfileError ||
     err instanceof Error
   ) {
     return new ApiError(400, err.message);
@@ -185,6 +193,8 @@ async function handleCreateTicket(db: Db, body: unknown): Promise<RouteResult> {
     workspaceType?: string;
     acceptanceCriteria?: string[];
     model?: string | null;
+    /** Batch 19 mini-phase 1A: a worker profile's id or name, mutually exclusive with `model` -- resolved and validated inside `createTicket` (store.ts), the same place `ticket add --profile` (cli.ts) resolves it. */
+    profile?: string | null;
     budget?: number;
     dependsOn?: string[];
     expectedArtifacts?: ExpectedArtifact[];
@@ -216,6 +226,7 @@ async function handleCreateTicket(db: Db, body: unknown): Promise<RouteResult> {
     workspaceType: (b.workspaceType ?? 'NONE') as WorkspaceType,
     acceptanceCriteria: b.acceptanceCriteria ?? [],
     model: b.model ?? null,
+    profile: b.profile ?? null,
     expectedArtifacts,
   });
 
@@ -310,8 +321,43 @@ function handleDiscuss(db: Db, projectId: string, body: unknown): RouteResult {
   return { status: 201, body: getTicket(db, ticketId) };
 }
 
+// Batch 19 mini-phase 1A: `worker_profiles`' derived-status listing --
+// addendum section 5's `GET /profiles`. Every non-retired profile plus its
+// `status`/`ticketId` (store.ts's workerProfileStatus), same shape `profile
+// list` (cli.ts) prints.
+function handleListProfiles(db: Db): RouteResult {
+  const body = listWorkerProfiles(db).map((p) => ({ ...p, ...workerProfileStatus(db, p.id) }));
+  return { status: 200, body };
+}
+
+function handleCreateProfile(db: Db, body: unknown): RouteResult {
+  const b = body as { name?: string; model?: string; purpose?: string; policy?: string | null };
+  if (!b.name || !b.model || !b.purpose) throw new ApiError(400, '"name", "model" and "purpose" are required');
+  const profile = createWorkerProfile(db, { name: b.name, model: b.model, purpose: b.purpose, policy: b.policy ?? null });
+  return { status: 201, body: profile };
+}
+
+function handleUpdateProfile(db: Db, profileId: string, body: unknown): RouteResult {
+  if (!getWorkerProfile(db, profileId)) throw new ApiError(404, `no such worker profile: ${profileId}`);
+  const b = body as { name?: string; model?: string; purpose?: string; policy?: string };
+  const profile = updateWorkerProfile(db, profileId, {
+    name: b.name,
+    model: b.model,
+    purpose: b.purpose,
+    policy: b.policy,
+  });
+  return { status: 200, body: profile };
+}
+
+function handleRetireProfile(db: Db, profileId: string): RouteResult {
+  if (!getWorkerProfile(db, profileId)) throw new ApiError(404, `no such worker profile: ${profileId}`);
+  return { status: 200, body: retireWorkerProfile(db, profileId) };
+}
+
 const TICKET_ACTION_PATH = /^\/tickets\/([^/]+)\/(decide|retry|approve|reject|cancel)$/;
 const PROJECT_ACTION_PATH = /^\/projects\/([^/]+)\/(resume|set|plan|discuss)$/;
+const PROFILE_PATH = /^\/profiles\/([^/]+)$/;
+const PROFILE_RETIRE_PATH = /^\/profiles\/([^/]+)\/retire$/;
 
 async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: unknown): Promise<RouteResult> {
   const method = req.method ?? 'GET';
@@ -391,6 +437,24 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
 
   if (method === 'POST' && path === '/tickets') {
     return handleCreateTicket(deps.db, body);
+  }
+
+  // Batch 19 mini-phase 1A routes -- addendum section 5, verbatim: "GET
+  // /profiles ... POST /profiles, PATCH /profiles/{id}, POST
+  // /profiles/{id}/retire."
+  if (method === 'GET' && path === '/profiles') {
+    return handleListProfiles(deps.db);
+  }
+  if (method === 'POST' && path === '/profiles') {
+    return handleCreateProfile(deps.db, body);
+  }
+  const profileRetireMatch = PROFILE_RETIRE_PATH.exec(path);
+  if (method === 'POST' && profileRetireMatch) {
+    return handleRetireProfile(deps.db, profileRetireMatch[1]);
+  }
+  const profileMatch = PROFILE_PATH.exec(path);
+  if (method === 'PATCH' && profileMatch) {
+    return handleUpdateProfile(deps.db, profileMatch[1], body);
   }
 
   if (method === 'POST' && path === '/deps') {
@@ -676,7 +740,11 @@ export function createRequestHandler(deps: DaemonApiDeps): RequestHandler {
         return;
       }
       try {
-        const body = req.method === 'POST' ? await readBody(req) : undefined;
+        // Batch 19 mini-phase 1A: `PATCH /profiles/{id}` joins POST as a
+        // body-carrying verb -- every route before this one either sent no
+        // body (GET) or was POST, so this check never had to distinguish
+        // more than the two.
+        const body = req.method === 'POST' || req.method === 'PATCH' ? await readBody(req) : undefined;
         const result = await route(deps, req, url, body);
         sendJson(res, result.status, result.body);
       } catch (err) {

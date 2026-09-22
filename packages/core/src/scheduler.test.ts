@@ -14,12 +14,14 @@ import {
   getProject,
   getRun,
   getTicket,
+  getWorkerProfileByName,
   isProjectAdapterPaused,
   listArtifactsForTicket,
   listEventsForEntity,
   listEventsForProject,
   listTicketsByStatus,
   setTicketBudgetOverride,
+  workerProfileStatus,
 } from './store.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { tick, runUntilIdle } from './scheduler.ts';
@@ -1721,5 +1723,47 @@ test('a fake `progress` script with NO message list still emits exactly one even
   } finally {
     await adapter.stop(started[0].handle);
   }
+});
+
+// --- Batch 19 mini-phase 1A review fix (Medium 4): worker profiles through
+// the real scheduler spawn path, with the fake/test adapter -- not just
+// store.ts's own unit tests, which cannot see resolveModel's actual call
+// site (High 1) or createRun's actual profileId wiring (High 2).
+
+test('a ticket assigned to a profile spawns pinned to the PROFILE\'s model, not the project default, and GET /profiles-equivalent status goes working -> idle around the run', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1, defaultModel: 'claude-sonnet-5' });
+  const architect = getWorkerProfileByName(db, 'Architect')!;
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, {
+    projectId: project.id,
+    title: 'design it',
+    workspaceType: 'NONE',
+    profile: architect.id,
+  });
+
+  assert.deepEqual(workerProfileStatus(db, architect.id), { status: 'idle', ticketId: null }, 'idle before the run starts');
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  const s = started.find((x) => x.ticketId === ticket.id)!;
+
+  // High 1: resolveModel's call site inside buildEnvelope must resolve
+  // through the profile, not silently fall back to the project's own
+  // 'claude-sonnet-5' default.
+  assert.equal(adapter.startedWith.get(s.handle.id)!.ticket.model, 'claude-opus-5');
+
+  // High 2: runs.profile_id recorded at spawn -- workerProfileStatus reads
+  // it directly (store.ts), the same function GET /profiles calls.
+  const run = getRun(db, s.runId)!;
+  assert.equal(run.profileId, architect.id);
+  assert.deepEqual(workerProfileStatus(db, architect.id), { status: 'working', ticketId: ticket.id }, 'working while the run is in flight');
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
+  });
+  await s.done;
+
+  assert.deepEqual(workerProfileStatus(db, architect.id), { status: 'idle', ticketId: null }, 'idle again once the run has finished');
 });
 

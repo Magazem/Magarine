@@ -1,6 +1,6 @@
 import type { Db } from '../db/index.ts';
 import { isKnownModel } from '../pricing.ts';
-import { countWorkTicketsInProgress, getDependencies, getProject, getTicket, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
+import { countWorkTicketsInProgress, getDependencies, getProject, getTicket, getWorkerProfile, listArtifactsForTicket, listEventsForEntity, listRunsForTicket, listTickets } from '../store.ts';
 import type { PauseReason, Ticket, TicketKind, TicketStatus } from '../types.ts';
 import type { ActivityState } from './activity.ts';
 import { describeProjectPause, reasonFor } from './inbox.ts';
@@ -94,6 +94,8 @@ export interface BoardTicket {
   model: string | null;
   /** Batch 12 item 3: the Manager's one-line justification, required by proposal.ts whenever a create_ticket/update_ticket command sets model. Null for a ticket whose model was never explicitly set (including one set directly via `ticket add --model`, which carries no reason -- see proposal.ts's own comment on why the requirement is scoped to the Manager's two commands). */
   modelReason: string | null;
+  /** Batch 19 mini-phase 1A (worker-profiles-design.md section 5): the assigned profile's id and name, or null for a profile-less ticket -- mutually exclusive with `model` (store.ts's createTicket). Looked up fresh on every board build rather than denormalized onto the ticket row, since a retired profile's name must still show here (retirement only hides it from `GET /profiles`/`profile list`, never from a ticket that already carries it). */
+  profile: { id: string; name: string } | null;
   /** Batch 13 ruling 1c: every artefact this ticket has declared, across every run -- so a DONE row is legible as what it actually produced, not just that it succeeded. */
   artifacts: BoardArtifact[];
   /** Batch 15 ruling 7: the current run's most recent worker_progress event, mapped to an activity state -- null for any ticket not currently IN_PROGRESS, or one that is but has not reported progress yet. See LatestActivity/computeLatestActivity above. */
@@ -174,6 +176,17 @@ export function ticketCostUsd(db: Db, ticketId: string): { costUsd: number; isEs
   return { costUsd: total, isEstimate, usedFallbackRate };
 }
 
+// Batch 19 mini-phase 1A: `BoardTicket.profile`'s one composer -- null for a
+// profile-less ticket; a fresh lookup (never denormalized onto the ticket
+// row) so a retired profile's name still shows on a ticket that already
+// carries its id (retirement hides a profile from GET /profiles/`profile
+// list`, never from a ticket that already references it).
+function boardTicketProfile(db: Db, profileId: string | null): { id: string; name: string } | null {
+  if (profileId == null) return null;
+  const p = getWorkerProfile(db, profileId);
+  return p ? { id: p.id, name: p.name } : null;
+}
+
 function blockingDependencies(db: Db, ticket: Ticket): string[] {
   return getDependencies(db, ticket.id)
     .filter((d) => d.dependencyType === 'blocks')
@@ -236,6 +249,7 @@ export function buildBoard(db: Db, projectId: string, machineCap: number | null 
         usedFallbackRate: c.usedFallbackRate,
         model: t.model,
         modelReason: t.modelReason,
+        profile: boardTicketProfile(db, t.profileId),
         artifacts: listArtifactsForTicket(db, t.id).map((a) => ({
           kind: a.kind,
           content: a.kind === 'file' ? a.pathOrUri : (a.text ?? ''),

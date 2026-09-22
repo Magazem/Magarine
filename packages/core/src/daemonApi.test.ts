@@ -83,7 +83,9 @@ function runCli(args: string[]): Promise<{ stdout: string; code: number | null }
 async function api(
   port: number,
   token: string,
-  method: 'GET' | 'POST',
+  // Batch 19 mini-phase 1A: 'PATCH' joins 'GET'/'POST' for `PATCH
+  // /profiles/{id}` (profile set).
+  method: 'GET' | 'POST' | 'PATCH',
   path: string,
   body?: unknown
 ): Promise<{ status: number; text: string; json: unknown }> {
@@ -1020,6 +1022,147 @@ test('GET /projects/{id}/conversation reads the owner\'s discuss messages back i
     assert.equal(missingProjectConversation.status, 404);
   } finally {
     await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// --- Batch 19 mini-phase 1A: worker profile routes ----------------------
+
+// Review fix (Low 10): the three new MUTATING routes refuse without a token,
+// same as every other mutating route (the auth test above only covers
+// /health and /tick).
+// Re-review fix (Low 5): the previous version only proved 401-without-a-
+// token, which the global auth gate (checked before routing, daemonApi.ts)
+// gives for free on ANY path, real or not -- it never proved these three
+// routes actually EXIST and are wired to real handlers. Each assertion pair
+// here proves both: 401 with no token, and something other than 401 (the
+// route's own real status, 400/404/201/200 depending on the body) with a
+// valid one -- a typo'd path or an unwired route would fail the SECOND half
+// even though the first half still passed.
+test('POST /profiles, PATCH /profiles/{id} and POST /profiles/{id}/retire: 401 without a token, and a real (non-401) status with a valid one', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'profiles-auth-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+
+    const createBody = { name: 'AuthCheck', model: 'claude-sonnet-5', purpose: 'p' };
+    const noToken = await api(info.port, '', 'POST', '/profiles', createBody);
+    assert.equal(noToken.status, 401);
+    const withToken = await api(info.port, fileInfo.token, 'POST', '/profiles', createBody);
+    assert.notEqual(withToken.status, 401, 'a valid token must reach the real route, not another 401');
+    assert.equal(withToken.status, 201, withToken.text);
+    const created = withToken.json as { id: string };
+
+    const patchNoToken = await api(info.port, '', 'PATCH', `/profiles/${created.id}`, { name: 'AuthCheck2' });
+    assert.equal(patchNoToken.status, 401);
+    const patchWithToken = await api(info.port, fileInfo.token, 'PATCH', `/profiles/${created.id}`, { name: 'AuthCheck2' });
+    assert.notEqual(patchWithToken.status, 401);
+    assert.equal(patchWithToken.status, 200, patchWithToken.text);
+
+    const retireNoToken = await api(info.port, '', 'POST', `/profiles/${created.id}/retire`);
+    assert.equal(retireNoToken.status, 401);
+    const retireWithToken = await api(info.port, fileInfo.token, 'POST', `/profiles/${created.id}/retire`);
+    assert.notEqual(retireWithToken.status, 401);
+    assert.equal(retireWithToken.status, 200, retireWithToken.text);
+  } finally {
+    await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test('GET /profiles reports the six seeded profiles, idle; POST /profiles creates one; PATCH /profiles/{id} renames it without changing its id; POST /profiles/{id}/retire hides it', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'profiles-crud-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+    const call = (method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown) =>
+      api(info.port, fileInfo.token, method, path, body);
+
+    const listRes = await call('GET', '/profiles');
+    assert.equal(listRes.status, 200);
+    const seeded = listRes.json as Array<{ id: string; name: string; model: string; status: string; ticketId: string | null }>;
+    assert.deepEqual(
+      seeded.map((p) => [p.name, p.model, p.status, p.ticketId]),
+      [
+        ['Architect', 'claude-opus-5', 'idle', null],
+        ['Developer', 'claude-sonnet-5', 'idle', null],
+        ['Reviewer', 'claude-sonnet-5', 'idle', null],
+        ['Tester', 'claude-sonnet-5', 'idle', null],
+        ['Researcher', 'claude-haiku-4-5-20251001', 'idle', null],
+        ['Scribe', 'claude-haiku-4-5-20251001', 'idle', null],
+      ]
+    );
+
+    const createRes = await call('POST', '/profiles', { name: 'Scout', model: 'claude-haiku-4-5-20251001', purpose: 'quick lookups' });
+    assert.equal(createRes.status, 201, createRes.text);
+    const created = createRes.json as { id: string; name: string; policy: string };
+    assert.equal(created.policy, '', 'policy defaults to empty text when omitted');
+
+    const badModelRes = await call('POST', '/profiles', { name: 'Bad', model: 'not-a-real-model', purpose: 'p' });
+    assert.equal(badModelRes.status, 400);
+    assert.match((badModelRes.json as { error: string }).error, /unknown model/);
+
+    const patchRes = await call('PATCH', `/profiles/${created.id}`, { name: 'Scout2' });
+    assert.equal(patchRes.status, 200, patchRes.text);
+    const patched = patchRes.json as { id: string; name: string };
+    assert.equal(patched.id, created.id, 'renaming must keep the same id');
+    assert.equal(patched.name, 'Scout2');
+
+    const patchMissingRes = await call('PATCH', '/profiles/prof_ghost', { name: 'X' });
+    assert.equal(patchMissingRes.status, 404);
+
+    const retireRes = await call('POST', `/profiles/${created.id}/retire`);
+    assert.equal(retireRes.status, 200, retireRes.text);
+    assert.ok((retireRes.json as { retiredAt: string | null }).retiredAt != null);
+
+    const retireMissingRes = await call('POST', '/profiles/prof_ghost/retire');
+    assert.equal(retireMissingRes.status, 404);
+
+    const afterRetireRes = await call('GET', '/profiles');
+    const namesAfter = (afterRetireRes.json as Array<{ name: string }>).map((p) => p.name);
+    assert.ok(!namesAfter.includes('Scout2'), 'a retired profile must not appear in GET /profiles');
+  } finally {
+    await handle.kill();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// Acceptance line 3 and the board contract (addendum section 5: "Board
+// ticket rows carry profile: { id, name } | null"), exercised over the real
+// route rather than only store.ts's own unit test.
+test('POST /tickets with profile is mutually exclusive with model, and GET /board carries { id, name } for an assigned profile', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'profiles-ticket-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout) as { id: string };
+
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const call = (method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown) =>
+        api(info.port, fileInfo.token, method, path, body);
+
+      const bothRes = await call('POST', '/tickets', { project: project.id, title: 'both', profile: 'Developer', model: 'claude-opus-5' });
+      assert.equal(bothRes.status, 400);
+      assert.match((bothRes.json as { error: string }).error, /choose a profile or a model, not both/);
+
+      const profileRes = await call('POST', '/tickets', { project: project.id, title: 'profiled', profile: 'Developer' });
+      assert.equal(profileRes.status, 201, profileRes.text);
+      const ticket = profileRes.json as { id: string; profileId: string };
+      assert.ok(ticket.profileId);
+
+      const boardRes = await call('GET', `/board?project=${project.id}`);
+      assert.equal(boardRes.status, 200);
+      const board = boardRes.json as { tickets: Array<{ id: string; profile: { id: string; name: string } | null }> };
+      const row = board.tickets.find((t) => t.id === ticket.id);
+      assert.deepEqual(row?.profile, { id: ticket.profileId, name: 'Developer' });
+    } finally {
+      await handle.kill();
+    }
+  } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
 });

@@ -15,10 +15,15 @@ import {
   countTicketsByStatus,
   createProject,
   createTicket,
+  createWorkerProfile,
   getProject,
   getTicket,
   listProjects,
   listTickets,
+  listWorkerProfiles,
+  NoSuchWorkerProfileError,
+  resolveWorkerProfileRefForAdmin,
+  retireWorkerProfile,
   setProjectDefaultModel,
   setProjectDir,
   setProjectManagerModel,
@@ -26,6 +31,8 @@ import {
   setProjectMaxParallelWorkers,
   setProjectMaxSpendUsd,
   setTicketBudgetOverride,
+  updateWorkerProfile,
+  workerProfileStatus,
 } from './store.ts';
 import { resolveReadiness } from './dependencies.ts';
 import { discussProject, ManagerError } from './manager.ts';
@@ -232,7 +239,7 @@ async function liveDaemonFor(flags: Flags): Promise<DaemonFileInfo | undefined> 
 async function routeMutation(
   flags: Flags,
   daemon: DaemonFileInfo,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PATCH',
   path: string,
   body: unknown,
   humanLine: (body: unknown) => string
@@ -301,11 +308,22 @@ const FLAG_SPECS: Record<string, string[]> = {
     'workspace',
     'budget',
     'model',
+    'profile',
     'acceptance',
     'depends-on',
     'expected-artifact',
   ],
   'dep add': ['project', 'ticket', 'depends-on', 'type'],
+  // Batch 19 mini-phase 1A (worker-profiles-design.md section 5): the
+  // owner's roster, global to the database. `list` has no flags of its own
+  // (mirrors `project list`). `add` needs every field but `--policy`, which
+  // defaults to empty text; `set` takes `--profile <name|id>` to say which
+  // row, then any subset of the same fields to change (mirrors `project
+  // set`'s shape); `retire` takes only `--profile`.
+  'profile list': [],
+  'profile add': ['name', 'model', 'purpose', 'policy'],
+  'profile set': ['profile', 'name', 'model', 'purpose', 'policy'],
+  'profile retire': ['profile'],
   // `--fake-script` is only honoured when `--adapter fake` (the default); it
   // scripts the permanent FakeAdapter test double per ticket id so a
   // scenario like "this ticket needs a user decision" or "this ticket fails
@@ -946,6 +964,7 @@ ${scopeLine}` : ''}`);
         workspaceType: typeof flags.workspace === 'string' ? flags.workspace : undefined,
         acceptanceCriteria: flagList(flags, 'acceptance'),
         model: typeof flags.model === 'string' ? flags.model : null,
+        profile: typeof flags.profile === 'string' ? flags.profile : null,
         budget: typeof flags.budget === 'string' ? Number(flags.budget) : undefined,
         dependsOn,
       };
@@ -968,6 +987,7 @@ ${scopeLine}` : ''}`);
       workspaceType: (typeof flags.workspace === 'string' ? flags.workspace : 'NONE') as WorkspaceType,
       acceptanceCriteria: flagList(flags, 'acceptance'),
       model: typeof flags.model === 'string' ? flags.model : null,
+      profile: typeof flags.profile === 'string' ? flags.profile : null,
       expectedArtifacts,
     });
 
@@ -1027,6 +1047,94 @@ ${scopeLine}` : ''}`);
     addDependency(db, { ticketId, dependsOnTicketId });
     resolveReadiness(db, projectId);
     output(flags, { ticketId, dependsOnTicketId }, `Added dependency: ${ticketId} depends on ${dependsOnTicketId}`);
+    return;
+  }
+
+  // Batch 19 mini-phase 1A: `profile list|add|set|retire`, the owner's
+  // roster (worker-profiles-design.md section 5). Global to the database, no
+  // `--project` -- unlike every ticket/dependency command above. `list` is a
+  // read, never routed to a live daemon, same exception `project list`
+  // already documents for itself (Batch 10 owner walk finding 2).
+  if (command === 'profile' && subcommand === 'list') {
+    const db = openDb(dbPath(flags));
+    const rows = listWorkerProfiles(db).map((p) => ({ ...p, ...workerProfileStatus(db, p.id) }));
+    const lines = rows.length === 0 ? '(no worker profiles)' : rows
+      .map((p) => `${p.id}\t${p.name}\t${p.model}\t${p.purpose}\t${p.status}${p.ticketId ? ` (${p.ticketId})` : ''}`)
+      .join('\n');
+    output(flags, rows, lines);
+    return;
+  }
+
+  if (command === 'profile' && subcommand === 'add') {
+    const db = openDb(dbPath(flags));
+    const input = {
+      name: String(flags.name ?? positionals[1] ?? ''),
+      model: String(flags.model ?? ''),
+      purpose: String(flags.purpose ?? ''),
+      policy: typeof flags.policy === 'string' ? flags.policy : null,
+    };
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'POST', '/profiles', input, (b) => {
+        const p = b as { id: string; name: string };
+        return `Created worker profile ${p.id} (${p.name})`;
+      });
+      return;
+    }
+    const profile = createWorkerProfile(db, input);
+    output(flags, profile, `Created worker profile ${profile.id} (${profile.name})`);
+    return;
+  }
+
+  if (command === 'profile' && subcommand === 'set') {
+    const db = openDb(dbPath(flags));
+    let profileId: string;
+    try {
+      profileId = resolveWorkerProfileRefForAdmin(db, String(flags.profile ?? positionals[1] ?? ''));
+    } catch (err) {
+      if (err instanceof NoSuchWorkerProfileError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    const fields = {
+      name: typeof flags.name === 'string' ? flags.name : undefined,
+      model: typeof flags.model === 'string' ? flags.model : undefined,
+      purpose: typeof flags.purpose === 'string' ? flags.purpose : undefined,
+      policy: typeof flags.policy === 'string' ? flags.policy : undefined,
+    };
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'PATCH', `/profiles/${profileId}`, fields, () => `Updated worker profile ${profileId}`);
+      return;
+    }
+    const profile = updateWorkerProfile(db, profileId, fields);
+    output(flags, profile, `Updated worker profile ${profile.id}`);
+    return;
+  }
+
+  if (command === 'profile' && subcommand === 'retire') {
+    const db = openDb(dbPath(flags));
+    let profileId: string;
+    try {
+      profileId = resolveWorkerProfileRefForAdmin(db, String(flags.profile ?? positionals[1] ?? ''));
+    } catch (err) {
+      if (err instanceof NoSuchWorkerProfileError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    const live = await liveDaemonFor(flags);
+    if (live) {
+      await routeMutation(flags, live, 'POST', `/profiles/${profileId}/retire`, undefined, () => `Retired worker profile ${profileId}`);
+      return;
+    }
+    const profile = retireWorkerProfile(db, profileId);
+    output(flags, profile, `Retired worker profile ${profile.id}`);
     return;
   }
 

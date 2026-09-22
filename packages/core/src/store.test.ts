@@ -4,26 +4,36 @@ import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import {
   addDependency,
+  assertAssignableProfile,
   createArtifact,
   createProject,
   createRun,
   createTicket,
+  createWorkerProfile,
   findConflictingArtifact,
   finishRun,
   getProject,
   getRun,
   getTicket,
+  getWorkerProfile,
+  getWorkerProfileByName,
   isProjectAdapterPaused,
   listArtifactsForTicket,
+  listWorkerProfiles,
   MIN_BUDGET_USD,
   insertEvent,
   listEventsForProject,
   listEventsSince,
   listRunsForTicket,
+  NoSuchWorkerProfileError,
   pauseProjectAdapter,
   projectSpendUsd,
   resolveManagerModel,
   resolveMaxBudgetUsd,
+  resolveModel,
+  resolveWorkerProfileRef,
+  resolveWorkerProfileRefForAdmin,
+  retireWorkerProfile,
   resumeProject,
   resumeProjectAdapter,
   setProjectDir,
@@ -36,6 +46,8 @@ import {
   setTicketBudgetOverride,
   ticketSpendUsd,
   updateTicketFields,
+  updateWorkerProfile,
+  workerProfileStatus,
 } from './store.ts';
 
 test('createProject defaults maxBudgetUsd, brief and workspaceRoot, and accepts overrides', () => {
@@ -574,4 +586,347 @@ test('a max-parallel cap that is not a whole number of 1 or more is refused by B
     assert.equal(setMessage, createMessage, `set and create must say the same thing for ${bad}`);
   }
   assert.equal(getProject(db, project.id)!.maxParallelWorkers, null, 'a refused set must leave the cap untouched');
+});
+
+// --- Batch 19 mini-phase 1A: worker profiles --------------------------
+
+// Acceptance line 1: a fresh DB has exactly six seeded rows, the names and
+// models batch-19-spec.md section 2 names.
+test('a fresh database seeds exactly six worker profiles, the names and models named by the spec', () => {
+  const db = openDb(':memory:');
+  const profiles = listWorkerProfiles(db);
+  assert.deepEqual(
+    profiles.map((p) => [p.name, p.model]),
+    [
+      ['Architect', 'claude-opus-5'],
+      ['Developer', 'claude-sonnet-5'],
+      ['Reviewer', 'claude-sonnet-5'],
+      ['Tester', 'claude-sonnet-5'],
+      ['Researcher', 'claude-haiku-4-5-20251001'],
+      ['Scribe', 'claude-haiku-4-5-20251001'],
+    ]
+  );
+  for (const p of profiles) assert.equal(p.retiredAt, null);
+});
+
+test('createWorkerProfile rejects an unknown model and a duplicate name', () => {
+  const db = openDb(':memory:');
+  assert.throws(() => createWorkerProfile(db, { name: 'X', purpose: 'p', model: 'not-a-real-model' }), /unknown model/);
+  createWorkerProfile(db, { name: 'X', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.throws(() => createWorkerProfile(db, { name: 'X', purpose: 'q', model: 'claude-opus-5' }), /already exists/);
+});
+
+test('createWorkerProfile defaults policy to empty text and accepts an explicit one', () => {
+  const db = openDb(':memory:');
+  const bare = createWorkerProfile(db, { name: 'Bare', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.equal(bare.policy, '');
+  const withPolicy = createWorkerProfile(db, { name: 'WithPolicy', purpose: 'p', model: 'claude-sonnet-5', policy: 'Be terse.' });
+  assert.equal(withPolicy.policy, 'Be terse.');
+});
+
+test('updateWorkerProfile renames a profile without changing its id, and validates model/name the same way createWorkerProfile does', () => {
+  const db = openDb(':memory:');
+  const profile = createWorkerProfile(db, { name: 'Original', purpose: 'p', model: 'claude-sonnet-5' });
+  const renamed = updateWorkerProfile(db, profile.id, { name: 'Renamed' });
+  assert.equal(renamed.id, profile.id, 'renaming must keep the same id');
+  assert.equal(renamed.name, 'Renamed');
+  assert.equal(getWorkerProfileByName(db, 'Original'), undefined);
+  assert.equal(getWorkerProfileByName(db, 'Renamed')!.id, profile.id);
+
+  assert.throws(() => updateWorkerProfile(db, profile.id, { model: 'not-a-real-model' }), /unknown model/);
+  const other = createWorkerProfile(db, { name: 'Other', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.throws(() => updateWorkerProfile(db, profile.id, { name: 'Other' }), /already exists/);
+  assert.throws(() => updateWorkerProfile(db, 'prof_does_not_exist', { name: 'Z' }), NoSuchWorkerProfileError);
+  void other;
+});
+
+// Acceptance line 6: renaming keeps the id; retiring hides without deleting.
+test('retireWorkerProfile hides a profile from listWorkerProfiles but never deletes the row, and is idempotent', () => {
+  const db = openDb(':memory:');
+  const profile = createWorkerProfile(db, { name: 'Temp', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.ok(listWorkerProfiles(db).some((p) => p.id === profile.id));
+
+  const retired = retireWorkerProfile(db, profile.id);
+  assert.ok(retired.retiredAt != null);
+  assert.ok(!listWorkerProfiles(db).some((p) => p.id === profile.id), 'a retired profile must not be listed');
+  assert.ok(getWorkerProfile(db, profile.id), 'the row itself must still exist, never deleted');
+
+  const retiredAgain = retireWorkerProfile(db, profile.id);
+  assert.equal(retiredAgain.retiredAt, retired.retiredAt, 'retiring twice must not move the timestamp');
+});
+
+test('resolveWorkerProfileRef finds a profile by id or by exact name, and refuses an unknown ref', () => {
+  const db = openDb(':memory:');
+  const profile = createWorkerProfile(db, { name: 'Named', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.equal(resolveWorkerProfileRef(db, profile.id), profile.id);
+  assert.equal(resolveWorkerProfileRef(db, 'Named'), profile.id);
+  assert.throws(() => resolveWorkerProfileRef(db, 'nope'), NoSuchWorkerProfileError);
+});
+
+test('assertAssignableProfile refuses a missing profile and a retired one, and returns the profile otherwise', () => {
+  const db = openDb(':memory:');
+  const profile = createWorkerProfile(db, { name: 'Assignable', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.equal(assertAssignableProfile(profile, 'Assignable'), profile);
+  assert.throws(() => assertAssignableProfile(undefined, 'ghost'), NoSuchWorkerProfileError);
+  const retired = retireWorkerProfile(db, profile.id);
+  assert.throws(() => assertAssignableProfile(retired, 'Assignable'), /retired and cannot be assigned/);
+});
+
+// Acceptance line 3: `ticket add --profile X --model Y` fails with the one
+// sentence; each alone succeeds.
+test('createTicket rejects a command that sets both profile and model, with the one sentence, and accepts either alone', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const profile = createWorkerProfile(db, { name: 'Solo', purpose: 'p', model: 'claude-sonnet-5' });
+
+  assert.throws(
+    () => createTicket(db, { projectId: project.id, title: 'both', model: 'claude-opus-5', profile: profile.id }),
+    /choose a profile or a model, not both/
+  );
+
+  const withModel = createTicket(db, { projectId: project.id, title: 'model only', model: 'claude-opus-5' });
+  assert.equal(withModel.model, 'claude-opus-5');
+  assert.equal(withModel.profileId, null);
+
+  const withProfile = createTicket(db, { projectId: project.id, title: 'profile only', profile: profile.id });
+  assert.equal(withProfile.profileId, profile.id);
+  assert.equal(withProfile.model, null);
+
+  const withProfileByName = createTicket(db, { projectId: project.id, title: 'by name', profile: 'Solo' });
+  assert.equal(withProfileByName.profileId, profile.id);
+});
+
+test('createTicket refuses an unknown profile ref and a retired profile', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  assert.throws(() => createTicket(db, { projectId: project.id, title: 't', profile: 'nope' }), NoSuchWorkerProfileError);
+
+  const profile = createWorkerProfile(db, { name: 'GoingAway', purpose: 'p', model: 'claude-sonnet-5' });
+  retireWorkerProfile(db, profile.id);
+  assert.throws(
+    () => createTicket(db, { projectId: project.id, title: 't', profile: profile.id }),
+    /retired and cannot be assigned/
+  );
+});
+
+// Acceptance line 4: resolveModel covers all three sources and the retired
+// case -- a profile retired AFTER a ticket was assigned to it still resolves
+// (retirement blocks future assignment, not an existing one).
+test('resolveModel: ticket.model wins, then profile.model, then project.defaultModel, and a since-retired profile still resolves', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', defaultModel: 'claude-haiku-4-5-20251001' });
+  const profile = createWorkerProfile(db, { name: 'R', purpose: 'p', model: 'claude-opus-5' });
+
+  const bare = createTicket(db, { projectId: project.id, title: 'bare' });
+  assert.equal(resolveModel(project, bare, undefined), 'claude-haiku-4-5-20251001', 'no override at all falls back to the project default');
+
+  const withProfile = createTicket(db, { projectId: project.id, title: 'profiled', profile: profile.id });
+  assert.equal(resolveModel(project, withProfile, profile), 'claude-opus-5', 'a profile, no ticket model, resolves to the profile\'s model');
+
+  const withModel = createTicket(db, { projectId: project.id, title: 'modeled', model: 'claude-sonnet-5' });
+  assert.equal(resolveModel(project, withModel, null), 'claude-sonnet-5', 'a ticket model wins over the project default');
+
+  const retiredProfile = retireWorkerProfile(db, profile.id);
+  assert.equal(
+    resolveModel(project, withProfile, retiredProfile),
+    'claude-opus-5',
+    'a profile retired AFTER assignment still resolves to its model -- retirement blocks future assignment, not an existing one'
+  );
+});
+
+// Acceptance line 5: GET /profiles-style derived status -- working with the
+// ticket id while a run under that profile is 'running', idle otherwise.
+test('workerProfileStatus reports idle by default, working with the ticket id while a run is running, and idle again once it finishes', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const profile = createWorkerProfile(db, { name: 'Busy', purpose: 'p', model: 'claude-sonnet-5' });
+  const ticket = createTicket(db, { projectId: project.id, title: 't', profile: profile.id });
+
+  assert.deepEqual(workerProfileStatus(db, profile.id), { status: 'idle', ticketId: null });
+
+  const run = createRun(db, { ticketId: ticket.id, attempt: 1, adapter: 'fake', profileId: profile.id });
+  assert.deepEqual(workerProfileStatus(db, profile.id), { status: 'working', ticketId: ticket.id });
+
+  finishRun(db, run.id, { status: 'succeeded' });
+  assert.deepEqual(workerProfileStatus(db, profile.id), { status: 'idle', ticketId: null });
+});
+
+// --- Batch 19 mini-phase 1A review fixes -------------------------------
+
+// Medium 5.
+test('createWorkerProfile refuses an empty (or all-whitespace) name or purpose', () => {
+  const db = openDb(':memory:');
+  assert.throws(() => createWorkerProfile(db, { name: '', purpose: 'p', model: 'claude-sonnet-5' }), /must not be empty/);
+  assert.throws(() => createWorkerProfile(db, { name: '   ', purpose: 'p', model: 'claude-sonnet-5' }), /must not be empty/);
+  assert.throws(() => createWorkerProfile(db, { name: 'X', purpose: '', model: 'claude-sonnet-5' }), /must not be empty/);
+});
+
+// Low 8.
+test('createWorkerProfile and updateWorkerProfile refuse a name that starts with "prof_", in one sentence', () => {
+  const db = openDb(':memory:');
+  assert.throws(() => createWorkerProfile(db, { name: 'prof_fake', purpose: 'p', model: 'claude-sonnet-5' }), /may not start with "prof_"/);
+  const real = createWorkerProfile(db, { name: 'Real', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.throws(() => updateWorkerProfile(db, real.id, { name: 'prof_impersonator' }), /may not start with "prof_"/);
+});
+
+// Medium 6: uniqueness and lookup are both case-insensitive.
+test('worker profile names are unique and looked up case-insensitively', () => {
+  const db = openDb(':memory:');
+  const dev = getWorkerProfileByName(db, 'developer');
+  assert.equal(dev!.name, 'Developer', 'lookup must be case-insensitive');
+  assert.throws(() => createWorkerProfile(db, { name: 'DEVELOPER', purpose: 'p', model: 'claude-sonnet-5' }), /already exists/);
+
+  const other = createWorkerProfile(db, { name: 'Unique', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.throws(() => updateWorkerProfile(db, other.id, { name: 'developer' }), /already exists/);
+  // Renaming to a same-name-different-case spelling of ITS OWN name is a no-op rename, not a clash.
+  const renamedSameCase = updateWorkerProfile(db, other.id, { name: 'UNIQUE' });
+  assert.equal(renamedSameCase.name, 'UNIQUE');
+});
+
+// Low 7: a retired name may be reused by a new (or renamed) profile; the
+// retired row itself is untouched.
+test('a retired profile\'s name can be reused by a new profile, and the retired row is untouched', () => {
+  const db = openDb(':memory:');
+  const original = createWorkerProfile(db, { name: 'Scout', purpose: 'first', model: 'claude-sonnet-5' });
+  retireWorkerProfile(db, original.id);
+
+  const reused = createWorkerProfile(db, { name: 'Scout', purpose: 'second', model: 'claude-opus-5' });
+  assert.notEqual(reused.id, original.id);
+  assert.equal(getWorkerProfile(db, original.id)!.name, 'Scout', 'the retired row keeps its own name, never deleted');
+  assert.equal(getWorkerProfile(db, original.id)!.retiredAt != null, true);
+  assert.equal(getWorkerProfileByName(db, 'Scout')!.id, reused.id, 'the active row is the one a name lookup now finds');
+
+  // Renaming a different profile to the retired name must also succeed.
+  const third = createWorkerProfile(db, { name: 'Third', purpose: 'p', model: 'claude-sonnet-5' });
+  retireWorkerProfile(db, reused.id);
+  const renamed = updateWorkerProfile(db, third.id, { name: 'Scout' });
+  assert.equal(renamed.name, 'Scout');
+});
+
+// Low 9: stable order, tiebroken so the six seeds always list in the
+// design's order even though migration 0017 seeds them all with the same
+// created_at timestamp.
+test('listWorkerProfiles has a stable order: the six seeds list in the design\'s order, and a later profile lists after them', () => {
+  const db = openDb(':memory:');
+  const before = listWorkerProfiles(db).map((p) => p.name);
+  assert.deepEqual(before, ['Architect', 'Developer', 'Reviewer', 'Tester', 'Researcher', 'Scribe']);
+  createWorkerProfile(db, { name: 'Newcomer', purpose: 'p', model: 'claude-sonnet-5' });
+  const after = listWorkerProfiles(db).map((p) => p.name);
+  assert.deepEqual(after, ['Architect', 'Developer', 'Reviewer', 'Tester', 'Researcher', 'Scribe', 'Newcomer']);
+});
+
+// High 3, through updateTicketFields (managerApply's update_ticket path in
+// 2A calls this directly) -- setting model on a profile ticket, or profile
+// on a model ticket, is refused with the same sentence createTicket uses.
+test('updateTicketFields refuses to give a profile ticket a model, or a model ticket a profile, with the one sentence', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const profile = createWorkerProfile(db, { name: 'Setter', purpose: 'p', model: 'claude-sonnet-5' });
+
+  const profiled = createTicket(db, { projectId: project.id, title: 'profiled', profile: profile.id });
+  assert.throws(
+    () => updateTicketFields(db, profiled.id, { model: 'claude-opus-5' }),
+    /choose a profile or a model, not both/
+  );
+  assert.equal(getTicket(db, profiled.id)!.model, null, 'a refused update must leave the ticket untouched');
+
+  const modeled = createTicket(db, { projectId: project.id, title: 'modeled', model: 'claude-opus-5' });
+  assert.throws(
+    () => updateTicketFields(db, modeled.id, { profile: profile.id }),
+    /choose a profile or a model, not both/
+  );
+  assert.equal(getTicket(db, modeled.id)!.profileId, null, 'a refused update must leave the ticket untouched');
+
+  // Clearing the profile first, THEN setting a model in the same call, is fine.
+  updateTicketFields(db, profiled.id, { profile: null, model: 'claude-opus-5' });
+  const cleared = getTicket(db, profiled.id)!;
+  assert.equal(cleared.profileId, null);
+  assert.equal(cleared.model, 'claude-opus-5');
+});
+
+// --- Batch 19 mini-phase 1A re-review fixes ----------------------------
+
+// Medium 1: BOTH directions of moving a ticket between "bare model" and
+// "profile" in ONE updateTicketFields call, now that `model` has the same
+// null-clearing semantics `profile` already had.
+test('updateTicketFields moves a ticket from a bare model to a profile, and from a profile to a bare model, each in one call', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const profile = createWorkerProfile(db, { name: 'Mover', purpose: 'p', model: 'claude-opus-5' });
+
+  // Direction 1: model ticket -> profile.
+  const modelTicket = createTicket(db, { projectId: project.id, title: 'modeled', model: 'claude-haiku-4-5-20251001' });
+  updateTicketFields(db, modelTicket.id, { model: null, profile: profile.id });
+  const afterToProfile = getTicket(db, modelTicket.id)!;
+  assert.equal(afterToProfile.model, null);
+  assert.equal(afterToProfile.profileId, profile.id);
+
+  // Direction 2: profile ticket -> model.
+  const profileTicket = createTicket(db, { projectId: project.id, title: 'profiled', profile: profile.id });
+  updateTicketFields(db, profileTicket.id, { profile: null, model: 'claude-sonnet-5' });
+  const afterToModel = getTicket(db, profileTicket.id)!;
+  assert.equal(afterToModel.profileId, null);
+  assert.equal(afterToModel.model, 'claude-sonnet-5');
+});
+
+// Low 2: SQLite NOCASE is ASCII-only; a non-ASCII case pair must still
+// collide, in both createWorkerProfile and updateWorkerProfile.
+test('worker profile name uniqueness catches a non-ASCII case pair NOCASE alone would miss', () => {
+  const db = openDb(':memory:');
+  createWorkerProfile(db, { name: 'École', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.throws(
+    () => createWorkerProfile(db, { name: 'école', purpose: 'q', model: 'claude-opus-5' }),
+    /already exists/,
+    'a non-ASCII case variant must still be caught as a duplicate on create'
+  );
+
+  const other = createWorkerProfile(db, { name: 'Autre', purpose: 'p', model: 'claude-sonnet-5' });
+  assert.throws(
+    () => updateWorkerProfile(db, other.id, { name: 'ÉCOLE' }),
+    /already exists/,
+    'a non-ASCII case variant must still be caught as a duplicate on rename'
+  );
+});
+
+// Low 3: a non-string name/purpose/model gives the one-sentence error, not a
+// raw "value.trim is not a function" crash.
+test('createWorkerProfile refuses a non-string name, purpose or model with the plain sentence, not a crash', () => {
+  const db = openDb(':memory:');
+  assert.throws(() => createWorkerProfile(db, { name: 42 as unknown as string, purpose: 'p', model: 'claude-sonnet-5' }), /must not be empty/);
+  assert.throws(() => createWorkerProfile(db, { name: 'X', purpose: {} as unknown as string, model: 'claude-sonnet-5' }), /must not be empty/);
+  assert.throws(() => createWorkerProfile(db, { name: 'Y', purpose: 'p', model: null as unknown as string }), /unknown model/);
+});
+
+// Low 4: `profile set`/`profile retire`'s admin resolver reaches a RETIRED
+// profile by name; the assignment resolver (createTicket's path) still
+// cannot.
+test('resolveWorkerProfileRefForAdmin finds a retired profile by name; resolveWorkerProfileRef (assignment) still refuses', () => {
+  const db = openDb(':memory:');
+  const profile = createWorkerProfile(db, { name: 'AdminFind', purpose: 'p', model: 'claude-sonnet-5' });
+  retireWorkerProfile(db, profile.id);
+
+  assert.equal(resolveWorkerProfileRefForAdmin(db, 'AdminFind'), profile.id);
+  assert.equal(resolveWorkerProfileRefForAdmin(db, 'adminfind'), profile.id, 'admin lookup is also case-insensitive');
+  assert.throws(() => resolveWorkerProfileRef(db, 'AdminFind'), NoSuchWorkerProfileError);
+
+  // updateWorkerProfile (row maintenance) must still work by id on a retired row.
+  const renamed = updateWorkerProfile(db, profile.id, { purpose: 'still maintainable' });
+  assert.equal(renamed.purpose, 'still maintainable');
+});
+
+// Reviewer-suggested guard: a manager-kind ticket's run may never carry a
+// profile_id, whatever a future caller (2A's adapter wiring) passes.
+test('createRun refuses a profileId for a manager-kind ticket', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+  const profile = createWorkerProfile(db, { name: 'Guarded', purpose: 'p', model: 'claude-sonnet-5' });
+  const managerTicket = createTicket(db, { projectId: project.id, title: 'Manager: plan', kind: 'manager', workspaceType: 'NONE' });
+
+  assert.throws(
+    () => createRun(db, { ticketId: managerTicket.id, attempt: 1, adapter: 'fake', profileId: profile.id }),
+    /manager ticket may never spawn a run under a worker profile/
+  );
+  // A profile-less run on the same manager ticket is unaffected.
+  const run = createRun(db, { ticketId: managerTicket.id, attempt: 1, adapter: 'fake' });
+  assert.equal(run.profileId, null);
 });

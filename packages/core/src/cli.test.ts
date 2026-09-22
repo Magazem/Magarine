@@ -684,3 +684,123 @@ test('activity --progress --ticket <id> reports (no runs yet) for a ticket that 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- Batch 19 mini-phase 1A: worker profiles ----------------------------
+
+test('profile list prints exactly six seeded rows on a fresh database', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-profile-list-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['profile', 'list', '--json', '--db', dbFile]);
+    assert.equal(res.code, 0, res.stderr);
+    const profiles = JSON.parse(res.stdout) as Array<{ name: string; model: string; status: string }>;
+    assert.deepEqual(
+      profiles.map((p) => [p.name, p.model, p.status]),
+      [
+        ['Architect', 'claude-opus-5', 'idle'],
+        ['Developer', 'claude-sonnet-5', 'idle'],
+        ['Reviewer', 'claude-sonnet-5', 'idle'],
+        ['Tester', 'claude-sonnet-5', 'idle'],
+        ['Researcher', 'claude-haiku-4-5-20251001', 'idle'],
+        ['Scribe', 'claude-haiku-4-5-20251001', 'idle'],
+      ]
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('profile add creates a row, profile set renames it without changing its id, and profile retire hides it from profile list', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-profile-crud-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const addRes = await run([
+      'profile', 'add', '--name', 'Scout', '--model', 'claude-haiku-4-5-20251001', '--purpose', 'quick lookups', '--json', '--db', dbFile,
+    ]);
+    assert.equal(addRes.code, 0, addRes.stderr);
+    const created = JSON.parse(addRes.stdout);
+    assert.equal(created.name, 'Scout');
+
+    const setRes = await run(['profile', 'set', '--profile', 'Scout', '--name', 'Scout2', '--json', '--db', dbFile]);
+    assert.equal(setRes.code, 0, setRes.stderr);
+    const renamed = JSON.parse(setRes.stdout);
+    assert.equal(renamed.id, created.id, 'renaming must keep the same id');
+    assert.equal(renamed.name, 'Scout2');
+
+    const retireRes = await run(['profile', 'retire', '--profile', renamed.id, '--json', '--db', dbFile]);
+    assert.equal(retireRes.code, 0, retireRes.stderr);
+
+    const listRes = await run(['profile', 'list', '--json', '--db', dbFile]);
+    const names = (JSON.parse(listRes.stdout) as Array<{ name: string }>).map((p) => p.name);
+    assert.ok(!names.includes('Scout2'), 'a retired profile must not appear in profile list');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('profile add rejects an unknown model with a plain sentence, not a stack trace', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-profile-badmodel-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const res = await run(['profile', 'add', '--name', 'Bad', '--model', 'not-a-real-model', '--purpose', 'p', '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /unknown model/);
+    assert.doesNotMatch(res.stderr, /at\s+(file:|Object\.|async)/, 'must not leak a raw stack trace to the owner');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Acceptance line 3: `ticket add --profile Developer --model claude-opus-5`
+// fails with the one sentence; each alone succeeds.
+test('ticket add --profile and --model together fail with the one sentence; each alone succeeds', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-ticket-profile-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile])).stdout);
+
+    const bothRes = await run([
+      'ticket', 'add', '--project', project.id, '--title', 'T', '--profile', 'Developer', '--model', 'claude-opus-5', '--db', dbFile,
+    ]);
+    assert.notEqual(bothRes.code, 0);
+    assert.match(bothRes.stderr, /choose a profile or a model, not both/);
+
+    const profileOnlyRes = await run([
+      'ticket', 'add', '--project', project.id, '--title', 'T1', '--profile', 'Developer', '--json', '--db', dbFile,
+    ]);
+    assert.equal(profileOnlyRes.code, 0, profileOnlyRes.stderr);
+    const t1 = JSON.parse(profileOnlyRes.stdout);
+    assert.equal(t1.model, null);
+    assert.ok(t1.profileId, 'a profile-only ticket must record a profileId');
+
+    const modelOnlyRes = await run([
+      'ticket', 'add', '--project', project.id, '--title', 'T2', '--model', 'claude-opus-5', '--json', '--db', dbFile,
+    ]);
+    assert.equal(modelOnlyRes.code, 0, modelOnlyRes.stderr);
+    const t2 = JSON.parse(modelOnlyRes.stdout);
+    assert.equal(t2.model, 'claude-opus-5');
+    assert.equal(t2.profileId, null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ticket add --profile against a retired profile fails with a plain sentence', async () => {
+  const dir = mkdtempSync(join(testRoot.root, 'magarine-cli-ticket-retired-profile-'));
+  const dbFile = join(dir, 'magarine.db');
+  try {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'p', '--json', '--db', dbFile])).stdout);
+    const profiles = JSON.parse((await run(['profile', 'list', '--json', '--db', dbFile])).stdout) as Array<{ id: string; name: string }>;
+    const developerId = profiles.find((p) => p.name === 'Developer')!.id;
+    await run(['profile', 'retire', '--profile', 'Developer', '--db', dbFile]);
+    // Review fix (Low 7): a retired name is reusable and no longer resolves
+    // by name (getWorkerProfileByName only matches the active row), so the
+    // retired profile is referenced by its id here -- the id keeps working
+    // regardless of retirement (store.ts's getWorkerProfile).
+    const res = await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--profile', developerId, '--db', dbFile]);
+    assert.notEqual(res.code, 0);
+    assert.match(res.stderr, /retired and cannot be assigned/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
