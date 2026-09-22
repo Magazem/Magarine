@@ -26,6 +26,14 @@ roles, and continue batches"*.
    interface designer (assistant `ui-ux-pro-max`) for `packages/core/ui/**` + `src/ui/**`.
    **There is no Liaison now**; the owner talks to you directly in this chat.
 
+**THE OWNER AMENDED THE HIRING THE SAME DAY, verbatim:** *"instead you will hire reviewers tho,
+opus models"*. So the new hires are **REVIEWERS, on Opus models**. This matters because the lead
+is now deciding with no Strategist to check it, so an independent Opus reviewer restores the
+second pair of eyes the old split provided. **Open at the time of the reset:** whether reviewers
+are hired IN ADDITION to implementers (engineers still build, reviewers check) or INSTEAD of them,
+and whether they review the lead's specs, the code, or both. The lead asked the owner. Read
+their answer in the chat before hiring anyone.
+
 **WHERE THINGS STAND:** batch 18 is CLOSED and pushed. The owner ran it on real work and said:
 *"i did the run, it is fine generally, didn't find real bugs this time so i will accept it"*. Read
 `docs/strategy/batch-18-closeout.md` first. `main` equals `origin/main` at `b85f842`. Suite:
