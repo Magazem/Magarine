@@ -285,6 +285,56 @@ test('POST /tickets expectedArtifacts: absent stores null (never []), a valid en
   }
 });
 
+// Ruling 36 (batch 19, mini-phase 2B), acceptance 5: `POST /tickets/{id}/decide`
+// accepts `{ answer }` or `{ answers }`, passed straight through to decide()
+// -- both, neither, or a wrong count is a 400 carrying decide()'s own
+// one-sentence message (toApiError already maps DecideError to 400).
+test('POST /tickets/{id}/decide accepts answer or answers, and rejects both/neither/a wrong count with 400', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'decide-answer-answers-'));
+  try {
+    const projectRes = await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json']);
+    const project = JSON.parse(projectRes.stdout);
+    const ticketRes = await runCli(['ticket', 'add', '--project', project.id, '--title', 'T', '--state-dir', stateDir, '--json']);
+    const ticket = JSON.parse(ticketRes.stdout);
+
+    const handle = spawnServe([
+      '--state-dir', stateDir,
+      '--tick-interval', '30',
+      '--adapter', 'fake',
+      '--fake-outcome', `${ticket.id}=needs_user_decision`,
+      '--json',
+    ]);
+    try {
+      const info = await handle.waitForListening();
+      const fileInfo = JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo;
+      const call = (method: 'GET' | 'POST', path: string, body?: unknown) => api(info.port, fileInfo.token, method, path, body);
+
+      const tickRes = await call('POST', '/tick', { project: project.id });
+      assert.equal(tickRes.status, 200, JSON.stringify(tickRes.json));
+      const boardAfterTick = (await call('GET', `/board?project=${project.id}`)).json as { tickets: Array<{ id: string; status: string }> };
+      assert.equal(boardAfterTick.tickets.find((t) => t.id === ticket.id)?.status, 'BLOCKED', 'the fake-scripted needs_user_decision outcome must land the ticket BLOCKED before decide is exercised');
+
+      const neither = await call('POST', `/tickets/${ticket.id}/decide`, {});
+      assert.equal(neither.status, 400);
+
+      const both = await call('POST', `/tickets/${ticket.id}/decide`, { answer: 'a', answers: ['a'] });
+      assert.equal(both.status, 400);
+
+      const wrongCount = await call('POST', `/tickets/${ticket.id}/decide`, { answers: ['a', 'b'] });
+      assert.equal(wrongCount.status, 400);
+      assert.match((wrongCount.json as { error: string }).error, /has 1 pending question/, 'the message must name the real pending-question count (1)');
+
+      const ok = await call('POST', `/tickets/${ticket.id}/decide`, { answer: 'the real answer' });
+      assert.equal(ok.status, 200, JSON.stringify(ok.json));
+      assert.equal((ok.json as { status: string }).status, 'READY');
+    } finally {
+      await handle.kill();
+    }
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
 test('POST /tick forces a pass ahead of a distant scheduled interval, and POST /tickets/{id}/cancel lands a hanging run in CANCELLED (not READY) without consuming an attempt, reopenable only via retry', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'tick-cancel-'));
   try {

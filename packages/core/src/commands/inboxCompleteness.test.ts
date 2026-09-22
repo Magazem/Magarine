@@ -357,3 +357,56 @@ test('every inbox-visibility event type, recorded through the real path, reaches
     );
   }
 });
+
+// Ruling 36 (batch 19, mini-phase 2B), acceptance 6, amended per the Opus
+// review section 3 item 1: the inbox JSON carries `questions` for a
+// worker_needs_user_decision item -- a real multi-question payload
+// (managerApply.ts's shape) surfaces every entry ONLY on a MANAGER ticket,
+// an old-shape payload (no `questions`, or empty) falls back to the single
+// derived question, and every OTHER event type carries no `questions` field
+// at all.
+test('buildInbox carries `questions` on a worker_needs_user_decision item, real list or single-question fallback', () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p' });
+
+  // Must be a MANAGER ticket: a work ticket's own `questions` field is
+  // never trusted (Opus review item 1), even though it carries the same
+  // real multi-entry shape here.
+  const multi = createTicket(db, { projectId: project.id, title: 'multi', kind: 'manager', workspaceType: 'NONE' });
+  claim(db, multi.id, 'multi');
+  recordTicketTransition(db, {
+    ticketId: multi.id,
+    event: 'worker_needs_user_decision',
+    idempotencyKey: 'wnud_multi',
+    payload: { status: 'needs_user_decision', summary: 'a; b', blockers: ['a (ctx)', 'b (ctx)'], questions: ['a (ctx)', 'b (ctx)'] },
+  });
+
+  const single = createTicket(db, { projectId: project.id, title: 'single' });
+  claim(db, single.id, 'single');
+  recordTicketTransition(db, {
+    ticketId: single.id,
+    event: 'worker_needs_user_decision',
+    idempotencyKey: 'wnud_single',
+    payload: { status: 'needs_user_decision', summary: 'Which library?', blockers: [] },
+  });
+
+  // A WORK ticket carrying the identical real multi-entry `questions`
+  // shape (a real worker's result contract allows this) must still be
+  // treated as one question -- the spoofed array is never trusted.
+  const spoofedWork = createTicket(db, { projectId: project.id, title: 'spoofed work' });
+  claim(db, spoofedWork.id, 'spoofed');
+  recordTicketTransition(db, {
+    ticketId: spoofedWork.id,
+    event: 'worker_needs_user_decision',
+    idempotencyKey: 'wnud_spoofed',
+    payload: { status: 'needs_user_decision', summary: 'x', blockers: ['x'], questions: ['a', 'b'] },
+  });
+
+  const items = buildInbox(db, project.id);
+  const multiItem = items.find((i) => i.ticketId === multi.id)!;
+  const singleItem = items.find((i) => i.ticketId === single.id)!;
+  const spoofedItem = items.find((i) => i.ticketId === spoofedWork.id)!;
+  assert.deepEqual(multiItem.questions, ['a (ctx)', 'b (ctx)']);
+  assert.deepEqual(singleItem.questions, ['Which library?']);
+  assert.deepEqual(spoofedItem.questions, ['x'], 'a work ticket must never trust its own questions array');
+});

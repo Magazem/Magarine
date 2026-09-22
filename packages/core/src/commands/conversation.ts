@@ -1,6 +1,6 @@
 import type { Db } from '../db/index.ts';
 import { listArtifactsForTicket, listEventsForEntity, listEventsForProject, listTickets } from '../store.ts';
-import { extractQuestionText } from './decide.ts';
+import { extractQuestionText, pendingQuestions } from './decide.ts';
 
 // Batch 11 part 2, item 4: the page's conversation panel. This deliberately
 // mirrors the owner/manager_reply/manager_assessment interleaving
@@ -22,6 +22,8 @@ export interface ConversationEntry {
   ticketId?: string;
   /** Only set for kind 'question': false while its ticket is still BLOCKED on it -- the page shows the answer box only then. */
   answered?: boolean;
+  /** Only set for kind 'question' (ruling 36, batch 19 mini-phase 2B): the ticket's pending questions at this point, one entry per question, via the same one function (commands/decide.ts's pendingQuestions) commands/inbox.ts uses -- so mini-phase 3B's page can draw one field per question. `text` above stays the single joined string for the existing display. */
+  questions?: string[];
 }
 
 export function buildConversation(db: Db, projectId: string): ConversationEntry[] {
@@ -53,6 +55,10 @@ export function buildConversation(db: Db, projectId: string): ConversationEntry[
       entries.push({
         kind: 'question',
         text: extractQuestionText(e.payload),
+        // Every entry here belongs to a ticket already filtered to
+        // `kind === 'manager'` above (this loop's own `continue`), so
+        // pendingQuestions' manager-only `questions` trust is exactly right.
+        questions: pendingQuestions(e.payload, ticket.kind),
         createdAt: e.createdAt,
         ticketId: ticket.id,
         // Every question but the most recent one was necessarily answered

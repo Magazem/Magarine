@@ -154,6 +154,33 @@ function flagList(flags: Flags, key: string): string[] {
   return Array.isArray(value) ? value : [value];
 }
 
+// Opus review amendment (ruling 36, batch 19 mini-phase 2B, section 3, item
+// 7): `decide --answer` reads the RAW args directly rather than going
+// through `flags`/`flagList` for this one flag. Reason: parseFlags turns a
+// bare `--answer` (nothing after it, or the next token is itself a flag)
+// into the boolean `true`; that is fine as long as `--answer` appears once
+// (flagList already drops a lone boolean), but a REPEATED `--answer` merges
+// via `String(value)`, so a bare occurrence inside a repeated list silently
+// becomes the literal text "true" -- indistinguishable from someone typing
+// `--answer true`. Scanning `rest` here preserves that distinction and
+// refuses a bare occurrence in every position, not just when it is the only
+// one. An explicit empty value (`--answer ""`) is not a bare occurrence --
+// the shell hands parseFlags a real (empty) token for it -- and stays legal,
+// same as an omitted `--answer` altogether (handled by the caller).
+function collectAnswerFlags(args: string[]): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== '--answer') continue;
+    const next = args[i + 1];
+    if (next === undefined || next.startsWith('--')) {
+      throw new DecideError('--answer requires a value; a bare --answer with nothing after it is refused');
+    }
+    values.push(next);
+    i++;
+  }
+  return values;
+}
+
 // Batch 16 Role A item 4 (ruling 23): ONE parse and ONE validator
 // (store.ts's assertValidMaxParallelWorkers) for every command that accepts
 // `--max-parallel` -- `project create`, `project set`, `tick`, `run` and
@@ -1363,6 +1390,27 @@ ${scopeLine}` : ''}`);
 
   if (command === 'decide') {
     const ticketId = String(flags.ticket ?? '');
+    // Ruling 36 (batch 19, mini-phase 2B): `--answer` given once behaves
+    // exactly as before (a single `answer`); repeated `--answer` flags, in
+    // order, become `answers`. Never both on the wire: this is the ONE field
+    // decide() receives, chosen by how many were typed. A flag never typed
+    // at all stays the pre-2B default of one legal empty answer; a bare
+    // `--answer` (no value) is refused before any of that -- see
+    // collectAnswerFlags's own doc comment for why it reads `rest` directly
+    // instead of going through flagList.
+    let answerList: string[];
+    try {
+      answerList = collectAnswerFlags(rest);
+    } catch (err) {
+      if (err instanceof DecideError) {
+        process.stderr.write(`${err.message}\n`);
+        process.exitCode = 1;
+        return;
+      }
+      throw err;
+    }
+    const decideBody: { answer?: string; answers?: string[] } =
+      answerList.length > 1 ? { answers: answerList } : { answer: answerList[0] ?? '' };
     const live = await liveDaemonFor(flags);
     if (live) {
       await routeMutation(
@@ -1370,14 +1418,14 @@ ${scopeLine}` : ''}`);
         live,
         'POST',
         `/tickets/${ticketId}/decide`,
-        { answer: String(flags.answer ?? '') },
+        decideBody,
         (b) => `${ticketId} decided, now ${(b as { status: string }).status}`
       );
       return;
     }
     const db = openDb(dbPath(flags));
     try {
-      const ticket = decide(db, { ticketId, answer: String(flags.answer ?? '') });
+      const ticket = decide(db, { ticketId, ...decideBody });
       output(flags, ticket, `${ticket.id} decided, now ${ticket.status}`);
     } catch (err) {
       if (err instanceof DecideError) {

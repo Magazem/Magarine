@@ -1318,6 +1318,80 @@ test('--fake-outcome review lands a ticket in REVIEW through a real tick, and ap
   });
 });
 
+// Ruling 36 (batch 19, mini-phase 2B), acceptance 5: repeated `--answer`
+// flags reach the same "answers" path decide() validates against the real
+// pending-question count -- a worker-BLOCKED ticket has exactly one, so two
+// repeated `--answer` values are a wrong-count 400 naming 1, and a single
+// `--answer` still works exactly as before.
+test('decide --answer repeated reaches the same path as a single --answer, validated against the real pending-question count', async () => {
+  await withTempDb('magarine-decide-repeated-answer-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+    );
+
+    const tickRes = await run([
+      'tick',
+      '--project',
+      project.id,
+      '--adapter',
+      'fake',
+      '--fake-outcome',
+      `${ticket.id}=needs_user_decision`,
+      '--json',
+      '--db',
+      dbFile,
+    ]);
+    assert.equal(tickRes.code, 0, tickRes.stderr);
+
+    const repeatedRes = await run(['decide', '--ticket', ticket.id, '--answer', 'a', '--answer', 'b', '--json', '--db', dbFile]);
+    assert.notEqual(repeatedRes.code, 0, 'a worker-BLOCKED ticket has exactly one pending question; two answers is a wrong count');
+    assert.match(repeatedRes.stderr, /has 1 pending question/);
+
+    const singleRes = await run(['decide', '--ticket', ticket.id, '--answer', 'a', '--json', '--db', dbFile]);
+    assert.equal(singleRes.code, 0, singleRes.stderr);
+    assert.equal(JSON.parse(singleRes.stdout).status, 'READY');
+  });
+});
+
+// Opus review item 7 (Low, section 3 of the amendment): a bare `--answer`
+// (nothing after it, or the next token is itself a flag) is refused with
+// one sentence, never silently recorded as the literal text "true" --
+// parseFlags's own coercion of a valueless flag to boolean `true` would
+// otherwise produce exactly that once a SECOND `--answer` merges it into a
+// string array (`String(true)`).
+test('decide --answer with no value (bare, or bare inside a repeated list) is refused, never recorded as the literal text "true"', async () => {
+  await withTempDb('magarine-decide-bare-answer-', async (dbFile) => {
+    const project = JSON.parse((await run(['project', 'create', '--name', 'P', '--json', '--db', dbFile])).stdout);
+    const ticket = JSON.parse(
+      (await run(['ticket', 'add', '--project', project.id, '--title', 'T', '--json', '--db', dbFile])).stdout
+    );
+    await run([
+      'tick', '--project', project.id, '--adapter', 'fake', '--fake-outcome', `${ticket.id}=needs_user_decision`, '--json', '--db', dbFile,
+    ]);
+
+    // Bare, alone: nothing follows --answer at all.
+    const bareAlone = await run(['decide', '--ticket', ticket.id, '--answer', '--json', '--db', dbFile]);
+    assert.notEqual(bareAlone.code, 0);
+    assert.match(bareAlone.stderr, /--answer requires a value/);
+
+    // Bare, inside a repeated list: the SECOND --answer has nothing after it.
+    const bareInList = await run(['decide', '--ticket', ticket.id, '--answer', 'x', '--answer', '--json', '--db', dbFile]);
+    assert.notEqual(bareInList.code, 0);
+    assert.match(bareInList.stderr, /--answer requires a value/);
+
+    // The ticket must still be untouched by either refused call.
+    const boardRes = await run(['board', '--project', project.id, '--json', '--db', dbFile]);
+    const board = JSON.parse(boardRes.stdout) as { tickets: Array<{ id: string; status: string }> };
+    assert.equal(board.tickets.find((t) => t.id === ticket.id)?.status, 'BLOCKED');
+
+    // A genuinely empty answer (an explicit "" value, not a bare flag) still works.
+    const emptyRes = await run(['decide', '--ticket', ticket.id, '--answer', '', '--json', '--db', dbFile]);
+    assert.equal(emptyRes.code, 0, emptyRes.stderr);
+    assert.equal(JSON.parse(emptyRes.stdout).status, 'READY');
+  });
+});
+
 test('--fake-outcome review lands a ticket in REVIEW through a real tick, and reject returns it to READY end to end', async () => {
   await withTempDb('magarine-fake-outcome-review-reject-', async (dbFile) => {
     const project = JSON.parse(

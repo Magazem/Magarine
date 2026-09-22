@@ -766,6 +766,42 @@ test('the envelope carries the ticket budget override when set, else the project
   }
 });
 
+// Ruling 36 (batch 19, mini-phase 2B), Opus review item 5: relevantDecisions
+// mirrors managerEnvelope.ts's buildDecisionLog -- one `Q: — A:` line per
+// entry of a `user_decision` event's `decisions`, not the old single joined
+// pair, once that field is present.
+test('relevantDecisions renders one "Q: — A:" line per entry of a multi-question user_decision event', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'needs the decisions', workspaceType: 'NONE' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'dr_reldec' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'rs_reldec' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_needs_user_decision', idempotencyKey: 'wnud_reldec', payload: {} });
+  recordTicketTransition(db, {
+    ticketId: ticket.id,
+    event: 'user_decision',
+    idempotencyKey: 'ud_reldec',
+    payload: {
+      ticketId: ticket.id,
+      question: 'Which library?; Which host?',
+      answer: 'Library X.; Host Y.',
+      decisions: [
+        { question: 'Which library?', answer: 'Library X.' },
+        { question: 'Which host?', answer: 'Host Y.' },
+      ],
+    },
+  });
+
+  // The ticket is READY again (user_decision's own BLOCKED -> READY); tick()
+  // starts it and builds a fresh envelope carrying relevantDecisions.
+  const deps = { readiness: 'skip' as const, db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir };
+  const { started } = await tick(deps);
+  assert.equal(started.length, 1);
+  const envelope = adapter.startedWith.get(started[0].handle.id)!.ticket;
+  assert.deepEqual(envelope.relevantDecisions, ['Q: Which library? — A: Library X.', 'Q: Which host? — A: Host Y.']);
+});
+
 test('progress events are persisted as worker_progress internal events on the run, capped at 200 per run', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });

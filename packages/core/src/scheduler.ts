@@ -153,11 +153,18 @@ function buildEnvelope(db: Db, ticket: Ticket, project: Project): TicketEnvelope
       return { ticketId: d.dependsOnTicketId, title: dep?.title ?? '', summary, artifacts };
     });
 
+  // Ruling 36 (batch 19, mini-phase 2B): mirrors managerEnvelope.ts's own
+  // buildDecisionLog -- one `Q: — A:` line per entry of `decisions` when
+  // present, else the old single pair, so an old-shape event still renders
+  // exactly as it did before this ruling.
   const relevantDecisions = listEventsForProject(db, ticket.projectId)
     .filter((e) => e.eventType === 'user_decision')
-    .map((e) => {
-      const p = e.payload as { question?: string; answer?: string };
-      return `Q: ${p.question ?? ''} — A: ${p.answer ?? ''}`;
+    .flatMap((e) => {
+      const p = e.payload as { question?: string; answer?: string; decisions?: Array<{ question: string; answer: string }> };
+      if (p.decisions && p.decisions.length > 0) {
+        return p.decisions.map((d) => `Q: ${d.question} — A: ${d.answer}`);
+      }
+      return [`Q: ${p.question ?? ''} — A: ${p.answer ?? ''}`];
     });
 
   return {
