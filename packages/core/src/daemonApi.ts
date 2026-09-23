@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { extname, join as joinPath } from 'node:path';
+import { extname, isAbsolute, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withTransaction, type Db } from './db/index.ts';
 import { newId } from './id.ts';
@@ -10,6 +10,7 @@ import { approve, ApproveError } from './commands/approve.ts';
 import { buildBoard, buildSlots } from './commands/board.ts';
 import { decide, DecideError } from './commands/decide.ts';
 import { buildInbox } from './commands/inbox.ts';
+import { createProjectInDir, ProjectCreateError } from './commands/projectCreate.ts';
 import { buildProjectList } from './commands/projectList.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { resume, ResumeError } from './commands/resume.ts';
@@ -335,6 +336,71 @@ function requireJsonObjectBody(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+// Batch 20A (ruling 42): `POST /projects`. The terminal's own creation path
+// (commands/projectCreate.ts) plus the rules only a web page needs: `dir`
+// must be absolute and must ALREADY EXIST (the daemon never makes a directory
+// because a page asked). Every field is validated before anything is written;
+// one sentence per refusal.
+const PROJECT_CREATE_FIELDS = ['name', 'dir', 'description', 'defaultModel', 'managerModel', 'verifierModel', 'maxParallel', 'scopeText'] as const;
+
+function handleCreateProject(deps: DaemonApiDeps, body: unknown): RouteResult {
+  const b = requireJsonObjectBody(body);
+  const unknown = Object.keys(b).filter((k) => !(PROJECT_CREATE_FIELDS as readonly string[]).includes(k));
+  if (unknown.length > 0) throw new ApiError(400, `unknown field(s) for POST /projects: ${unknown.join(', ')}`);
+
+  if (typeof b.name !== 'string' || b.name.trim() === '') throw new ApiError(400, '"name" is required and must be a non-empty string');
+  if (typeof b.dir !== 'string' || b.dir.trim() === '') throw new ApiError(400, '"dir" is required: the absolute path of a folder that already exists');
+  if (!isAbsolute(b.dir)) throw new ApiError(400, `"dir" must be an absolute path, got: ${b.dir}`);
+  // Windows: `\foo` is "rooted" but names no drive, so it would silently land on the daemon's current one.
+  if (process.platform === 'win32' && !/^(?:[a-zA-Z]:[\\/]|[\\/]{2}[^\\/])/.test(b.dir)) {
+    throw new ApiError(400, `"dir" must be a full path with a drive letter (like C:\\Projects\\blog) or a UNC share, got: ${b.dir}`);
+  }
+  const dir = resolvePath(b.dir);
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(dir).isDirectory();
+  } catch {
+    throw new ApiError(400, `${dir} does not exist -- create the folder first; Magarine never creates one because a page asked.`);
+  }
+  if (!isDirectory) throw new ApiError(400, `${dir} is not a directory -- "dir" must be a folder that already exists.`);
+
+  const optionalString = (key: 'description' | 'scopeText'): string | undefined => {
+    const v = b[key];
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== 'string') throw new ApiError(400, `"${key}" must be a string`);
+    return v;
+  };
+  const optionalModel = (key: 'defaultModel' | 'managerModel' | 'verifierModel'): string | undefined => {
+    const v = b[key];
+    if (v === undefined || v === null) return undefined;
+    if (typeof v !== 'string' || !isKnownModel(v)) throw new ApiError(400, `unknown model for ${key}: ${String(v)}`);
+    return v;
+  };
+  const description = optionalString('description');
+  const scopeText = optionalString('scopeText');
+  const defaultModel = optionalModel('defaultModel');
+  const managerModel = optionalModel('managerModel');
+  const verifierModel = optionalModel('verifierModel');
+  let maxParallel: number | undefined;
+  if (b.maxParallel !== undefined && b.maxParallel !== null) {
+    if (typeof b.maxParallel !== 'number') throw new ApiError(400, 'maxParallel must be a number');
+    assertValidMaxParallelWorkers(b.maxParallel);
+    maxParallel = b.maxParallel;
+  }
+
+  try {
+    const { project, scopeLine } = createProjectInDir(
+      deps.db,
+      { name: b.name, dir, description, defaultModel, managerModel, verifierModel, maxParallelWorkers: maxParallel, scopeText },
+      deps.stateDir
+    );
+    return { status: 201, body: { ...project, scopeNote: scopeLine } };
+  } catch (err) {
+    if (err instanceof ProjectCreateError) throw new ApiError(400, err.message);
+    throw err;
+  }
+}
+
 function handlePatchProject(db: Db, projectId: string, body: unknown): RouteResult {
   const project = getProject(db, projectId);
   if (!project) throw new ApiError(404, `no such project: ${projectId}`);
@@ -630,6 +696,9 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
   // covers it (CLI's `project list` reads the store directly). Read-only,
   // same as /board /inbox /activity above: no new write site, a thin
   // wrapper over commands/projectList.ts's existing buildProjectList.
+  if (method === 'POST' && path === '/projects') {
+    return handleCreateProject(deps, body);
+  }
   if (method === 'GET' && path === '/projects') {
     return { status: 200, body: buildProjectList(deps.db, deps.stateDir, probeScopeFile) };
   }

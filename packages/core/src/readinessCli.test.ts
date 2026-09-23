@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
 import { openDb } from './db/index.ts';
 import { daemonFilePath, type DaemonFileInfo } from './daemon.ts';
-import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv } from './testSupport.ts';
+import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv, siblingDir } from './testSupport.ts';
 
 // Batch 16 ruling 24, end to end through the real CLI and the real `serve`
 // process: the owner's legacy project (neither workspace_root nor scope_path)
@@ -71,7 +71,7 @@ test('tick on a legacy project pauses it (board names the fix); `project set --d
   assert.match(paused.pauseMessage, new RegExp(`magarine project set --project ${id} --dir <folder>`));
   assert.equal(paused.tickets[0].status, 'READY', 'no run started');
 
-  const dir = join(stateDir, 'my-project');
+  const dir = siblingDir(stateDir, 'my-project');
   mkdirSync(dir);
   const set = await run(['project', 'set', '--project', id, '--dir', dir, '--state-dir', stateDir]);
   assert.equal(set.code, 0, set.stderr);
@@ -133,13 +133,13 @@ const NOT_FOUND = (path: string) => `scope document: ${path} (not found; write i
 
 test('project create announces a scope document that is not there yet, once, and says nothing when SCOPE.md already exists', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'announce-'));
-  const fresh = join(stateDir, 'fresh-project');
+  const fresh = siblingDir(stateDir, 'fresh-project');
   mkdirSync(fresh);
   const created = await run(['project', 'create', '--name', 'fresh', '--dir', fresh, '--state-dir', stateDir]);
   assert.equal(created.code, 0, created.stderr);
   assert.ok(created.stdout.includes(NOT_FOUND(join(fresh, 'SCOPE.md'))), created.stdout);
 
-  const written = join(stateDir, 'written-project');
+  const written = siblingDir(stateDir, 'written-project');
   mkdirSync(written);
   writeFileSync(join(written, 'SCOPE.md'), 'Build a thing.');
   const quiet = await run(['project', 'create', '--name', 'written', '--dir', written, '--state-dir', stateDir]);
@@ -147,7 +147,7 @@ test('project create announces a scope document that is not there yet, once, and
   assert.ok(!quiet.stdout.includes('scope document:'), `a present file makes no noise: ${quiet.stdout}`);
 
   // --json keeps stdout pure JSON; the line goes to stderr.
-  const jsonDir = join(stateDir, 'json-project');
+  const jsonDir = siblingDir(stateDir, 'json-project');
   mkdirSync(jsonDir);
   const asJson = await run(['project', 'create', '--name', 'j', '--dir', jsonDir, '--state-dir', stateDir, '--json']);
   assert.doesNotThrow(() => JSON.parse(asJson.stdout));
@@ -156,7 +156,7 @@ test('project create announces a scope document that is not there yet, once, and
 
 test('plan prints the same line when SCOPE.md is absent, then proceeds (it does not refuse); a present file, or --mission, prints nothing', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'plan-'));
-  const dir = join(stateDir, 'proj');
+  const dir = siblingDir(stateDir, 'proj');
   mkdirSync(dir);
   const id = JSON.parse((await run(['project', 'create', '--name', 'p', '--dir', dir, '--state-dir', stateDir, '--json'])).stdout).id as string;
 
@@ -170,7 +170,7 @@ test('plan prints the same line when SCOPE.md is absent, then proceeds (it does 
   const second = await run(['plan', '--project', id, '--state-dir', stateDir]);
   assert.ok(!second.stdout.includes('scope document:'), second.stdout);
 
-  const seeded = join(stateDir, 'seeded');
+  const seeded = siblingDir(stateDir, 'seeded');
   mkdirSync(seeded);
   const seededId = JSON.parse((await run(['project', 'create', '--name', 's', '--dir', seeded, '--state-dir', stateDir, '--json'])).stdout).id as string;
   const withMission = await run(['plan', '--project', seededId, '--mission', 'Build a thing.', '--state-dir', stateDir]);
@@ -180,7 +180,7 @@ test('plan prints the same line when SCOPE.md is absent, then proceeds (it does 
 
 test('project create refuses a directory whose SCOPE.md is unreadable (a directory at that path), naming the path -- never treating it as empty', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'unreadable-create-'));
-  const dir = join(stateDir, 'proj');
+  const dir = siblingDir(stateDir, 'proj');
   mkdirSync(join(dir, 'SCOPE.md'), { recursive: true });
   const res = await run(['project', 'create', '--name', 'p', '--dir', dir, '--state-dir', stateDir]);
   assert.notEqual(res.code, 0);
@@ -190,7 +190,7 @@ test('project create refuses a directory whose SCOPE.md is unreadable (a directo
 
 test('a real `serve` pauses a project whose SCOPE.md is unreadable, BEFORE any run, with reason unreadable_scope_file', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'unreadable-serve-'));
-  const dir = join(stateDir, 'proj');
+  const dir = siblingDir(stateDir, 'proj');
   mkdirSync(dir);
   const id = JSON.parse((await run(['project', 'create', '--name', 'p', '--dir', dir, '--state-dir', stateDir, '--json'])).stdout).id as string;
   const ticketId = JSON.parse((await run(['ticket', 'add', '--project', id, '--title', 't', '--state-dir', stateDir, '--json'])).stdout).id as string;

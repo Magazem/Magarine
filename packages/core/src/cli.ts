@@ -55,6 +55,7 @@ import { reject, RejectError } from './commands/reject.ts';
 import { retry, RetryError } from './commands/retry.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { realAppSeams, runApp } from './commands/app.ts';
+import { createProjectInDir, ProjectCreateError } from './commands/projectCreate.ts';
 import { formatShutdown, serve, ServeError } from './commands/serve.ts';
 import { runToken, TokenError } from './commands/token.ts';
 import {
@@ -737,33 +738,39 @@ async function main(): Promise<void> {
     // batch 11's own README walk hit (a DIRECTORY ticket with no
     // workspace_root configured) cannot be reproduced.
     const dir = resolve(typeof flags.dir === 'string' ? flags.dir : process.cwd());
-    // Batch 16 ruling 24: ruling 22's check is now the shared
-    // `projectReadiness`, asked about the row this command is about to write
-    // -- the same function the scheduler asks, so the two cannot drift.
-    const notReady = projectReadiness({ workspaceRoot: dir, scopePath: join(dir, 'SCOPE.md') }, stateDir(flags), probeScopeFile);
-    if (notReady) {
-      process.stderr.write(`${notReady.message}\n`);
+    // Batch 20A (ruling 42): the readiness gate and the write live in ONE
+    // function, shared with `POST /projects` (commands/projectCreate.ts).
+    let created: ReturnType<typeof createProjectInDir>;
+    try {
+      created = createProjectInDir(
+        db,
+        {
+          name: String(flags.name ?? positionals[1] ?? ''),
+          dir,
+          description: typeof flags.description === 'string' ? flags.description : null,
+          // Batch 16: absent means no cap of its own (null); the validator runs in
+          // createProject and, for a bare/garbled flag, in parseMaxParallelFlag.
+          maxParallelWorkers: parseMaxParallelFlag(flags),
+          maxSpendUsd: typeof flags['max-spend'] === 'string' ? Number(flags['max-spend']) : null,
+          defaultModel: typeof flags.model === 'string' ? flags.model : undefined,
+          brief: typeof flags.brief === 'string' ? flags.brief : null,
+          managerModel: typeof flags['manager-model'] === 'string' ? flags['manager-model'] : null,
+          // Batch 18 ruling 31: absent, the verifier runs on the project's default model.
+          verifierModel: typeof flags['verifier-model'] === 'string' ? flags['verifier-model'] : null,
+        },
+        stateDir(flags)
+      );
+    } catch (err) {
+      if (!(err instanceof ProjectCreateError)) throw err;
+      process.stderr.write(`${err.message}
+`);
       process.exitCode = 1;
       return;
     }
-    const project = createProject(db, {
-      name: String(flags.name ?? positionals[1] ?? ''),
-      description: typeof flags.description === 'string' ? flags.description : null,
-      // Batch 16: absent means no cap of its own (null); the validator runs in
-      // createProject and, for a bare/garbled flag, in parseMaxParallelFlag.
-      maxParallelWorkers: parseMaxParallelFlag(flags),
-      maxSpendUsd: typeof flags['max-spend'] === 'string' ? Number(flags['max-spend']) : null,
-      defaultModel: typeof flags.model === 'string' ? flags.model : undefined,
-      brief: typeof flags.brief === 'string' ? flags.brief : null,
-      workspaceRoot: dir,
-      managerModel: typeof flags['manager-model'] === 'string' ? flags['manager-model'] : null,
-      // Batch 18 ruling 31: absent, the verifier runs on the project's default model.
-      verifierModel: typeof flags['verifier-model'] === 'string' ? flags['verifier-model'] : null,
-      scopePath: join(dir, 'SCOPE.md'),
-    });
+    const project = created.project;
+    const scopeLine = created.scopeLine;
     // Ruling 29: never silent about a scope document that is not there yet.
     // In --json mode stdout stays pure JSON, so the line goes to stderr.
-    const scopeLine = scopeAnnouncement(project.scopePath, probeScopeFile);
     output(flags, project, `Created project ${project.id} (${project.name}) in ${dir}${scopeLine && !flags.json ? `
 ${scopeLine}` : ''}`);
     if (scopeLine && flags.json) process.stderr.write(`${scopeLine}

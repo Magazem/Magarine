@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { rmSyncResilient } from './db/testSupport.ts';
 
 export interface TestTempRoot {
@@ -79,15 +79,22 @@ export function testTempRoot(label: string): TestTempRoot {
 // directory or `--state-dir` directly -- that is precisely the shape this
 // fix removes, on both flags.
 export function deriveTestCliCwd(args: readonly string[]): string | undefined {
-  const dbIndex = args.indexOf('--db');
-  if (dbIndex !== -1 && args[dbIndex + 1]) {
-    const cwd = join(dirname(args[dbIndex + 1]), 'workspace');
+  // The state directory wins when both are given: a --db inside it must not
+  // drag the cwd (the default project directory) inside it too.
+  const stateDirIndex = args.indexOf('--state-dir');
+  if (stateDirIndex !== -1 && args[stateDirIndex + 1]) {
+    // Batch 20A review: a project INSIDE the state directory is refused now
+    // (a worker there could reach Magarine's database), so the derived cwd is a
+    // SIBLING of the state directory, not a child. Same parent, so the test's
+    // own root still cleans it up.
+    const stateDir = args[stateDirIndex + 1]!;
+    const cwd = join(dirname(stateDir), basename(stateDir) + '-workspace');
     mkdirSync(cwd, { recursive: true });
     return cwd;
   }
-  const stateDirIndex = args.indexOf('--state-dir');
-  if (stateDirIndex !== -1 && args[stateDirIndex + 1]) {
-    const cwd = join(args[stateDirIndex + 1], 'workspace');
+  const dbIndex = args.indexOf('--db');
+  if (dbIndex !== -1 && args[dbIndex + 1]) {
+    const cwd = join(dirname(args[dbIndex + 1]!), 'workspace');
     mkdirSync(cwd, { recursive: true });
     return cwd;
   }
@@ -102,4 +109,11 @@ export function deriveTestCliCwd(args: readonly string[]): string | undefined {
 // this or name an adapter itself.
 export function pinnedFakeEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...process.env, MAGARINE_ADAPTER: 'fake', ...extra };
+}
+
+// Batch 20A review: a project directory may not be inside the state directory,
+// so a test that wants "a project folder next to this state dir" asks here.
+// A SIBLING (same parent, so the test root still cleans it up); not created.
+export function siblingDir(stateDir: string, name: string): string {
+  return join(dirname(stateDir), `${basename(stateDir)}-${name}`);
 }

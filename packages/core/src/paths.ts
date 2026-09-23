@@ -1,5 +1,6 @@
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, parse as parsePath, sep } from 'node:path';
+import { basename, dirname, join, parse as parsePath, resolve, sep } from 'node:path';
 
 // The one place the daemon's state directory is resolved. Precedence:
 // `--state-dir` flag, else `MAGARINE_HOME`, else `<home>/.magarine/`.
@@ -54,15 +55,51 @@ export function artifactsDir(stateDir: string): string {
 // prove every rule -- including the home-directory one -- without a real
 // invocation ever resolving to the real home directory. See
 // cliRouting.test.ts's/commands.test.ts's "ruling 22" tests.
+//
+// Batch 20A review: the comparisons are on REAL paths (`canonicalPath`), not
+// strings. Before, `c:\users\yazan` (home in another case), the state
+// directory lower-cased, and a junction pointing at either all sailed
+// through -- and `POST /projects` made that a web input.
 export function validateWorkspaceRoot(dir: string, homeDir: string, resolvedStateDir: string): string | null {
-  if (dir === homeDir) {
+  const real = canonicalPath(dir);
+  if (real === canonicalPath(homeDir)) {
     return `${dir} is your home directory -- make a folder for the project and run this from inside it.`;
   }
-  if (parsePath(dir).root === dir) {
+  if (parsePath(real).root === real) {
     return `${dir} is a filesystem root -- make a folder for the project and run this from inside it.`;
   }
-  if (dir === resolvedStateDir || resolvedStateDir.startsWith(dir + sep)) {
-    return `${dir} is or contains Magarine's own state directory (${resolvedStateDir}) -- a worker here could edit Magarine's own database. Move the state directory with --state-dir, or choose a different project folder.`;
+  const state = canonicalPath(resolvedStateDir);
+  // Is, contains, or is INSIDE the state directory: a worker in a folder
+  // under it can still reach Magarine's database's neighbours.
+  if (real === state || state.startsWith(real + sep) || real.startsWith(state + sep)) {
+    return `${dir} is, contains or is inside Magarine's own state directory (${resolvedStateDir}) -- a worker here could edit Magarine's own database. Move the state directory with --state-dir, or choose a different project folder.`;
   }
   return null;
+}
+
+// The one way two spellings of a folder are made comparable: absolute, every
+// symlink/junction/8.3 name resolved to the real path, case-folded where the
+// filesystem is case-insensitive. A path that does not exist yet cannot be
+// realpath'd, so its nearest EXISTING ancestor is, and the missing rest is
+// re-appended as typed.
+export function canonicalPath(p: string, platform: NodeJS.Platform = process.platform): string {
+  let current = resolve(p);
+  const tail: string[] = [];
+  let real: string;
+  for (;;) {
+    try {
+      real = realpathSync.native(current);
+      break;
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) {
+        real = current;
+        break;
+      }
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+  const full = tail.length > 0 ? join(real, ...tail) : real;
+  return platform === 'win32' ? full.toLowerCase() : full;
 }

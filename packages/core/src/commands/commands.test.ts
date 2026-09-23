@@ -732,14 +732,14 @@ test('--fake-script <id>=progress:<message>, repeated, scripts an ordered burst;
 // `project set --max-parallel none` clears one again; `--max-parallel` is
 // refused with the flag named on EVERY command that accepts it.
 test('project create writes no cap by default, --max-parallel N writes N, and project set --max-parallel none clears it back to no cap', async () => {
-  await withTempDb('magarine-maxparallel-none-', async (dbFile) => {
+  await withTempDb('magarine-maxparallel-none-', async (dbFile, dir) => {
     const plain = JSON.parse(
       (await run(['project', 'create', '--name', 'plain', '--json', '--db', dbFile])).stdout
     ) as { id: string; maxParallelWorkers: number | null };
     assert.equal(plain.maxParallelWorkers, null);
 
     const capped = JSON.parse(
-      (await run(['project', 'create', '--name', 'capped', '--max-parallel', '2', '--json', '--db', dbFile])).stdout
+      (await run(['project', 'create', '--name', 'capped', '--max-parallel', '2', '--dir', join(dir, 'capped'), '--json', '--db', dbFile])).stdout
     ) as { id: string; maxParallelWorkers: number | null };
     assert.equal(capped.maxParallelWorkers, 2);
 
@@ -1950,11 +1950,11 @@ test('a manager ticket sitting at the daily Manager-invocation cap reaches the i
 });
 
 test('project create --verifier-model and project set --verifier-model store the verifier model (batch 18 ruling 31); absent, it is null', async () => {
-  await withTempDb('magarine-verifier-model-', async (dbFile) => {
+  await withTempDb('magarine-verifier-model-', async (dbFile, dir) => {
     const plain = JSON.parse((await run(['project', 'create', '--name', 'A', '--json', '--db', dbFile])).stdout) as { verifierModel: string | null };
     assert.equal(plain.verifierModel, null);
     const created = JSON.parse(
-      (await run(['project', 'create', '--name', 'B', '--verifier-model', 'claude-opus-5', '--json', '--db', dbFile])).stdout
+      (await run(['project', 'create', '--name', 'B', '--verifier-model', 'claude-opus-5', '--dir', join(dir, 'b'), '--json', '--db', dbFile])).stdout
     ) as { id: string; verifierModel: string | null };
     assert.equal(created.verifierModel, 'claude-opus-5');
     const set = JSON.parse(

@@ -10,7 +10,7 @@ import { checkDaemonFile, daemonFilePath, type DaemonFileInfo } from '../daemon.
 import { probeDaemonHealth } from '../daemonClient.ts';
 import { createProject, createTicket, getTicket } from '../store.ts';
 import { buildInbox } from './inbox.ts';
-import { testTempRoot, pinnedFakeEnv } from '../testSupport.ts';
+import { testTempRoot, pinnedFakeEnv, siblingDir } from '../testSupport.ts';
 import {
   closeWindowGracefully,
   realAppSeams,
@@ -256,7 +256,7 @@ test('closing the WINDOW never stops the daemon: the line is printed, the daemon
     assert.equal(r.settled(), false, 'the host is still running: its lifetime is the daemon\'s');
 
     // Prove the daemon is still doing work with the window gone.
-    const dir = join(r.stateDir, 'project');
+    const dir = siblingDir(r.stateDir, 'project');
     mkdirSync(dir, { recursive: true });
     const project = createProject(r.db, { name: 'p', workspaceRoot: dir, scopePath: join(dir, 'SCOPE.md') });
     const ticket = createTicket(r.db, { projectId: project.id, title: 'after the window closed', workspaceType: 'NONE' });
@@ -446,7 +446,7 @@ test('attach mode with no browser: prints the address, `magarine token` and wher
 // ---- item 4b: the host raises the Needs You toast ---------------------------------------
 
 async function needsYouTicket(r: Rig, title: string): Promise<string> {
-  const dir = join(r.stateDir, 'project');
+  const dir = siblingDir(r.stateDir, 'project');
   mkdirSync(dir, { recursive: true });
   const project = createProject(r.db, { name: 'p', workspaceRoot: dir, scopePath: join(dir, 'SCOPE.md') });
   return createTicket(r.db, { projectId: project.id, title, workspaceType: 'NONE' }).id;

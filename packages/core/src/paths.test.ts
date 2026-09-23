@@ -97,3 +97,63 @@ test('validateWorkspaceRoot: a plain project subdirectory, none of the three, is
   );
   assert.equal(message, null);
 });
+
+// ---- Batch 20A review: the check compares REAL paths -----------------------
+
+import { mkdirSync as mkdirReal, mkdtempSync as mkdtempReal, symlinkSync, realpathSync as realpathReal } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { sep as pathSep } from 'node:path';
+import { canonicalPath } from './paths.ts';
+
+const realRoot = realpathReal(mkdtempReal(join(tmpdir(), 'magarine-paths-real-')));
+const realHome = join(realRoot, 'home');
+const realState = join(realHome, '.magarine');
+mkdirReal(realState, { recursive: true });
+mkdirReal(join(realHome, 'projects', 'app'), { recursive: true });
+
+function tryJunction(target: string, name: string): string | null {
+  const link = join(realRoot, name);
+  try {
+    symlinkSync(target, link, 'junction');
+    return link;
+  } catch {
+    return null;
+  }
+}
+
+test('validateWorkspaceRoot: home in another case, with a trailing separator, is still the home directory (Windows folds case)', (t) => {
+  if (process.platform !== 'win32') return t.skip('case-insensitive filesystems only');
+  assert.match(validateWorkspaceRoot(realHome.toUpperCase(), realHome, realState) ?? '', /home directory/);
+  assert.match(validateWorkspaceRoot(realHome.toLowerCase() + pathSep, realHome, realState) ?? '', /home directory/);
+});
+
+test('validateWorkspaceRoot: the state directory in another case, or with a trailing separator, is refused', (t) => {
+  assert.match(validateWorkspaceRoot(realState + pathSep, realHome, realState) ?? '', /state directory/);
+  if (process.platform !== 'win32') return t.skip('case folding: Windows only');
+  assert.match(validateWorkspaceRoot(realState.toUpperCase(), realHome, realState) ?? '', /state directory/);
+});
+
+test('validateWorkspaceRoot: a junction to the home directory is the home directory', (t) => {
+  const link = tryJunction(realHome, 'junction-to-home');
+  if (!link) return t.skip('COULD NOT create a junction/symlink on this machine -- the junction spelling is UNTESTED here');
+  assert.match(validateWorkspaceRoot(link, realHome, realState) ?? '', /home directory/);
+});
+
+test('validateWorkspaceRoot: a junction to the state directory is refused, and so is a path through it', (t) => {
+  const link = tryJunction(realState, 'junction-to-state');
+  if (!link) return t.skip('COULD NOT create a junction/symlink on this machine -- the junction spelling is UNTESTED here');
+  assert.match(validateWorkspaceRoot(link, realHome, realState) ?? '', /state directory/);
+  assert.match(validateWorkspaceRoot(join(link, 'sub'), realHome, realState) ?? '', /state directory/, 'a not-yet-existing folder under the junction resolves through it');
+});
+
+test('validateWorkspaceRoot: a directory INSIDE the state directory is refused; a sibling of it is fine', () => {
+  const inside = join(realState, 'sub');
+  assert.match(validateWorkspaceRoot(inside, realHome, realState) ?? '', /is, contains or is inside/);
+  assert.equal(validateWorkspaceRoot(join(realHome, 'projects', 'app'), realHome, realState), null);
+  assert.equal(validateWorkspaceRoot(join(realHome, '.magarine-projects'), realHome, realState), null, 'a name that merely starts like the state dir is not inside it');
+});
+
+test('canonicalPath: a folder that does not exist yet is its nearest existing ancestor\'s real path plus the rest', () => {
+  const missing = join(realHome, 'projects', 'not', 'yet');
+  assert.equal(canonicalPath(missing, 'linux'), join(realpathReal(realHome), 'projects', 'not', 'yet'));
+});

@@ -94,7 +94,10 @@ export async function withDaemon(
       baseUrl: `http://127.0.0.1:${port}`,
       dbPath: join(stateDir, 'magarine.db'),
       async createProject(name, extra = []) {
-        const res = await runCli(['project', 'create', '--name', name, '--state-dir', stateDir, '--json', ...extra]);
+        // A project has exactly one directory and two projects may not share one, so
+        // each gets its own folder under the test root unless the caller names one.
+        const dirArgs = extra.includes('--dir') ? [] : ['--dir', mkdtempSync(join(root.root, 'project-'))];
+        const res = await runCli(['project', 'create', '--name', name, '--state-dir', stateDir, '--json', ...dirArgs, ...extra]);
         const project = JSON.parse(res.stdout) as { id: string; name: string };
         return project;
       },

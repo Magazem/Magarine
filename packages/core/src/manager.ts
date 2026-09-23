@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 import type { Db } from './db/index.ts';
@@ -116,6 +116,66 @@ export function writeScopeTextAtomic(
   } catch (err) {
     rmSync(tmpPath, { force: true });
     throw err;
+  }
+}
+
+// Batch 20A follow-up (ruling 42): the CREATE case's write. Same temp-file
+// discipline as writeScopeTextAtomic, but the last step is an EXCLUSIVE link
+// into place: it fails with EEXIST if anything is at the path, where a rename
+// would silently replace it. A create form must never overwrite a scope
+// document, including one that appeared after the caller's own pre-check.
+// Returns false (having written nothing, temp file removed) when the file
+// already exists; throws on any other failure. `writeScopeTextAtomic` above
+// keeps its REPLACE semantics for PUT /projects/{id}/scope, which is meant to.
+export interface ScopeCreateTestHooks {
+  /** Runs after the temp file is written and before the exclusive link: the exact window the race lives in. */
+  beforeLink?: () => void;
+  linkSync?: typeof linkSync;
+  /** Writes the content through the descriptor of the 'wx' fallback; a test makes it fail to prove the half-made file is removed. */
+  writeFd?: (fd: number, content: string) => void;
+}
+
+export function createScopeTextExclusive(project: Project, content: string, testHooks: ScopeCreateTestHooks = {}): boolean {
+  if (!project.scopePath) {
+    throw new ManagerError('cannot write scope text: this project has no scope_path set');
+  }
+  mkdirSync(dirname(project.scopePath), { recursive: true });
+  const tmpPath = `${project.scopePath}.tmp-${process.pid}-${randomBytes(8).toString('hex')}`;
+  const link = testHooks.linkSync ?? linkSync;
+  try {
+    writeFileSync(tmpPath, content, 'utf8');
+    testHooks.beforeLink?.();
+    try {
+      link(tmpPath, project.scopePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return false;
+      // A filesystem with no hard links (exFAT, some network shares): fall
+      // back to open-with-'wx', still exclusive, only no longer all-or-nothing
+      // for the content.
+      if (code !== 'EPERM' && code !== 'ENOSYS' && code !== 'ENOTSUP' && code !== 'EXDEV') throw err;
+      let fd: number;
+      try {
+        fd = openSync(project.scopePath, 'wx');
+      } catch (openErr) {
+        if ((openErr as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw openErr;
+      }
+      try {
+        (testHooks.writeFd ?? ((d: number, c: string) => writeFileSync(d, c, 'utf8')))(fd, content);
+      } catch (writeErr) {
+        // The exclusive open proves this file did not exist before, so the
+        // partial one is OURS: remove it, or every later create would refuse
+        // "already exists" against a half-written document.
+        closeSync(fd);
+        rmSync(project.scopePath, { force: true });
+        throw writeErr;
+      }
+      closeSync(fd);
+    }
+    return true;
+  } finally {
+    rmSync(tmpPath, { force: true });
   }
 }
 

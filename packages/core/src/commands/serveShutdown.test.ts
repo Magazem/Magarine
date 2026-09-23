@@ -6,7 +6,7 @@ import { openDb } from '../db/index.ts';
 import { FakeAdapter } from '../adapters/fakeAdapter.ts';
 import { createProject, createTicket, getTicket, listTickets } from '../store.ts';
 import { formatShutdown, serve } from './serve.ts';
-import { testTempRoot } from '../testSupport.ts';
+import { testTempRoot, siblingDir } from '../testSupport.ts';
 
 // Batch 17 item: a shutdown that cancels work says so, and says the spend
 // will be paid again. `serve()` is run in-process and stopped with
@@ -19,7 +19,7 @@ after(testRoot.cleanup);
 
 async function runServeWith(liveCount: number): Promise<{ reports: Array<{ cancelled: string[] }>; ticketIds: string[]; statuses: string[] }> {
   const stateDir = join(testRoot.root, `state-${liveCount}-${Math.random().toString(36).slice(2, 8)}`);
-  const projectDir = join(stateDir, 'project');
+  const projectDir = siblingDir(stateDir, 'project');
   mkdirSync(projectDir, { recursive: true });
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', workspaceRoot: projectDir, scopePath: join(projectDir, 'SCOPE.md') });
@@ -99,7 +99,7 @@ test('a client that opens /events during shutdown (while a slow run is being can
     }
   }
   const stateDir = join(testRoot.root, `state-late-stream-${Math.random().toString(36).slice(2, 8)}`);
-  const projectDir = join(stateDir, 'project');
+  const projectDir = siblingDir(stateDir, 'project');
   mkdirSync(projectDir, { recursive: true });
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', workspaceRoot: projectDir, scopePath: join(projectDir, 'SCOPE.md') });
