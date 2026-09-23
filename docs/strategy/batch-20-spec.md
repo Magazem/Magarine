@@ -70,3 +70,21 @@ in before the page draws anything. `new Notification` and `beforeunload` stay pr
 
 Deleting or archiving a project. The owner has not asked for it, and it is the one operation here
 that destroys something. It gets its own ruling if they do.
+
+## 5. Amendments, 2026-09-23, from the 20A build
+
+The engineer reported two limits plainly rather than hiding them; both are ruled.
+
+- **The SCOPE.md race breaks the one hard promise.** `writeScopeTextAtomic` renames a temp file into
+  place, and a rename REPLACES an existing target, so a `SCOPE.md` appearing between the pre-check and
+  the write would be overwritten. For CREATION the write is now an exclusive create that fails if the
+  file exists (link into place, or open with `wx`); on that failure the whole transaction rolls back
+  and the refusal is the same sentence as the pre-check. `PUT /projects/{id}/scope` keeps its replace
+  semantics, because replacing is what it is for.
+- **A second project on one directory is refused.** HARD, the engineer ran it: `createProject`
+  permits two projects naming the same directory, and they would then share one `SCOPE.md` and one
+  workspace, with two Managers editing the same document. The shared creation function now refuses a
+  directory that is already an existing project's workspace root, naming that project, comparing
+  normalised absolute paths case-insensitively on Windows. The CLI and the route refuse alike.
+  **Existing rows are not touched**: a database that already holds duplicates keeps them, and there
+  is no migration.
