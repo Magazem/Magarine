@@ -69,3 +69,23 @@ Three candidates, and why two lose:
 It does not answer "what did it run ten minutes ago", and it cannot, by construction. If the owner
 wants history, that is the transcript question, and it needs its own ruling about retention and
 redaction before a line of it is written.
+
+## 5. Amendments after the review, 2026-09-23
+
+- **A RUNNING run with no tool use yet answers 200, with `tool` null and `lastProgressAt`** — not
+  404. Section 2 said "for a RUNNING run ... or 404 once the run has settled", and the reviewer was
+  right that answering 404 before the first tool call hides the stuck measurement exactly when a
+  worker hangs at startup (an auth prompt, a hung CLI), and is indistinguishable from "settled", so
+  the page cannot even know whether to keep polling. 404 stays for an unknown id and for a settled
+  run.
+- **Verifier runs register the live channel too.** They were left out, and the run most likely to
+  look stuck is a verifier running the test suite through Bash. The owner's question must be
+  answerable for it.
+- **The late-signal window is the real hazard, and it is security-relevant.** A live signal arriving
+  after a run settles re-created the map entry, so the command outlived the run and the route
+  answered 200 for a finished one. The live channel gets the same late-event guard the progress path
+  has, the listener is unsubscribed on settle, and shutdown sweeps the map. Acceptance 2 is what
+  proves it, and the test now drives the real race (a live signal delayed past a fast success).
+- **Acceptance 3 must scan the TERMINAL payloads too**, not only the progress path: `worker_done`,
+  `worker_failure`, the run row and a cancel event. The first version of the test used a run that
+  never terminated, so a leak into any of those would have passed.
