@@ -232,7 +232,7 @@ export interface TicketEnvelope {
   /** Batch 15 item 4: the ticket's own declared expectation, carried through so the worker sees what it is expected to produce. Absent (not an empty array) when the ticket has no such list -- see envelope.ts's buildWorkerPrompt for the rendering rule this distinction drives. */
   expectedArtifacts?: ExpectedArtifact[];
   /** Batch 18 ruling 31: absent or 'work' is an ordinary worker; 'verify' asks the adapter for a VERIFIER run -- a different prompt (verifier.ts) and a different result schema (a verdict per acceptance criterion, never artefacts). */
-  runKind?: RunKind;
+  runKind?: RunKind | 'manager';
   /** Only on a verifier envelope: what it is judging. */
   verification?: VerificationSubject;
   /** Batch 18 ruling 32: why the ticket's previous attempt did not stand -- the verifier's (or owner's) rejection, or the worker's own failure. Absent on a first attempt, always. */

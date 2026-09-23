@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
 import { openDb } from './db/index.ts';
 import { daemonFilePath, type DaemonFileInfo } from './daemon.ts';
-import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
+import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv } from './testSupport.ts';
 
 // Batch 16 ruling 24, end to end through the real CLI and the real `serve`
 // process: the owner's legacy project (neither workspace_root nor scope_path)
@@ -19,7 +19,7 @@ after(testRoot.cleanup);
 
 function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+    const p = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
     let stdout = '';
     let stderr = '';
     p.onStdout((c) => (stdout += c));
@@ -89,7 +89,7 @@ test('a real `serve` pauses a legacy project before any run starts, and GET /pro
   const ticketRes = await run(['ticket', 'add', '--project', id, '--title', 't', '--state-dir', stateDir, '--json']);
   const ticketId = JSON.parse(ticketRes.stdout).id as string;
 
-  const proc = spawnManaged({
+  const proc = spawnManaged({ env: pinnedFakeEnv(),
     executable: process.execPath,
     args: [cliPath, 'serve', '--state-dir', stateDir, '--adapter', 'fake', '--tick-interval', '0.05', '--json'],
   });
@@ -196,7 +196,7 @@ test('a real `serve` pauses a project whose SCOPE.md is unreadable, BEFORE any r
   const ticketId = JSON.parse((await run(['ticket', 'add', '--project', id, '--title', 't', '--state-dir', stateDir, '--json'])).stdout).id as string;
   mkdirSync(join(dir, 'SCOPE.md')); // the document goes wrong after the project exists
 
-  const proc = spawnManaged({
+  const proc = spawnManaged({ env: pinnedFakeEnv(),
     executable: process.execPath,
     args: [cliPath, 'serve', '--state-dir', stateDir, '--adapter', 'fake', '--tick-interval', '0.05', '--json'],
   });

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged, type ManagedProcess } from '../process.ts';
 import { daemonFilePath, type DaemonFileInfo } from '../daemon.ts';
-import { deriveTestCliCwd, testTempRoot } from '../testSupport.ts';
+import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv } from '../testSupport.ts';
 
 // Cross-process coverage for `magarine serve` itself -- everything here
 // spawns the real CLI as a genuinely separate OS process, per this batch's
@@ -72,7 +72,7 @@ interface ServeHandle {
 }
 
 function spawnServe(args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): ServeHandle {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, 'serve', ...args], env: opts.env });
+  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, 'serve', ...args], env: pinnedFakeEnv(opts.env) });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));
@@ -283,7 +283,7 @@ test('a hard-killed daemon leaves a stale daemon.json (dead pid) behind; the nex
     // write, exactly like today's CLI) before any daemon exists.
     const create = (args: string[]) =>
       new Promise<{ stdout: string; code: number | null }>((resolve) => {
-        const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+        const p = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
         let stdout = '';
         p.onStdout((c) => (stdout += c));
         p.wait().then((r) => resolve({ stdout, code: r.code }));

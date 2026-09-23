@@ -9,7 +9,7 @@ import { daemonFilePath, type DaemonFileInfo, type DaemonLoop } from './daemon.t
 import { createRequestHandler } from './daemonApi.ts';
 import { openDb } from './db/index.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
-import { testTempRoot } from './testSupport.ts';
+import { testTempRoot, pinnedFakeEnv } from './testSupport.ts';
 
 // Batch 17 Role A item 3 (ruling 30 item 4, docs/strategy/batch-17-spec.md):
 // the launch code is how `magarine app` opens the window already signed in
@@ -186,7 +186,7 @@ test('the exchange route is POST-only and the other unauthenticated routes are u
 // stderr. It appears exactly once, in the exchange response body.
 test('across a real daemon\'s whole launch-code flow the token appears in the exchange body and NOWHERE on its stdout or stderr', async () => {
   const stateDir = mkdtempSync(join(testRoot.root, 'grep-'));
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, 'serve', '--state-dir', stateDir, '--tick-interval', '0.1', '--json'] });
+  const proc = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, 'serve', '--state-dir', stateDir, '--tick-interval', '0.1', '--json'] });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));

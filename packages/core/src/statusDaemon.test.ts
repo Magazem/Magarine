@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
-import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
+import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv } from './testSupport.ts';
 
 // Batch 16 item 6 (handover item 8): `status` with no `--project` used to error
 // ("no such project: "). It now answers the question a person asks first --
@@ -17,7 +17,7 @@ after(testRoot.cleanup);
 
 function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+    const p = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
     let stdout = '';
     let stderr = '';
     p.onStdout((c) => (stdout += c));
@@ -43,6 +43,7 @@ test('status with no --project against a live daemon reports the pid, port, page
   const ticket = JSON.parse((await run(['ticket', 'add', '--project', projectId, '--title', 'hangs', '--state-dir', stateDir, '--json'])).stdout);
 
   const proc = spawnManaged({
+    env: pinnedFakeEnv(),
     executable: process.execPath,
     args: [cliPath, 'serve', '--state-dir', stateDir, '--max-parallel', '3', '--tick-interval', '0.05', '--fake-script', `${ticket.id}=hang`, '--json'],
   });

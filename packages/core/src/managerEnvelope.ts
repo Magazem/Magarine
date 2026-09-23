@@ -435,5 +435,8 @@ export function buildManagerEnvelope(db: Db, ticket: Ticket, project: Project): 
     expectedOutputFormat: MANAGER_EXPECTED_OUTPUT_FORMAT,
     maxBudgetUsd: resolveMaxBudgetUsd(project, ticket),
     model: resolveManagerModel(db, project),
+    // Ruling 41: lets an adapter know this is a Manager run (the fake adapter
+    // refuses one it has no script for, rather than pretending to succeed).
+    runKind: 'manager',
   };
 }

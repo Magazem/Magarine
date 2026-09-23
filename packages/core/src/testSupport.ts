@@ -93,3 +93,13 @@ export function deriveTestCliCwd(args: readonly string[]): string | undefined {
   }
   return undefined;
 }
+
+// Ruling 41: the product's default adapter is the REAL one, so every test
+// spawn of the CLI pins the fake through the environment. `extra` layers on
+// top (a test proving an environment-driven behaviour passes its own keys);
+// `MAGARINE_ADAPTER` may be overridden there deliberately, never by accident.
+// cliSpawnPin.test.ts fails any test file whose CLI spawn does not go through
+// this or name an adapter itself.
+export function pinnedFakeEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return { ...process.env, MAGARINE_ADAPTER: 'fake', ...extra };
+}

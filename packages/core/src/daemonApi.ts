@@ -14,6 +14,7 @@ import { buildProjectList } from './commands/projectList.ts';
 import { reject, RejectError } from './commands/reject.ts';
 import { resume, ResumeError } from './commands/resume.ts';
 import { retry, RetryError } from './commands/retry.ts';
+import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import type { DaemonLoop } from './daemon.ts';
 import { resolveReadiness } from './dependencies.ts';
 import { discussProject, ManagerError, readScopeText, writeScopeTextAtomic } from './manager.ts';
@@ -86,6 +87,8 @@ import type { AgentAdapter, DependencyType, EventRow, ExpectedArtifact, Workspac
 export interface DaemonApiDeps {
   db: Db;
   adapter: AgentAdapter;
+  /** Reported as `/health`'s `adapter` (ruling 41). Absent: inferred from the adapter object. */
+  adapterKind?: string;
   loop: DaemonLoop;
   token: string;
   pid: number;
@@ -560,6 +563,7 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
         pid: deps.pid,
         startedAt: deps.startedAt,
         uptimeMs: Date.now() - Date.parse(deps.startedAt),
+        adapter: deps.adapterKind ?? (deps.adapter instanceof FakeAdapter ? 'fake' : 'claude'),
         slots: buildSlots(deps.db, resolveMachineCap(deps.db, deps.machineCapFlag), deps.machineCapFlag ?? null),
       },
     };

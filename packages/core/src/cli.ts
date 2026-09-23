@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
 import { ClaudeCliAdapter } from './adapters/claudeCli.ts';
+import { ADAPTER_ENV_VAR, FAKE_FLAGS_NEED_FAKE, resolveAdapterChoice } from './adapterChoice.ts';
 import { checkDaemonFile, type DaemonFileInfo } from './daemon.ts';
 import { daemonRequest, probeDaemonHealth } from './daemonClient.ts';
 import { resolveCommand } from './process.ts';
@@ -364,7 +365,7 @@ const FLAG_SPECS: Record<string, string[]> = {
   'profile add': ['name', 'model', 'purpose', 'policy'],
   'profile set': ['profile', 'name', 'model', 'purpose', 'policy'],
   'profile retire': ['profile'],
-  // `--fake-script` is only honoured when `--adapter fake` (the default); it
+  // `--fake-script` is only honoured when the adapter is `fake` (asked for by name: ruling 41); it
   // scripts the permanent FakeAdapter test double per ticket id so a
   // scenario like "this ticket needs a user decision" or "this ticket fails
   // until it exhausts its attempts" can be driven through the real CLI
@@ -397,7 +398,7 @@ const FLAG_SPECS: Record<string, string[]> = {
   // Batch 10 (Role Q): `--paid` opts into one real, billed `claude -p` call
   // (see commands/doctor.ts) -- absent by default, so `doctor` costs nothing
   // unless explicitly asked to spend.
-  doctor: ['paid'],
+  doctor: ['paid', 'adapter'],
   // Ruling 20: no flags of its own beyond the common `--state-dir`/`--json`
   // (COMMON_FLAGS) -- listed explicitly, empty, so an unrelated flag (e.g. a
   // stray `--project`) is still caught as unknown rather than silently
@@ -441,7 +442,7 @@ const FLAG_SPECS: Record<string, string[]> = {
 };
 
 // Builds the AgentAdapter for `tick`/`run --until-idle` from `--adapter`
-// (default: fake). `claude` spawns the real Claude Code CLI via
+// (default: claude; see adapterChoice.ts). `claude` spawns the real Claude Code CLI via
 // ClaudeCliAdapter (see adapters/claudeCli.ts). `--claude-exe` overrides the
 // executable; if omitted, it defaults to `resolveExecutable('claude')`
 // (process.ts), which unwraps the npm .cmd shim on Windows so the adapter
@@ -512,7 +513,12 @@ const FAKE_OUTCOME_KINDS: Record<string, FakeScript['kind']> = {
 // database), so it passes `''`, matching this function's prior behaviour
 // for that command exactly.
 function buildAdapter(db: Db, flags: Flags, projectId: string): AgentAdapter {
-  const kind = typeof flags.adapter === 'string' ? flags.adapter : 'fake';
+  const { kind } = resolveAdapterChoice(flags.adapter, process.env);
+  // Ruling 41: the fake's own flags are never silently honoured on another
+  // adapter, and never silently ignored either.
+  if (kind !== 'fake' && ['fake-script', 'fake-outcome', 'fake-progress-gap'].some((k) => k in flags)) {
+    throw new Error(FAKE_FLAGS_NEED_FAKE);
+  }
 
   if (kind === 'fake') {
     const adapter = new FakeAdapter();
@@ -634,11 +640,17 @@ function validFlagsText(key: string): string {
 // in owned mode -- plus `--browser`. Derived, so the two cannot drift.
 FLAG_SPECS.app = [...FLAG_SPECS.serve, 'browser', 'no-notify'];
 
+const ADAPTER_NOTE = `Runs work with the real Claude CLI unless told otherwise: --adapter claude|fake, else the ${ADAPTER_ENV_VAR} environment variable, else claude. The fake adapter is a test double (it never writes a Manager proposal); --fake-script, --fake-outcome and --fake-progress-gap need it.`;
+
 // One sentence some commands carry beyond their flag list, printed by
 // `<command> --help` after the flags.
 const COMMAND_NOTES: Record<string, string> = {
   app: 'Opens the board in its own window (Chrome, else Edge; --browser or MAGARINE_BROWSER overrides), starting the daemon itself if none is running. Tested on Windows only. Closing the window never stops the daemon; Ctrl+C here does. Needs You also raises a Windows toast (sender: "Windows PowerShell"; clicking it does nothing) -- Windows only, off with --no-notify.',
 };
+
+for (const key of ['serve', 'tick', 'run', 'app']) {
+  COMMAND_NOTES[key] = [COMMAND_NOTES[key], ADAPTER_NOTE].filter(Boolean).join(' ');
+}
 
 function checkKnownFlags(key: string, flags: Flags): string | null {
   const known = FLAG_SPECS[key];
@@ -914,7 +926,7 @@ ${scopeLine}` : ''}`);
     // only the state directory (writability) and a live daemon.json there
     // (daemon.ts/daemonClient.ts, read-only). See commands/doctor.ts's own
     // header for why each check is PASS/FAIL/SKIP rather than a boolean.
-    const lines = await runDoctor({ stateDir: stateDir(flags), paid: Boolean(flags.paid) });
+    const lines = await runDoctor({ stateDir: stateDir(flags), paid: Boolean(flags.paid), adapterChoice: resolveAdapterChoice(flags.adapter, process.env) });
     if (flags.json) {
       process.stdout.write(JSON.stringify(lines) + '\n');
     } else {
@@ -1367,6 +1379,7 @@ ${scopeLine}` : ''}`);
         dbPath: resolvedDbPath,
         stateDir: resolvedStateDir,
         adapter,
+        adapterKind: resolveAdapterChoice(flags.adapter, process.env).kind,
         maxParallelWorkers: machineCapFlag,
         runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
         artifactsDir: artifactsDir(flags),
@@ -1421,6 +1434,7 @@ ${scopeLine}` : ''}`);
               dbPath: resolvedDbPath,
               stateDir: resolvedStateDir,
               adapter: buildAdapter(db, flags, ''),
+              adapterKind: resolveAdapterChoice(flags.adapter, process.env).kind,
               maxParallelWorkers: machineCapFlag,
               runTimeoutMs: typeof flags['run-timeout'] === 'string' ? Number(flags['run-timeout']) * 1000 : undefined,
               artifactsDir: artifactsDir(flags),

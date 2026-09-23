@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from './process.ts';
-import { testTempRoot } from './testSupport.ts';
+import { testTempRoot, pinnedFakeEnv } from './testSupport.ts';
 
 // Batch 16 (the stranger's walk): `--help` tells the truth. The usage line is
 // GENERATED from the flag table that validates every command, per-command
@@ -20,7 +20,7 @@ function run(args: string[]): Promise<{ code: number | null; stdout: string; std
   return new Promise((resolve) => {
     // cwd is the temp root, and every call passes an explicit --state-dir
     // (never the owner's ~/.magarine, never an unset MAGARINE_HOME).
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: testRoot.root });
+    const p = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: testRoot.root });
     let stdout = '';
     let stderr = '';
     p.onStdout((c) => (stdout += c));
@@ -68,7 +68,7 @@ test('`<command> --help` prints the SAME valid-flag list the unknown-flag error 
   for (const command of [['serve'], ['ticket', 'add'], ['project', 'create'], ['discuss'], ['token']]) {
     const help = await run([...command, '--help', '--state-dir', stateDir]);
     assert.equal(help.code, 0, `${command.join(' ')} --help must succeed, not be rejected as an unknown flag: ${help.stderr}`);
-    const helpFlags = /Valid flags: (.*)\n?$/.exec(help.stdout.trim())?.[1];
+    const helpFlags = /^Valid flags: (.*)$/m.exec(help.stdout.trim())?.[1];
     assert.ok(helpFlags, `no valid-flag list in: ${help.stdout}`);
 
     const bad = await run([...command, '--definitely-not-a-flag', '--state-dir', stateDir]);

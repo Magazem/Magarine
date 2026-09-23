@@ -24,6 +24,8 @@ export interface ServeOptions {
   dbPath: string;
   stateDir: string;
   adapter: AgentAdapter;
+  /** The adapter's resolved kind (adapterChoice.ts), reported by `GET /health`. Omitted by an in-process caller that built the adapter itself; the API then infers it from the object. */
+  adapterKind?: string;
   /** The `serve --max-parallel` flag's value; `undefined` when the flag was not given -- see daemon.ts's DaemonLoopDeps.maxParallelWorkers (ruling 35: without the flag, the machine cap is re-read from settings on every tick instead). */
   maxParallelWorkers: number | undefined;
   runTimeoutMs?: number;
@@ -84,7 +86,7 @@ export async function serve(opts: ServeOptions): Promise<void> {
   const startedAt = new Date().toISOString();
   const token = generateDaemonToken();
 
-  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, loop, token, pid, startedAt, machineCapFlag: opts.maxParallelWorkers, stateDir: opts.stateDir });
+  const requestHandler = createRequestHandler({ db: opts.db, adapter: opts.adapter, adapterKind: opts.adapterKind, loop, token, pid, startedAt, machineCapFlag: opts.maxParallelWorkers, stateDir: opts.stateDir });
   const server: Server = createServer(requestHandler.handle);
 
   try {

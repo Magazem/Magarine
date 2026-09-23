@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged } from '../process.ts';
-import { testTempRoot, deriveTestCliCwd } from '../testSupport.ts';
+import { testTempRoot, deriveTestCliCwd, pinnedFakeEnv } from '../testSupport.ts';
 import { copyToClipboard, runToken, TokenError, type RunClipboardTool } from './token.ts';
 
 // Every clipboard-touching path here is exercised through the INJECTED
@@ -143,7 +143,7 @@ after(testRoot.cleanup);
 
 function runCli(args: string[]): Promise<{ stdout: string; stderr: string; code: number | null }> {
   return new Promise((resolve) => {
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+    const p = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
     let stdout = '';
     let stderr = '';
     p.onStdout((c) => (stdout += c));

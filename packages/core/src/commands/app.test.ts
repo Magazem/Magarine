@@ -10,7 +10,7 @@ import { checkDaemonFile, daemonFilePath, type DaemonFileInfo } from '../daemon.
 import { probeDaemonHealth } from '../daemonClient.ts';
 import { createProject, createTicket, getTicket } from '../store.ts';
 import { buildInbox } from './inbox.ts';
-import { testTempRoot } from '../testSupport.ts';
+import { testTempRoot, pinnedFakeEnv } from '../testSupport.ts';
 import {
   closeWindowGracefully,
   realAppSeams,
@@ -328,7 +328,7 @@ test('a window that cannot be started is said out loud and leaves the daemon run
 
 async function elsewhereDaemon(): Promise<{ stateDir: string; info: DaemonFileInfo; stop(): Promise<void> }> {
   const stateDir = mkdtempSync(join(testRoot.root, 'elsewhere-'));
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, 'serve', '--state-dir', stateDir, '--tick-interval', '0.5', '--json'] });
+  const proc = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, 'serve', '--state-dir', stateDir, '--tick-interval', '0.5', '--json'] });
   let stdout = '';
   proc.onStdout((c) => (stdout += c));
   const deadline = Date.now() + 10_000;

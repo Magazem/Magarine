@@ -134,14 +134,14 @@ Run these from wherever `magarine` is on your PATH:
    page's address, and keeps running until you stop it. Do step 2 first: the
    window shows the projects that already exist, and cannot create one yet.
    ```sh
-   magarine app --adapter claude --max-parallel 4
+   magarine app --max-parallel 4
    ```
    The window is Chrome's (or Edge's, if there is no Chrome; `magarine doctor`
    names which, or says none was found). **Closing the window does not stop
    the daemon or the work** -- the terminal says so, and `magarine app` opens
    the window again; `Ctrl+C` in the terminal is what stops it. If you would
-   rather use a plain browser tab, `magarine serve --adapter claude
-   --max-parallel 4` runs the same daemon with no window.
+   rather use a plain browser tab, `magarine serve
+   --max-parallel 4` runs the same daemon with no window. (`--adapter fake`, or `MAGARINE_ADAPTER=fake`, runs a test double that does no real work; it exists for the test suite, not for you.)
 
    This number caps WORKERS: the most workers the daemon runs at once across
    every project (a project only runs fewer if you gave it a smaller cap of

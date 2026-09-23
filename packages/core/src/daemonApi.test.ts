@@ -11,7 +11,7 @@ import { createRequestHandler, isSafeAssetName } from './daemonApi.ts';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
 import { createProject, createTicket, getRun, getSetting, getTicket, listEventsForProject, setProjectScopePath, setSetting } from './store.ts';
-import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
+import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv } from './testSupport.ts';
 import { knownModelIds } from './pricing.ts';
 
 // Cross-process coverage for the daemon's HTTP API itself: everything here
@@ -42,7 +42,7 @@ interface ServeHandle {
 }
 
 function spawnServe(args: string[]): ServeHandle {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, 'serve', ...args] });
+  const proc = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, 'serve', ...args] });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));
@@ -75,7 +75,7 @@ function spawnServe(args: string[]): ServeHandle {
 
 function runCli(args: string[]): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve) => {
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+    const p = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
     let stdout = '';
     p.onStdout((c) => (stdout += c));
     p.wait().then((r) => resolve({ stdout, code: r.code }));
@@ -1828,5 +1828,30 @@ test('acceptance 3: a Bash command with a recognisable secret is shown live, but
     }
   } finally {
     await server.close();
+  }
+});
+
+// Ruling 41: `/health` says which adapter this daemon runs work with.
+test('GET /health carries the adapter: the resolved kind when given, else inferred from the adapter object', async () => {
+  const db = openDb(':memory:');
+  const { port, close } = await startTestServer(db);
+  try {
+    const health = (await api(port, TEST_TOKEN, 'GET', '/health')).json as { adapter: string };
+    assert.equal(health.adapter, 'fake', 'the harness hands the handler a FakeAdapter and no explicit kind');
+  } finally {
+    await close();
+  }
+});
+
+test('a real `serve` reports the adapter it started with on /health -- pinned by MAGARINE_ADAPTER=fake here, claude only when named', async () => {
+  const stateDir = mkdtempSync(join(testRoot.root, 'health-adapter-'));
+  const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json']);
+  try {
+    const info = await handle.waitForListening();
+    const token = (JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo).token;
+    const health = (await api(info.port, token, 'GET', '/health')).json as { adapter: string };
+    assert.equal(health.adapter, 'fake');
+  } finally {
+    await handle.kill();
   }
 });

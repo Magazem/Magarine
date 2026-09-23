@@ -25,7 +25,7 @@ export type FakeScript =
   // now requires of one. Pass `artifacts: []` explicitly to script the
   // "reported done but delivered nothing" malformed case on purpose.
   | { kind: 'succeed'; delayMs?: number; usage?: unknown; artifacts?: WorkerResultArtifact[] }
-  | { kind: 'retryable_failure'; delayMs?: number; message?: string; usage?: unknown }
+  | { kind: 'retryable_failure'; delayMs?: number; message?: string; usage?: unknown; retryable?: boolean }
   | { kind: 'question'; delayMs?: number; message?: string; usage?: unknown }
   | { kind: 'needs_user_decision'; delayMs?: number; blockers?: string[]; usage?: unknown }
   | { kind: 'malformed_result'; delayMs?: number }
@@ -117,7 +117,16 @@ interface HandleState {
   workspacePath?: string;
   /** Batch 18 ruling 31: set when this handle is a verifier run; carries the criteria it was asked to rule on. */
   verify?: { criteria: string[] };
+  /** Ruling 41: this handle is a Manager run (envelope runKind 'manager'). */
+  manager?: boolean;
 }
+
+// Ruling 41: what a Manager ticket run says when it has no script. Names the
+// fake adapter and the way out; never says "JSON" -- the fake never writes a
+// proposal, and blaming the format of a file that was never written is the
+// exact lie this message replaces.
+export const FAKE_MANAGER_REFUSAL =
+  'This daemon is running the fake adapter, which never writes a Manager proposal. Start it with --adapter claude to talk to the Manager.';
 
 // Batch 13 ruling 1c: writes a real file into `workspacePath` and declares
 // it, so the fake's own idea of "an ordinary successful worker" delivers
@@ -180,7 +189,15 @@ export class FakeAdapter implements AgentAdapter {
       input.ticket.runKind === 'verify'
         ? { criteria: input.ticket.verification?.acceptanceCriteria ?? input.ticket.acceptanceCriteria }
         : undefined;
-    this.handles.set(handle.id, { timers: [], stopped: false, listeners: [], liveListeners: [], workspacePath: input.workspace?.path, verify });
+    this.handles.set(handle.id, {
+      timers: [],
+      stopped: false,
+      listeners: [],
+      liveListeners: [],
+      workspacePath: input.workspace?.path,
+      verify,
+      manager: input.ticket.runKind === 'manager',
+    });
     return handle;
   }
 
@@ -199,9 +216,13 @@ export class FakeAdapter implements AgentAdapter {
     // explicit script.
     const verifyOrdinal = state.verify ? (this.verifyRunsStarted.get(handle.ticketId) ?? 0) + 1 : 0;
     if (state.verify) this.verifyRunsStarted.set(handle.ticketId, verifyOrdinal);
-    const script = state.verify
+    const script: FakeScript = state.verify
       ? (this.verifyScripts.get(handle.ticketId) ?? { kind: 'verify_pass' })
-      : (this.scripts.get(handle.ticketId) ?? this.defaultScript ?? { kind: 'succeed' });
+      : (this.scripts.get(handle.ticketId) ??
+        this.defaultScript ??
+        (state.manager
+          ? { kind: 'retryable_failure', message: FAKE_MANAGER_REFUSAL, retryable: false }
+          : { kind: 'succeed' }));
     const schedule = (event: WorkerEvent, delayMs: number) => {
       const timer = setTimeout(() => {
         if (!state.stopped) this.publish(state, event);
@@ -230,7 +251,7 @@ export class FakeAdapter implements AgentAdapter {
 
       case 'retryable_failure':
         schedule(
-          { type: 'failure', message: script.message ?? 'fake retryable failure', retryable: true, usage: script.usage },
+          { type: 'failure', message: script.message ?? 'fake retryable failure', retryable: script.retryable ?? true, usage: script.usage },
           script.delayMs ?? 0
         );
         break;

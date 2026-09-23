@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged, type ManagedProcess } from '../process.ts';
 import { daemonFilePath, type DaemonFileInfo } from '../daemon.ts';
-import { deriveTestCliCwd, testTempRoot } from '../testSupport.ts';
+import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv } from '../testSupport.ts';
 import { UI_DIR } from './page.ts';
 
 const APP = readFileSync(join(UI_DIR, 'app.js'), 'utf8');
@@ -37,7 +37,7 @@ interface ServeHandle {
 }
 
 function spawnServe(args: string[]): ServeHandle {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, 'serve', ...args] });
+  const proc = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, 'serve', ...args] });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));
@@ -66,7 +66,7 @@ function spawnServe(args: string[]): ServeHandle {
 
 function runCli(args: string[]): Promise<string> {
   return new Promise((resolve) => {
-    const p = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+    const p = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
     let stdout = '';
     p.onStdout((c) => (stdout += c));
     p.wait().then(() => resolve(stdout));

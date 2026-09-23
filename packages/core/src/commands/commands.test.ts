@@ -6,7 +6,7 @@ import { join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { rmSyncResilient } from '../db/testSupport.ts';
 import { spawnManaged } from '../process.ts';
-import { deriveTestCliCwd, testTempRoot } from '../testSupport.ts';
+import { deriveTestCliCwd, testTempRoot, pinnedFakeEnv } from '../testSupport.ts';
 
 // Every test here drives the real `magarine` CLI entry point against a
 // temporary sqlite file, per this role's working method: a command that
@@ -24,7 +24,7 @@ const testRoot = testTempRoot('commands');
 after(testRoot.cleanup);
 
 async function run(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
+  const proc = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args) });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));
@@ -43,7 +43,7 @@ async function runWithEnv(
   args: string[],
   env: NodeJS.ProcessEnv
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args), env });
+  const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args], cwd: deriveTestCliCwd(args), env: pinnedFakeEnv(env) });
   let stdout = '';
   let stderr = '';
   proc.onStdout((c) => (stdout += c));

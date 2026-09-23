@@ -33,7 +33,7 @@ import { cancelRun, tick, runUntilIdle, type LiveRunInfo } from './scheduler.ts'
 import { recordTicketTransition } from './stateMachine.ts';
 import { buildInbox } from './commands/inbox.ts';
 import { spawnManaged } from './process.ts';
-import { testTempRoot } from './testSupport.ts';
+import { testTempRoot, pinnedFakeEnv } from './testSupport.ts';
 import type { AgentAdapter, AgentAdapterCapabilities, LiveToolUse, TicketEnvelope, WorkerEvent, WorkerHandle, Workspace } from './types.ts';
 
 // Batch 5 item 3: this file's own private root for every NONE-mode
@@ -1162,7 +1162,7 @@ test('a ticket created through the CLI with --expected-artifact reaches the same
     const cliPath = fileURLToPath(new URL('./cli.ts', import.meta.url));
     const runCli = (args: string[]) =>
       new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveRun) => {
-        const proc = spawnManaged({ executable: process.execPath, args: [cliPath, ...args] });
+        const proc = spawnManaged({ env: pinnedFakeEnv(), executable: process.execPath, args: [cliPath, ...args] });
         let stdout = '';
         let stderr = '';
         proc.onStdout((c) => (stdout += c));

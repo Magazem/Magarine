@@ -4,6 +4,7 @@ import { extname, join } from 'node:path';
 import { checkDaemonFile, type DaemonFileCheck } from '../daemon.ts';
 import { probeDaemonHealth } from '../daemonClient.ts';
 import { STATIC_CONTENT_TYPES, UI_DIR } from '../daemonApi.ts';
+import { ADAPTER_ENV_VAR, resolveAdapterChoice, type AdapterChoice } from '../adapterChoice.ts';
 import { resolveCommand, type ResolvedCommand } from '../process.ts';
 import { resolveWindowBrowser, type BrowserResolution } from './app.ts';
 
@@ -40,6 +41,8 @@ export interface DoctorOptions {
   stateDir: string;
   /** Batch 10 (Role Q): an explicit opt-in to also make one real, billed `claude -p` call, proving the tool actually answers end to end. Off by default -- doctor must cost nothing unless asked. */
   paid?: boolean;
+  /** Ruling 41: which adapter a daemon started now would use, and where that came from. Defaults to the real `--adapter`-less resolution from the environment. */
+  adapterChoice?: AdapterChoice;
   /** Test-only seam: overrides Node's own reported version. Defaults to `process.versions.node`. */
   nodeVersion?: string;
   /** Test-only seam: overrides `resolveCommand` (process.ts) so a test can simulate "found"/"not found"/"needs prefix args" without touching the real PATH. Defaults to the real one. */
@@ -304,6 +307,19 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorLine[]> {
       detail: 'no daemon running to fetch asset routes from -- start one with `magarine serve` and run doctor again to check them.',
     });
   }
+
+  const choice = options.adapterChoice ?? resolveAdapterChoice(undefined, process.env);
+  const from = { flag: '--adapter', env: `the ${ADAPTER_ENV_VAR} environment variable`, default: 'the default' }[choice.source];
+  const known = choice.kind === 'claude' || choice.kind === 'fake';
+  lines.push({
+    name: 'adapter',
+    status: known ? 'pass' : 'fail',
+    detail: !known
+      ? `unknown adapter "${choice.kind}" (from ${from}); use claude or fake.`
+      : choice.kind === 'claude'
+        ? `a daemon started now would run work with the real claude adapter (from ${from}).`
+        : `a daemon started now would run the FAKE adapter (from ${from}) -- a test double that does no real work and never answers the Manager.`,
+  });
 
   return lines;
 }

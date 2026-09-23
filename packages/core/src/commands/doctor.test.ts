@@ -515,3 +515,29 @@ test('no window host is a SKIP with the page-still-opens sentence -- never a FAI
   assert.match(line.detail, /looked for: .*chrome\.exe.*msedge\.exe/);
   assert.equal(doctorExitCode(lines), 0, 'a missing nicety must not fail doctor');
 });
+
+// Ruling 41: doctor says which adapter a daemon started now would use, and
+// where that came from -- flag, environment or default.
+test('doctor prints the adapter a daemon started now would use and where that came from', async () => {
+  const run = async (adapterChoice: { kind: string; source: 'flag' | 'env' | 'default' }) => {
+    const lines = await runDoctor({
+      stateDir: tempStateDir(),
+      nodeVersion: '24.1.0',
+      resolveCommandFn: fakeResolve({ pnpm: { executable: '/usr/bin/fake' }, claude: { executable: '/usr/bin/fake' } }),
+      runProbeFn: () => ({ ok: true, output: 'fake 1.0.0' }),
+      checkDaemonFileFn: notLive,
+      adapterChoice,
+    });
+    return lines.find((l) => l.name === 'adapter')!;
+  };
+  const byDefault = await run({ kind: 'claude', source: 'default' });
+  assert.equal(byDefault.status, 'pass');
+  assert.match(byDefault.detail, /real claude adapter \(from the default\)/);
+  const byEnv = await run({ kind: 'fake', source: 'env' });
+  assert.match(byEnv.detail, /FAKE adapter \(from the MAGARINE_ADAPTER environment variable\)/);
+  const byFlag = await run({ kind: 'fake', source: 'flag' });
+  assert.match(byFlag.detail, /FAKE adapter \(from --adapter\)/);
+  const bogus = await run({ kind: 'bogus', source: 'env' });
+  assert.equal(bogus.status, 'fail');
+  assert.match(bogus.detail, /unknown adapter "bogus"/);
+});
