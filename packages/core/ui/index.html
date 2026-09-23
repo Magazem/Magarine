@@ -247,10 +247,61 @@
     <span class="count scope-preview" id="scopePreview"></span>
     <span class="spacer"></span>
     <button class="btn" type="button" id="scopeToggle" aria-expanded="false" aria-controls="scopeBody">Show scope</button>
+    <button class="btn" type="button" id="settingsToggle" aria-expanded="false" aria-controls="settingsBody">Settings</button>
   </div>
+
+  <!-- RULING 39 (batch 19): settings, as a disclosure the owner opens. The
+       fields are filled from the daemon on open, on a project change and after
+       a save -- never by the poll -- and nothing is saved on a keystroke. -->
+  <div class="settings" id="settingsBody" hidden>
+    <div class="settings-group">
+      <h3 class="settings-head">This machine</h3>
+      <label class="setting"><span class="k">Manager model</span>
+        <select class="field" id="machineManagerModel"></select></label>
+      <label class="setting"><span class="k">Verifier model</span>
+        <select class="field" id="machineVerifierModel"></select></label>
+      <label class="setting"><span class="k">Worker cap</span>
+        <input class="field" id="machineCap" type="number" min="1" step="1" placeholder="not set"></label>
+      <p class="settings-note" id="capNote"></p>
+      <button class="btn btn-go" type="button" id="saveMachine">Save machine settings</button>
+      <div class="note" id="machineSaved" hidden></div>
+      <div class="roster-error" id="machineError" role="alert" hidden></div>
+    </div>
+    <div class="settings-group" id="projectSettings">
+      <h3 class="settings-head">This project</h3>
+      <label class="setting"><span class="k">Default model</span>
+        <select class="field" id="projectDefaultModel"></select></label>
+      <label class="setting"><span class="k">Manager model</span>
+        <select class="field" id="projectManagerModel"></select></label>
+      <label class="setting"><span class="k">Verifier model</span>
+        <select class="field" id="projectVerifierModel"></select></label>
+      <label class="setting"><span class="k">Worker cap</span>
+        <input class="field" id="projectCap" type="number" min="1" step="1"></label>
+      <label class="setting setting-check"><input id="projectCapDefault" type="checkbox"><span class="k">use the machine default</span></label>
+      <button class="btn btn-go" type="button" id="saveProject">Save project settings</button>
+      <div class="note" id="projectSaved" hidden></div>
+      <div class="roster-error" id="projectError" role="alert" hidden></div>
+    </div>
+  </div>
+
   <div class="scope-wrap" id="scopeBody" hidden>
-    <p class="scope-note">read-only here · edited on disk or by asking the Manager</p>
+    <p class="scope-note">read-only here · edited on disk, by asking the Manager, or with Edit</p>
+    <div class="acts">
+      <button class="btn" type="button" id="scopeEdit">Edit</button>
+    </div>
     <pre class="scope" id="scopeText" tabindex="0"></pre>
+    <!-- The editor holds its own draft. A re-read updates the view above it,
+         never this. Save re-reads first and warns if the file moved. -->
+    <div class="scope-editor" id="scopeEditor" hidden>
+      <label class="sr-only" for="scopeDraft">Scope document</label>
+      <textarea class="field" id="scopeDraft" rows="16"></textarea>
+      <div class="note" id="scopeWarn" hidden></div>
+      <div class="roster-error" id="scopeSaveError" role="alert" hidden></div>
+      <div class="acts">
+        <button class="btn btn-go" type="button" id="scopeSave">Save</button>
+        <button class="btn" type="button" id="scopeCancel">Cancel</button>
+      </div>
+    </div>
   </div>
 </section>
 

@@ -429,6 +429,52 @@ test('batch 18 item 4: on the Manager tab the conversation takes the height and 
   });
 });
 
+// Batch 19, ruling 39, review finding (Medium): a number input holding text
+// the browser cannot parse reports an empty value -- the same as a cleared
+// field -- and an empty cap is sent as null, which unsets the saved cap. Only
+// a real browser parses, so this types "3-" into real Chrome and saves.
+test('an unreadable machine cap typed into Chrome is refused and leaves the saved cap alone', async () => {
+  await withDaemon(root, async (d) => {
+    await d.createProject('Capped');
+    const put = await fetch(`${d.baseUrl}/settings`, {
+      method: 'PATCH', headers: { Authorization: `Bearer ${d.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_parallel_workers: '3' }),
+    });
+    assert.equal(put.status, 200);
+    const saved = async () => ((await (await fetch(`${d.baseUrl}/settings`, { headers: { Authorization: `Bearer ${d.token}` } })).json()) as { max_parallel_workers?: string }).max_parallel_workers;
+    const browser = await launchBrowser(chrome.executable, mkdtempSync(join(root.root, 'chrome-')));
+    const until = async (expr: string, what: string) => {
+      for (let i = 0; i < 100; i++) {
+        if (await browser.cdp.eval<boolean>(expr)) return;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      throw new Error(`the browser never reached: ${what}`);
+    };
+    try {
+      await browser.openPage(d.baseUrl, d.token);
+      await browser.cdp.eval(`location.hash = '#scope'`);
+      await browser.cdp.eval(`(document.getElementById('settingsToggle').click(), true)`);
+      await until(`document.getElementById('machineCap').value === '3'`, 'the saved cap in the panel');
+
+      await browser.cdp.eval(`(() => { const c = document.getElementById('machineCap'); c.focus(); c.select(); return true; })()`);
+      await browser.cdp.send('Input.insertText', { text: '3-' });
+      const typed = await browser.cdp.eval<{ value: string; bad: boolean }>(
+        `(() => { const c = document.getElementById('machineCap'); return { value: c.value, bad: c.validity.badInput }; })()`);
+      assert.deepEqual(typed, { value: '', bad: true }, 'Chrome did not report "3-" as unreadable, so this test proves nothing');
+
+      await browser.cdp.eval(`(document.getElementById('saveMachine').click(), true)`);
+      await until(`!document.getElementById('machineError').hidden`, 'the refusal');
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(await saved(), '3', 'an unreadable cap unset the saved one');
+      assert.match(await browser.cdp.eval<string>(`document.getElementById('machineError').textContent`),
+        /^The worker cap is not a number this page can read, so nothing was saved\./);
+      assert.equal(await browser.cdp.eval<boolean>(`document.getElementById('machineSaved').hidden`), true);
+    } finally {
+      await browser.close();
+    }
+  });
+});
+
 // Batch 19, ruling 38, review finding (Medium): retiring a profile takes two
 // deliberate presses. The row is rebuilt by the first press and the page
 // carries focus across -- which control it lands on is a keyboard fact the DOM

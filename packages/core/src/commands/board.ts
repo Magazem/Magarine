@@ -121,7 +121,7 @@ export interface BoardResult {
   /** Batch 11 item 3 (the page): the same cause as `pauseMessage`, but structured, so a caller (the page) can decide WHICH fix to offer (a max-spend form vs a plain resume button) without parsing the message text. Null whenever pauseMessage is null. */
   pauseReason: PauseReason | null;
   /** Batch 16 item 4 (ruling 23): the machine-wide picture of parallelism. `used` is every IN_PROGRESS ticket across ALL projects (the ceiling is machine-wide, so only a machine-wide count is comparable with it); `cap` is the daemon's `--max-parallel`, or null when the caller has no daemon to ask (the offline `board` command reads the database alone and cannot know it). */
-  slots: { used: number; cap: number | null };
+  slots: Slots;
   tickets: BoardTicket[];
 }
 
@@ -212,13 +212,16 @@ export function projectSpendUsd(db: Db, tickets: Ticket[]): { costUsd: number; i
   return { costUsd: total, isEstimate, usedFallbackRate };
 }
 
+/** `BoardResult.slots`. Batch 19 ruling 39, amended: `capFlag` is the daemon's own `serve --max-parallel` value, or null when it was started without one -- the one thing that decides whether a saved `max_parallel_workers` setting is in force (store.ts's resolveMachineCap returns the flag before it reads the setting). Given as a field because the page cannot infer it: with no setting saved, a cap of 1 is either `--max-parallel 1` or the fallback. Null too for the offline `board` command, which has no daemon. */
+export interface Slots { used: number; cap: number | null; capFlag: number | null }
+
 // One place for the machine-wide slots picture, shared by `GET /board` and
 // `GET /health` (which `status` reads) so the two can never disagree.
-export function buildSlots(db: Db, machineCap: number | null): { used: number; cap: number | null } {
-  return { used: countWorkTicketsInProgress(db), cap: machineCap };
+export function buildSlots(db: Db, machineCap: number | null, capFlag: number | null = null): Slots {
+  return { used: countWorkTicketsInProgress(db), cap: machineCap, capFlag };
 }
 
-export function buildBoard(db: Db, projectId: string, machineCap: number | null = null): BoardResult {
+export function buildBoard(db: Db, projectId: string, machineCap: number | null = null, capFlag: number | null = null): BoardResult {
   const tickets = listTickets(db, projectId)
     .slice()
     .sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status));
@@ -235,7 +238,7 @@ export function buildBoard(db: Db, projectId: string, machineCap: number | null 
     projectMaxSpendUsd: project?.maxSpendUsd ?? null,
     pauseMessage,
     pauseReason: isPaused ? project.pauseReason : null,
-    slots: buildSlots(db, machineCap),
+    slots: buildSlots(db, machineCap, capFlag),
     tickets: tickets.map((t) => {
       const c = ticketCostUsd(db, t.id);
       return {

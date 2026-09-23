@@ -1,0 +1,17 @@
+# 3B review (ruling 39 + amendments 4 and 5). Reviewer 3B, 2026-09-23. Read-only; steering/page/board/copy suites run green; mutation probe run in a temp copy.
+
+Critical: none
+
+High: none
+
+[Medium] packages/core/ui/app.js:1397 - an ill-formed machine cap is sent as null and UNSETS the saved cap with "Saved." instead of a refusal - `#machineCap` is `type=number`; a browser reports `value === ''` for badly formed text (type `3-` or `1e` in Chrome), so Save sends `max_parallel_workers: null`, the daemon accepts, the setting is cleared and the field refills as "not set". Acceptance line 7 says an invalid value changes nothing. The steering test types ` 3 ` into the harness input, which does not sanitize, so it cannot see this. (Project cap is safe: `''` is sent as a string and refused.)
+
+[Medium] packages/core/ui/app.js:1782 - a failed `GET /settings` on a poll while the panel is open is an unhandled rejection: no "the daemon did not answer" notice, cap line silently stale - `refresh()` catches only the `/projects` read with `fail`; `refreshProject`/`refreshProfiles` each catch their own, this new read does not. Input: panel open, daemon answers 500 on `/settings` (or dies mid-poll).
+
+[Low] packages/core/ui/app.js:1360, packages/core/ui/ELEMENT-FIELD-TABLE.md:232, packages/core/src/ui/steering.test.ts:271 - the after-save board re-read is dead code and the table/test describe it as load-bearing - builder's claim verified: with `refreshBoardOnly()` removed from `takeMachineSettings`, all 14 steering tests still pass (temp copy). It is genuinely unobservable: with a flag, `resolveMachineCap` returns the flag so `slots.cap === capFlag` always; without one, the plain sentence ignores the board. The table sentence "The board is re-read after a save before this is drawn" and the assertion message at test line 271 name a mechanism with no effect; either remove the re-read and the sentence, or keep it and say why (nothing).
+
+[Low] packages/core/ui/app.js:1298 - a scope save in flight when the project selector changes writes the OLD project's `scopeText` into the NEW project's view until the next poll - Save (PUT pending) then switch project: `closeScopeEditor()` runs, then the PUT resolves and sets `state.scopeText`/`scopeStatus` from the old project's response and calls `renderScope()`. The PUT itself goes to the right project (id captured). Guard: ignore the response when `state.projectId !== scopeProject captured at send`.
+
+[Low] packages/core/ui/app.js:1116 - the answer refusal has no `role="alert"` while every other new refusal line does (`#machineError`, `#projectError`, `#scopeSaveError`) - a screen-reader user who presses Answer hears nothing when the daemon refuses.
+
+Verified, no finding: typing survives polls and rebuilds (carryState copies values positionally, focus and caret restored); scope draft untouched by re-reads (only `openScopeEditor` writes it); no-clobber compares the fresh read against the text captured at editor open, warns once per distinct disk text with both lengths; refusals verbatim via `daemonSentence`; saves on button only; panel refilled from the PATCH body; capFlag correct for `--max-parallel 1`/nothing saved and for no flag (live daemon both ways); section 4 derived rule absent from the table, capFlag row is `field`; PATCH bodies and response shapes match `daemonApi.ts`/`Project`; no `new Notification`/`beforeunload`, page.test.ts scans all assets.

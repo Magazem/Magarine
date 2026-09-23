@@ -294,6 +294,18 @@
     models: [],
     retiring: null,
     retireError: null,
+    // GET /settings as last read, for the cap line only (ruling 39, amended).
+    machineSettings: null,
+    // Ruling 39. The daemon's refusal of an answer, per ticket, drawn under
+    // that ticket's fields until the next answer is sent.
+    answerErrors: {},
+    // The scope editor: open or not, which project it is editing, the text it
+    // started from (Save compares the file against it), and the changed text
+    // it has already warned about once.
+    scopeEditing: false,
+    scopeProject: null,
+    scopeBase: '',
+    scopeWarned: null,
     live: false,            // true only while a stream is genuinely open
     lastSequence: 0,
     // The project list as a key, so the selector is rebuilt only when it changed.
@@ -788,17 +800,16 @@
     sel.value = (state.models || []).indexOf(chosen) >= 0 ? chosen : ((state.models || [])[0] || '');
   }
 
-  function setModelsError(text) {
-    var n = $('modelsError');
+  // One line of text that is there or is not: a refusal, a warning, "Saved".
+  function setLine(id, text) {
+    var n = $(id);
     n.textContent = text || '';
     n.hidden = !text;
   }
 
-  function setProfileError(text) {
-    var n = $('profileError');
-    n.textContent = text || '';
-    n.hidden = !text;
-  }
+  function setModelsError(text) { setLine('modelsError', text); }
+
+  function setProfileError(text) { setLine('profileError', text); }
 
   // POST /profiles with what the owner typed. Nothing is checked here first:
   // the daemon decides what a valid profile is, and says why when it is not.
@@ -1043,6 +1054,12 @@
   function actionRow(item) {
     var specs = ACTIONS[item.eventType];
     if (!specs || !item.ticketId) return null;
+    // RULING 39: two or more pending questions get a field each. One question,
+    // or none listed, is the single field below, unchanged.
+    if (item.eventType === 'worker_needs_user_decision' && Array.isArray(item.questions) &&
+        item.questions.length > 1) {
+      return answersRow(item.ticketId, item.questions);
+    }
     var acts = el('div', 'acts');
     specs.forEach(function (spec) {
       if (spec.kind === 'button') {
@@ -1069,6 +1086,51 @@
       acts.appendChild(go);
     });
     return acts;
+  }
+
+  // One labelled field per pending question, in the daemon's order, and one
+  // Answer that sends them together as `answers`. Nothing is checked here: the
+  // daemon decides whether every question has an answer, and when one does
+  // not its sentence is drawn under the fields, with every field left exactly
+  // as the owner typed it.
+  function answersRow(ticketId, questions) {
+    var box = el('div', 'answers');
+    var inputs = questions.map(function (q) {
+      var label = el('label', 'answer');
+      label.appendChild(el('span', 'q', q));
+      var input = el('input', 'field');
+      input.type = 'text';
+      input.setAttribute('aria-label', q);
+      label.appendChild(input);
+      box.appendChild(label);
+      return input;
+    });
+    var acts = el('div', 'acts');
+    var go = el('button', 'btn btn-go', 'Answer');
+    go.type = 'button';
+    go.addEventListener('click', function () {
+      decideWith(ticketId, { answers: inputs.map(function (n) { return n.value; }) });
+    });
+    acts.appendChild(go);
+    box.appendChild(acts);
+    if (state.answerErrors[ticketId]) {
+      var said = el('div', 'roster-error', state.answerErrors[ticketId]);
+      said.setAttribute('role', 'alert');
+      box.appendChild(said);
+    }
+    return box;
+  }
+
+  function decideWith(ticketId, body) {
+    api('/tickets/' + encodeURIComponent(ticketId) + '/decide', { method: 'POST', body: body }).then(function () {
+      delete state.answerErrors[ticketId];
+      return refresh();
+    }, function (err) {
+      if (err && err.message === 'unauthorized') return;
+      state.answerErrors[ticketId] = daemonSentence(err);
+      renderNeeds();
+      renderConversation();
+    });
   }
 
   function step(k, v, mono) {
@@ -1145,7 +1207,8 @@
       var act = t ? activityOf(t) : null;
       return {
         key: ['row', item.eventType, item.ticketId || '', item.projectId || '', item.createdAt].join(''),
-        sig: JSON.stringify([item.message, t ? [t.status, t.model, t.profile, profileModel(t), t.artifacts, doingText(t), act && act.at] : null]),
+        sig: JSON.stringify([item.message, item.questions || null, state.answerErrors[item.ticketId] || null,
+          t ? [t.status, t.model, t.profile, profileModel(t), t.artifacts, doingText(t), act && act.at] : null]),
         build: function () { return askNode(item); }
       };
     }));
@@ -1188,6 +1251,210 @@
       .filter(function (l) { return l.length > 0; });
     var preview = lines.length ? lines[0] : '';
     if ($('scopePreview').textContent !== preview) $('scopePreview').textContent = preview;
+    // An unreadable file has nothing to edit. The draft is never touched here.
+    $('scopeEdit').hidden = state.scopeEditing || !!state.scopeError;
+  }
+
+  // ------------------------------------------------------ scope editor ----
+  // RULING 39. Edit turns the view into a textarea holding the current text.
+  // The draft is the editor's own: renderScope keeps updating the view behind
+  // it and never writes here, so a poll cannot overwrite what is being typed.
+  function openScopeEditor() {
+    if (state.scopeError || !state.projectId) return;
+    state.scopeEditing = true;
+    state.scopeProject = state.projectId;
+    state.scopeBase = state.scopeText;
+    state.scopeWarned = null;
+    $('scopeDraft').value = state.scopeText;
+    setLine('scopeWarn', null);
+    setLine('scopeSaveError', null);
+    $('scopeEditor').hidden = false;
+    $('scopeText').hidden = true;
+    renderScope();
+    $('scopeDraft').focus();
+  }
+
+  function closeScopeEditor() {
+    state.scopeEditing = false;
+    state.scopeProject = null;
+    $('scopeEditor').hidden = true;
+    $('scopeText').hidden = false;
+    renderScope();
+  }
+
+  // Save re-reads the file first. If it moved since the editor opened, the
+  // owner is told once, with both lengths, and the next Save overwrites --
+  // there is no silent clobber. After a write the view shows what the daemon
+  // answered, not the draft.
+  function saveScope() {
+    var sentFor = state.scopeProject;
+    var p = encodeURIComponent(sentFor);
+    var draft = $('scopeDraft').value;
+    setLine('scopeSaveError', null);
+    api('/projects/' + p + '/scope').then(function (now) {
+      var disk = (now && now.scopeText) || '';
+      if (disk !== state.scopeBase && disk !== state.scopeWarned) {
+        state.scopeWarned = disk;
+        setLine('scopeWarn', 'The scope file changed since you began editing: it is now ' + disk.length +
+          ' characters, your draft is ' + draft.length + '. Save again to overwrite it.');
+        return;
+      }
+      return api('/projects/' + p + '/scope', { method: 'PUT', body: { scopeText: draft } }).then(function (res) {
+        // The write went to the project it was made for. If the owner has
+        // switched project since, this answer is about a file the view is no
+        // longer showing, and it must not be drawn there.
+        if (state.projectId !== sentFor) return;
+        state.scopeText = (res && res.scopeText) || '';
+        state.scopeStatus = (res && res.status) || null;
+        state.scopeError = null;
+        closeScopeEditor();
+      });
+    }).catch(function (err) {
+      if (err && err.message === 'unauthorized') return;
+      setLine('scopeSaveError', daemonSentence(err));
+    });
+  }
+
+  // ---------------------------------------------------------- settings ----
+  // RULING 39. Filled from the daemon when the panel opens, when the project
+  // changes and after a save -- never by the poll, which would overwrite a
+  // choice the owner is in the middle of making. Saved on the button only.
+  var SAVED = 'Saved. Showing what the daemon now reports.';
+  var CAP_PLAIN = 'Applies on the next tick, with no restart.';
+  var CAP_UNREADABLE = 'The worker cap is not a number this page can read, so nothing was saved. ' +
+    'Clear the field to unset it, or type a whole number.';
+  var MACHINE_UNSET = 'not set \u2014 each project\u2019s own default model';
+  var USE_MACHINE = 'use the machine default';
+
+  // A stored model the daemon's list no longer carries is still shown as the
+  // value it is, never silently replaced by the first option.
+  function fillModelSelect(sel, value, nullLabel) {
+    clear(sel);
+    if (nullLabel) {
+      var none = el('option', null, nullLabel);
+      none.value = '';
+      sel.appendChild(none);
+    }
+    var models = state.models.slice();
+    if (value && models.indexOf(value) < 0) models.push(value);
+    models.forEach(function (m) {
+      var o = el('option', null, m);
+      o.value = m;
+      sel.appendChild(o);
+    });
+    sel.value = value || '';
+  }
+
+  // RULING 39, AMENDED TWICE. The cap line says which case the daemon is
+  // actually in, and the daemon says which: BoardResult.slots.capFlag is its
+  // own --max-parallel, or null. With a flag, store.ts's resolveMachineCap
+  // never reads the setting, so a saved cap is not in force until a restart,
+  // and the line shows both numbers. It is not inferred from the cap: with
+  // nothing saved, a cap of 1 is a flag of 1 or the fallback, and only the
+  // daemon knows which.
+  function renderCapNote() {
+    var slots = state.board && state.board.slots;
+    var flag = slots && typeof slots.capFlag === 'number' ? slots.capFlag : null;
+    var text = CAP_PLAIN;
+    if (flag !== null) {
+      var saved = state.machineSettings && state.machineSettings.max_parallel_workers;
+      text = 'This daemon was started with --max-parallel ' + flag + ', which wins until it is restarted. ' +
+        'In force: ' + slots.cap + '. Saved: ' + (saved || 'nothing') + '.';
+    }
+    if ($('capNote').textContent !== text) $('capNote').textContent = text;
+  }
+
+  // The settings as stored, for the "Saved:" half of the cap line. Nothing
+  // here is compared with the board: whether a flag is in force is the
+  // daemon's own slots.capFlag, and a flag's cap does not move while it runs.
+  function takeMachineSettings(s) {
+    state.machineSettings = s || {};
+    renderCapNote();
+  }
+
+  function fillMachine(s) {
+    fillModelSelect($('machineManagerModel'), s.default_manager_model || null, MACHINE_UNSET);
+    fillModelSelect($('machineVerifierModel'), s.default_verifier_model || null, MACHINE_UNSET);
+    $('machineCap').value = s.max_parallel_workers || '';
+  }
+
+  function fillProject(p) {
+    $('projectSettings').hidden = !p;
+    if (!p) return;
+    fillModelSelect($('projectDefaultModel'), p.defaultModel, null);
+    fillModelSelect($('projectManagerModel'), p.managerModel, USE_MACHINE);
+    fillModelSelect($('projectVerifierModel'), p.verifierModel, USE_MACHINE);
+    var cap = p.maxParallelWorkers;
+    $('projectCap').value = cap === null || cap === undefined ? '' : String(cap);
+    $('projectCapDefault').checked = cap === null || cap === undefined;
+  }
+
+  function openSettings() {
+    ['machineSaved', 'machineError', 'projectSaved', 'projectError'].forEach(function (id) { setLine(id, null); });
+    loadModels().then(function () {
+      fillProject(currentProject());
+      return api('/settings').then(function (s) { fillMachine(s || {}); return takeMachineSettings(s); });
+    }).catch(function (err) {
+      if (err && err.message === 'unauthorized') return;
+      setLine('machineError', daemonSentence(err));
+    });
+  }
+
+  function saveMachine() {
+    // A number input the browser cannot parse ("3-", "1e") reports an empty
+    // value, which is exactly what a deliberately cleared field reports -- and
+    // an empty cap is sent as null, which unsets the saved one. The input's own
+    // validity tells the two apart, so an unreadable cap sends nothing at all.
+    var capInput = $('machineCap');
+    if (capInput.validity && capInput.validity.badInput) {
+      setLine('machineSaved', null);
+      setLine('machineError', CAP_UNREADABLE);
+      return;
+    }
+    var cap = capInput.value.trim();
+    var body = {
+      default_manager_model: $('machineManagerModel').value || null,
+      default_verifier_model: $('machineVerifierModel').value || null,
+      // Sent as typed: the daemon decides what a cap is, and says so.
+      max_parallel_workers: cap === '' ? null : cap
+    };
+    setLine('machineSaved', null);
+    api('/settings', { method: 'PATCH', body: body }).then(function (s) {
+      setLine('machineError', null);
+      fillMachine(s || {});
+      setLine('machineSaved', SAVED);
+      return takeMachineSettings(s);
+    }, function (err) {
+      if (err && err.message === 'unauthorized') return;
+      setLine('machineError', daemonSentence(err));
+    });
+  }
+
+  function saveProject() {
+    var id = state.projectId;
+    if (!id) return;
+    var cap = $('projectCap').value.trim();
+    // A number when it reads as one; otherwise the text as typed, so the
+    // daemon refuses it in its own words. Never NaN, which JSON would quietly
+    // turn into null -- "use the machine default" -- and clear the override.
+    var capValue = $('projectCapDefault').checked ? null
+      : (cap !== '' && isFinite(Number(cap)) ? Number(cap) : cap);
+    var body = {
+      defaultModel: $('projectDefaultModel').value,
+      managerModel: $('projectManagerModel').value || null,
+      verifierModel: $('projectVerifierModel').value || null,
+      maxParallel: capValue
+    };
+    setLine('projectSaved', null);
+    api('/projects/' + encodeURIComponent(id), { method: 'PATCH', body: body }).then(function (p) {
+      setLine('projectError', null);
+      fillProject(p);
+      setLine('projectSaved', SAVED);
+      return refresh();
+    }, function (err) {
+      if (err && err.message === 'unauthorized') return;
+      setLine('projectError', daemonSentence(err));
+    });
   }
 
   function renderConversation() {
@@ -1231,7 +1498,8 @@
       var t = e.ticketId ? ticketById(e.ticketId) : null;
       return {
         key: base + '' + seen[base],
-        sig: JSON.stringify([e, t ? [t.status, t.model, t.profile, profileModel(t)] : null]),
+        sig: JSON.stringify([e, e.ticketId ? state.answerErrors[e.ticketId] || null : null,
+          t ? [t.status, t.model, t.profile, profileModel(t)] : null]),
         build: function () { return conversationEntry(e); }
       };
     }));
@@ -1256,7 +1524,7 @@
     // the daemon's own rule that only a BLOCKED ticket has anything to
     // answer. `answered` is the entry's own field; absence is not "false".
     if (e.kind === 'question' && e.ticketId && e.answered !== true) {
-      var acts = actionRow({ eventType: 'worker_needs_user_decision', ticketId: e.ticketId });
+      var acts = actionRow({ eventType: 'worker_needs_user_decision', ticketId: e.ticketId, questions: e.questions });
       if (acts) art.appendChild(acts);
     }
     return art;
@@ -1531,7 +1799,10 @@
       // a project: a daemon with profiles and no project yet still shows them,
       // and still lets the owner add one.
       loadModels();
-      return Promise.all([refreshProfiles(), state.projectId ? refreshProject() : undefined]);
+      return Promise.all([refreshProfiles(), state.projectId ? refreshProject() : undefined]).then(function () {
+        // The cap line only, while the panel is open: the fields are never refilled by a pass.
+        if (!$('settingsBody').hidden) return api('/settings').then(takeMachineSettings, fail);
+      });
     }, fail);
   }
 
@@ -1581,8 +1852,8 @@
   // once; the list is pricing.ts's and does not change while it runs. A failed
   // read says why, in the daemon's words, under the select it left empty.
   function loadModels() {
-    if (state.models.length) return;
-    api('/models').then(function (list) {
+    if (state.models.length) return Promise.resolve();
+    return api('/models').then(function (list) {
       state.models = list || [];
       setModelsError(null);
       renderModels();
@@ -1820,7 +2091,10 @@
     $('projectSelect').addEventListener('change', function (e) {
       state.projectId = e.target.value;
       $('projectId').textContent = state.projectId;
-      refresh();
+      // A draft belongs to the project it was opened on; it is not carried
+      // into another one's scope file.
+      if (state.scopeEditing) closeScopeEditor();
+      refresh().then(function () { if (!$('settingsBody').hidden) fillProject(currentProject()); });
     });
 
     $('themeToggle').addEventListener('click', function (e) {
@@ -1847,6 +2121,20 @@
     });
 
     $('addProfile').addEventListener('click', addProfile);
+
+    $('scopeEdit').addEventListener('click', openScopeEditor);
+    $('scopeSave').addEventListener('click', saveScope);
+    $('scopeCancel').addEventListener('click', closeScopeEditor);
+
+    $('settingsToggle').addEventListener('click', function () {
+      var open = $('settingsBody').hidden;
+      $('settingsBody').hidden = !open;
+      $('settingsToggle').setAttribute('aria-expanded', String(open));
+      $('settingsToggle').textContent = open ? 'Hide settings' : 'Settings';
+      if (open) openSettings();
+    });
+    $('saveMachine').addEventListener('click', saveMachine);
+    $('saveProject').addEventListener('click', saveProject);
 
     $('send').addEventListener('click', function () {
       var text = $('say').value.trim();

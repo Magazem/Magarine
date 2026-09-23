@@ -749,7 +749,9 @@ test('GET /board carries slots { used, cap }: cap is the daemon\'s own --max-par
         if (slots?.used === 1) break;
         await new Promise((resolve) => setTimeout(resolve, 30));
       }
-      assert.deepEqual(slots, { used: 1, cap: 3 });
+      // Batch 19 (ruling 39, amended) widened slots with capFlag: this daemon
+      // was started with --max-parallel 3, so the flag is 3 as well.
+      assert.deepEqual(slots, { used: 1, cap: 3, capFlag: 3 });
     } finally {
       await handle.kill();
     }
@@ -1356,6 +1358,29 @@ test('POST /profiles, PATCH /profiles/{id} and POST /profiles/{id}/retire: 401 w
   } finally {
     await handle.kill();
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// Batch 19 ruling 39, amended: `slots.capFlag` says whether this daemon was
+// started with --max-parallel, because the cap alone cannot: with no setting
+// saved, a cap of 1 is `--max-parallel 1` OR the fallback. Both daemons below
+// answer cap 1; only capFlag tells them apart.
+test('GET /board and GET /health carry slots.capFlag: the serve --max-parallel value, or null without one', async () => {
+  for (const [args, flag] of [[['--max-parallel', '1'], 1], [[], null]] as const) {
+    const stateDir = mkdtempSync(join(testRoot.root, 'capflag-'));
+    const project = JSON.parse((await runCli(['project', 'create', '--name', 'p', '--state-dir', stateDir, '--json'])).stdout) as { id: string };
+    const handle = spawnServe(['--state-dir', stateDir, '--tick-interval', '30', '--json', ...args]);
+    try {
+      const info = await handle.waitForListening();
+      const token = (JSON.parse(readFileSync(daemonFilePath(stateDir), 'utf8')) as DaemonFileInfo).token;
+      const board = (await api(info.port, token, 'GET', `/board?project=${project.id}`)).json as { slots: { cap: number; capFlag: number | null } };
+      assert.deepEqual([board.slots.cap, board.slots.capFlag], [1, flag], `serve ${args.join(' ') || '(no flag)'}`);
+      const health = (await api(info.port, token, 'GET', '/health')).json as { slots: { capFlag: number | null } };
+      assert.equal(health.slots.capFlag, flag);
+    } finally {
+      await handle.kill();
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   }
 });
 

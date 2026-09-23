@@ -46,8 +46,11 @@ test('buildBoard reports slots: used is machine-wide IN_PROGRESS, cap is the cei
   moveToInProgress(db, createTicket(db, { projectId: b.id, title: 'b1' }).id);
   createTicket(db, { projectId: a.id, title: 'still open' });
 
-  assert.deepEqual(buildBoard(db, a.id, 3).slots, { used: 2, cap: 3 });
-  assert.deepEqual(buildBoard(db, a.id).slots, { used: 2, cap: null });
+  // Batch 19 (ruling 39, amended) widened slots with `capFlag`; these two lines
+  // gained that key, null because neither passes a flag, and nothing else.
+  assert.deepEqual(buildBoard(db, a.id, 3).slots, { used: 2, cap: 3, capFlag: null });
+  assert.deepEqual(buildBoard(db, a.id).slots, { used: 2, cap: null, capFlag: null });
+  assert.deepEqual(buildBoard(db, a.id, 3, 3).slots, { used: 2, cap: 3, capFlag: 3 });
 });
 
 test('buildBoard carries kind for both a work ticket and a manager ticket', () => {

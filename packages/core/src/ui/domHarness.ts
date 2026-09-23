@@ -249,6 +249,8 @@ export interface PageOptions {
   rewriteJson?: (path: string, body: any) => unknown;
   /** See pageFetch: a route the real daemon never fails, answered with this status and `{ error }` instead. Off unless a test names it. */
   refuse?: { path: string; status: number; error: string };
+  /** See pageFetch: holds the daemon's real answer to one method on one path for `ms` before the page sees it. Off unless a test names it. */
+  delay?: { path: string; method: string; ms: number };
 }
 
 export interface Page {
@@ -323,6 +325,13 @@ export function openPage(opts: PageOptions): Page {
   const pageFetch = (path: string, init?: RequestInit) => {
     requests.push(path);
     let p: Promise<Response> = fetch(new URL(path, opts.baseUrl), init);
+    // And `opts.delay` (batch 19): the daemon's real answer, held back, so a
+    // test can make one response land after another -- the order a slow disk
+    // or a busy daemon produces, which loopback never does by itself.
+    const delay = opts.delay;
+    if (delay && path.split('?')[0] === delay.path && (init?.method ?? 'GET') === delay.method) {
+      p = p.then((res) => new Promise<Response>((r) => setTimeout(() => r(res), delay.ms)));
+    }
     const refuse = opts.refuse;
     if (refuse && path.split('?')[0] === refuse.path) {
       p = p.then(() => new Response(JSON.stringify({ error: refuse.error }),

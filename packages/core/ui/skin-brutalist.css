@@ -696,6 +696,40 @@
     background: linear-gradient(to bottom, rgba(0,0,0,0), var(--surface)); pointer-events: none;
   }
 
+  /* RULING 39: the scope editor. The fade above is for a clipped read-only
+     view; over an open editor it would sit on the Save button. */
+  .scope-wrap:has(.scope-editor:not([hidden]))::after { display: none; }
+  .scope-editor { display: flex; flex-direction: column; gap: var(--s2); }
+  .scope-editor .field {
+    font-family: var(--font-mono); font-size: var(--t-2xs); line-height: 1.8;
+    min-height: 16rem; resize: vertical;
+  }
+  .scope-editor .acts { margin-top: 0; }
+
+  /* RULING 39: settings, a disclosure under the Scope head. */
+  .settings {
+    display: flex; flex-wrap: wrap; gap: var(--s4);
+    padding: var(--s3); margin-bottom: var(--s3);
+    background: var(--surface); border: var(--rule) solid var(--line);
+  }
+  .settings-group { display: flex; flex-direction: column; gap: var(--s2); flex: 1 1 18rem; min-width: 0; }
+  .settings-head {
+    margin: 0; font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-2);
+  }
+  .setting { display: flex; flex-direction: column; gap: var(--s1); }
+  .setting .k, .setting-check .k { font-family: var(--font-mono); font-size: var(--t-2xs); color: var(--fg-2); }
+  .setting-check { flex-direction: row; align-items: center; gap: var(--s2); }
+  .settings-note { margin: 0; font-size: var(--t-xs); color: var(--fg-2); }
+  .settings .btn { align-self: flex-start; }
+
+  /* RULING 39: one labelled field per Manager question, in Needs you and in the
+     conversation. The question is the daemon's text, whole. */
+  .answers { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s3); }
+  .answer { display: flex; flex-direction: column; gap: var(--s1); }
+  .answer .q { font-size: var(--t-xs); color: var(--fg); overflow-wrap: anywhere; }
+  .answers .acts { margin-top: 0; }
+
   .tabs { display: flex; gap: 1px; background: var(--line); padding: 1px; margin-bottom: var(--s3); flex-wrap: wrap; }
   .tabs button {
     font-family: var(--font-mono); font-size: var(--t-2xs);

@@ -42,12 +42,15 @@ Routes used, and the page requests nothing else:
 | `GET /projects/{id}/scope` | `src/daemonApi.ts` → `{ scopeText, status }`; **400** when the file exists but cannot be read (ruling 29) |
 | `GET /projects/{id}/conversation` | `src/commands/conversation.ts` → `ConversationEntry[]` |
 | `GET /events?since=` | Role A's stream. Events are event rows as JSON. |
-| `POST /tickets/{id}/{decide,approve,reject,retry}` | existing write routes |
+| `POST /tickets/{id}/{decide,approve,reject,retry}` | existing write routes. `decide` takes `{ answer }` or, since batch 19, `{ answers }` — one per pending question, none empty |
 | `POST /projects/{id}/{set,resume,discuss}` | existing write routes |
 | `GET /profiles` | `src/daemonApi.ts` → every non-retired `WorkerProfile` plus `status` (`working`/`idle`) and `ticketId`. Batch 19 |
 | `POST /profiles` | `src/daemonApi.ts` → the created `WorkerProfile`; **400** with `{ error }` when refused. Batch 19 |
 | `POST /profiles/{id}/retire` | `src/daemonApi.ts` → the retired `WorkerProfile`. Batch 19 |
 | `GET /models` | `src/daemonApi.ts` → `pricing.ts`'s `knownModelIds()`, the models a profile may use. Batch 19, ruling 38 amended |
+| `GET /settings`, `PATCH /settings` | `src/daemonApi.ts` → every stored machine-wide setting, key → value; a key never set is absent. PATCH takes `{ key: value \| null }`, validates every key before writing any, and answers with the settings as stored. Batch 19, ruling 39 |
+| `PATCH /projects/{id}` | `src/daemonApi.ts` → the `Project` as stored; `maxParallel`, `managerModel`, `verifierModel` accept null (use the machine default), `defaultModel` does not. Batch 19, ruling 39 |
+| `PUT /projects/{id}/scope` | `src/daemonApi.ts` → `{ scopeText, status }` as written; refused when the project has no scope path. Batch 19, ruling 39 |
 | `GET /ui/<name>` | the static assets: this page and its five files |
 
 ---
@@ -83,7 +86,7 @@ There is **no percentage and no completion bar**: nothing measures completion.
 |---|---|---|
 | heading "Roster" | copy | — |
 | roster count | derived | `GET /profiles` length, "N profiles". Counts profiles, not tickets |
-| slots line | field | `BoardResult.slots.used` / `.cap`, unchanged |
+| slots line | field | `BoardResult.slots.used` / `.cap`, unchanged. `slots.capFlag` (batch 19) is read only by the settings panel's cap note |
 | profile row: organism shape | derived | `organism.js`'s `organism('mg.v1:' + WorkerProfile.id, WorkerProfile.model)`: the cell draw hashes the profile id, family and symmetry come from the model's tier. Renaming does not change it; a model in another tier does |
 | profile row: organism colour | field | the running ticket's `BoardTicket.status` when the profile is `working` on a ticket in this project's board; none otherwise |
 | profile row: name | field | `WorkerProfile.name` |
@@ -187,6 +190,9 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | the command inside the reason | field | part of `InboxItem.message` — `inbox.ts` appends it |
 | **Delivered** | field | the ticket's `artifacts`, same by-kind rule as the board |
 | **Then** | copy | fixed text per `InboxItem.eventType` (`WHAT_NEXT` in `app.js`). It describes what the daemon will do. An event type with no entry gets **no line**. |
+| one answer field per question | field | `InboxItem.questions`, when it has **two or more** entries: one labelled field per entry, in order, the label being the question verbatim, and one "Answer" that posts `{ answers }` in the same order. Batch 19, ruling 39 |
+| one answer field, one question or none listed | copy | `InboxItem.questions` absent or of length 1: the single field and "Answer" exactly as before batch 19, posting `{ answer }` |
+| answer refusal | field | the daemon's own `error` sentence from `POST /tickets/{id}/decide`, verbatim, under the fields. **No field is cleared on a refusal** |
 | action buttons | copy | fixed per `eventType` (`ACTIONS`), each posting an existing route. An event type with no entry gets **no button** — rule 7's converse. |
 | empty | copy | "nothing is waiting on you" |
 
@@ -198,7 +204,44 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | scope collapsed strip: preview | derived | the first non-empty line of `scopeText`, leading `#` marks removed. Shown only while the scope is collapsed. |
 | Show scope / Hide scope | copy | a page-local toggle. Collapsed by default; not remembered between visits (persisted layout is a later batch). |
 | when empty | copy | three sentences, because the page can now tell them apart (ruling 29): `status: 'absent'` → "(this project has no scope file yet)"; present but empty → "(the scope file is empty)"; a **400** from the route → "(this project’s scope file exists but could not be read: <the daemon’s error>)". A 400 is caught on this one read only, so it neither blanks the board nor renders as emptiness; any other failure still fails the refresh. `project list` also carries `scope: { path, status }`, which the page does not need |
-| "read-only here" | copy | true: the page has no scope write route |
+| "read-only here · edited on disk, by asking the Manager, or with Edit" | copy | true since batch 19: `PUT /projects/{id}/scope` |
+| "Edit" | copy | opens the editor. Not offered while the scope read is a **400** (unreadable): there is nothing readable to edit |
+| editor draft | derived | starts as `scopeText` from the last `GET /projects/{id}/scope` (empty when `status: 'absent'`), then is the owner's own typing. **No re-read touches it**: the read-only view behind it keeps updating |
+| "Save" | copy | first re-reads `GET /projects/{id}/scope`; when that text differs from the text the editor started from, it warns instead of writing. Otherwise `PUT /projects/{id}/scope` with the draft |
+| changed-on-disk warning: "The scope file changed since you began editing: it is now N characters, your draft is M. Save again to overwrite it." | derived + copy | N is the fresh `scopeText` length, M the draft's. Shown once per change; the next Save overwrites |
+| "Cancel" | copy | closes the editor and sends nothing |
+| after a save | field | the editor closes and the view shows the `scopeText` the PUT answered with, not the draft |
+| scope save refusal | field | the daemon's own `error` sentence, verbatim (for a project with no scope path, the daemon's refusal); the editor stays open with the draft |
+
+## 5b. Settings (a disclosure in the Scope region's head)
+
+Batch 19, ruling 39. Opened by the owner; nothing in it is saved on a
+keystroke. Its fields are filled from the daemon when it opens, when the
+project changes and after each save — **never by the poll**, so an edit in
+progress is never overwritten.
+
+| element | kind | source |
+|---|---|---|
+| "Settings" / "Hide settings" | copy | the disclosure toggle |
+| "This machine" heading | copy | — |
+| Manager default model select | field | `GET /settings` → `default_manager_model`; options are `GET /models` plus "not set" when the key is absent |
+| verifier default model select | field | `GET /settings` → `default_verifier_model`; same options |
+| "not set — each project's own default model" | copy | the select's empty choice; saving it sends null |
+| worker cap input | field | `GET /settings` → `max_parallel_workers`, sent as typed; empty sends null |
+| unreadable cap: "The worker cap is not a number this page can read, so nothing was saved. Clear the field to unset it, or type a whole number." | derived + copy | rule: the input's own `validity.badInput` — the browser could not parse what was typed (e.g. "3-"), and reports an empty value that would otherwise be sent as null and unset the saved cap. Nothing is sent |
+| cap note: "Applies on the next tick, with no restart." | copy | ruling 35, tested in the daemon. Shown while `BoardResult.slots.capFlag` is null, and when there is no board to read |
+| cap note when a flag wins: "This daemon was started with --max-parallel N, which wins until it is restarted. In force: C. Saved: S." | field | `BoardResult.slots.capFlag` (N) is not null: the daemon was started with that flag, and `store.ts`'s `resolveMachineCap` returns it without reading the setting. C is `BoardResult.slots.cap`; S is `GET /settings`' `max_parallel_workers`, or "nothing" when absent. Never inferred from comparing the two: with nothing saved, a cap of 1 is a flag of 1 or the fallback. Ruling 39, amended |
+| "Save machine settings" | copy | `PATCH /settings` with all three keys |
+| "This project" heading | copy | — |
+| project default model select | field | `ProjectListEntry.defaultModel`; options `GET /models`. It has no "machine default" choice: a project always has one |
+| project Manager model select | field | `ProjectListEntry.managerModel`; null is the "use the machine default" choice |
+| project verifier model select | field | `ProjectListEntry.verifierModel`; null is the "use the machine default" choice |
+| "use the machine default" | copy | the override selects' null choice; saving it sends null |
+| project cap input | field | `ProjectListEntry.maxParallelWorkers` |
+| project cap "use the machine default" checkbox | field | checked when `maxParallelWorkers` is null; saving it checked sends `maxParallel: null` |
+| "Save project settings" | copy | `PATCH /projects/{id}` with all four fields |
+| saved line: "Saved. Showing what the daemon now reports." | copy | shown after a 200; the fields are refilled from the response body, not from what was typed |
+| settings refusal | field | the daemon's own `error` sentence, verbatim; nothing is refilled or cleared |
 
 ## 6. Conversation
 
@@ -211,7 +254,7 @@ Not an inbox: the moment work reaches a boundary and hands control back.
 | timestamp | field | `ConversationEntry.createdAt` |
 | body | field | `ConversationEntry.text` |
 | left rule colour | field | `ConversationEntry.kind` |
-| answer box on a question | field | shown only when `kind === 'question'` and `answered !== true` |
+| answer box on a question | field | shown only when `kind === 'question'` and `answered !== true`. One field per `ConversationEntry.questions` entry when there are two or more, as in Needs you |
 | composer | copy | posts `POST /projects/{id}/discuss` |
 
 ## 7. Activity

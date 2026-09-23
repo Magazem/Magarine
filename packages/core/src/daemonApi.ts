@@ -555,13 +555,13 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
         pid: deps.pid,
         startedAt: deps.startedAt,
         uptimeMs: Date.now() - Date.parse(deps.startedAt),
-        slots: buildSlots(deps.db, resolveMachineCap(deps.db, deps.machineCapFlag)),
+        slots: buildSlots(deps.db, resolveMachineCap(deps.db, deps.machineCapFlag), deps.machineCapFlag ?? null),
       },
     };
   }
 
   if (method === 'GET' && path === '/board') {
-    return { status: 200, body: buildBoard(deps.db, requireQueryParam(url, 'project'), resolveMachineCap(deps.db, deps.machineCapFlag)) };
+    return { status: 200, body: buildBoard(deps.db, requireQueryParam(url, 'project'), resolveMachineCap(deps.db, deps.machineCapFlag), deps.machineCapFlag ?? null) };
   }
 
   if (method === 'GET' && path === '/inbox') {
