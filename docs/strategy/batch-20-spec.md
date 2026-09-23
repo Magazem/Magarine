@@ -88,3 +88,23 @@ The engineer reported two limits plainly rather than hiding them; both are ruled
   normalised absolute paths case-insensitively on Windows. The CLI and the route refuse alike.
   **Existing rows are not touched**: a database that already holds duplicates keeps them, and there
   is no migration.
+
+## 6. Amendment, 2026-09-23, from the 20A review: the safety check compares REAL paths
+
+HARD, the reviewer ran it on a temp copy: `validateWorkspaceRoot` (`paths.ts` 57), the check that
+keeps a project out of the owner's home directory and out of Magarine's own state directory,
+compared strings case-sensitively and never resolved links. A project was CREATED at the home
+directory in another letter case, at the state directory lower-cased, and at a junction pointing at
+either. Workers run inside a project's directory, so this put them in the owner's home folder. The
+hole predates this batch in the CLI; `POST /projects` made it reachable from a web page.
+
+Ruled: both the safety check and the one-directory check compare REAL paths (`realpathSync.native`
+on the candidate and on each protected directory; for a path that does not exist yet, its nearest
+existing ancestor), case-insensitively on Windows, in one shared normaliser. A directory INSIDE the
+state directory is refused too, not only one that is or contains it. A rooted Windows path with no
+drive (`\foo`) is refused as not absolute. The exclusive-create fallback deletes the file it created
+if its write fails, since the exclusive open proves the file was not the owner's.
+
+Accepted residual risk, stated so nobody rediscovers it as news: a hard kill between linking
+`SCOPE.md` and the commit strands the file with no project row, and a kill before cleanup strands a
+`SCOPE.md.tmp-<pid>-<hex>`. Both are visible, named as Magarine's, and destroy nothing of the owner's.
