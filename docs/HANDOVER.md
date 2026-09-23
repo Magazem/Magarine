@@ -1,5 +1,47 @@
 # Handover — read this first
 
+## ⚠ 2026-09-23 — BATCH 19 IS BUILT AND PUSHED; IT CLOSES ON THE OWNER'S RUN
+
+`main` = `origin/main` = `578f97e`. Suite: **1053 tests, 1052 pass, 0 fail, 1 honest skip**, browser
+tests included. Six mini-phases, each built, reviewed by a FRESH reviewer, then re-verified by the
+lead with its own cold suite and its own mutations before merging:
+
+- **1A** worker profiles, the data layer (`ebadb2d`) · **1B** settings, global defaults, a live
+  machine cap, `PATCH /projects/{id}`, `PUT .../scope`, the verdict cap (`843f9c5`) · **2B** one
+  answer field per Manager question (`e6f1667`) · **2A** the Manager assigns from the roster and the
+  worker is told who it is (`33fea07`) · **3A** the fleet column becomes the roster (`5f7e5ba`) ·
+  **3B** steering from the window (`f7ae54d`).
+
+**THE CLOSING CONDITION IS NOT MET YET.** The owner must run it on real work, as they did for
+batch 18. The walk is written for them: `docs/evidence/batch-19/owner-walk.md`. Until they answer,
+batch 19 is BUILT, not CLOSED.
+
+**RULED BUT NOT BUILT: mini-phase 4, the drill-down** — `docs/strategy/batch-19-item-4-drill-down.md`
+(ruling 40). The command a worker is running is shown LIVE, from memory, and never persisted: not in
+the event log, the stream, the database or any file, because a command line is the likeliest place
+for a secret and this daemon's log is permanent and browser-rendered. `GET /runs/{id}/live` while the
+run is alive, 404 after. "Is it stuck" is answered by time since the last progress, never a verdict.
+
+**WHAT THE LEAD LEARNED THE HARD WAY THIS BATCH, all now memory rules:**
+1. **Subagents were tried for the pipeline and REJECTED by the owner**: *"i don't like this way,
+   consuming fast my usage and against the design, bloating this chat too"*. Use `team_spawn_agent`
+   teammates with board tasks; keep reports on the board, give the owner one or two lines per stage.
+2. **A mutation window covers READERS, not just test runs.** The lead mutated a shared file while a
+   reviewer was reading the tree, and its own temporary edit came back as a Critical defect. Mutate
+   on a temp copy. Every teammate was told to do the same after that, and did.
+3. **A green suite still hides real defects** — again. 1A passed 954 tests with three High defects in
+   paths no test exercised. Every mini-phase this batch was green BEFORE its review found real bugs.
+4. **Teammates stall after a usage-limit reset.** `team_interrupt_agent` clears the paused state;
+   queued messages are dropped. One reviewer wedged entirely and was replaced.
+5. **Idle notifications are stale.** Check `team_members` before nudging; the lead nudged twice
+   prematurely.
+6. **Specs are wrong too.** The designer stopped at three spec-versus-code gaps and proved each with
+   the code: the organism could not take a tier from a profile id, nothing told the page which models
+   exist, and the cap's "no restart" copy was false when `--max-parallel` was given. All three became
+   amendments, and the third became a real daemon field (`slots.capFlag`), because a page cannot tell
+   `--max-parallel 1` from the default of 1 by inference.
+
+
 ## ⚠ 2026-09-22 — THE TEAM WAS DISSOLVED AND THE LEAD NOW HOLDS THE STRATEGIST ROLE
 
 **If you are a fresh lead, this section overrides everything below it.**
