@@ -12,6 +12,7 @@ import {
   createProject,
   createRun,
   createTicket,
+  finishRun,
   getProject,
   getRun,
   getTicket,
@@ -20,6 +21,7 @@ import {
   listArtifactsForTicket,
   listEventsForEntity,
   listEventsForProject,
+  listRunsForTicket,
   listTicketsByStatus,
   resolveMachineCap,
   setSetting,
@@ -69,8 +71,19 @@ class TestAdapter implements AgentAdapter {
   readonly startedWith = new Map<string, { ticket: TicketEnvelope; workspace?: Workspace }>();
   private readonly verifierHandles = new Map<string, string[]>();
 
+  /** Ruling 40 section 6: `autoVerify: false` leaves a verifier run RUNNING until the test emits its verdict, so a test can drive the verifier's own progress while it is live. Every other test keeps the auto-pass below. */
+  private readonly autoVerify: boolean;
+  constructor(autoVerify = true) {
+    this.autoVerify = autoVerify;
+  }
+
   async capabilities(): Promise<AgentAdapterCapabilities> {
     return { supportsFiles: true, supportsShell: false, supportsStreaming: true, supportsResume: false };
+  }
+
+  /** The handle ids of every verifier run this adapter has started, in start order. */
+  verifierHandleIds(): string[] {
+    return [...this.verifierHandles.keys()];
   }
 
   async startWorker(input: { ticket: TicketEnvelope; workspace?: Workspace; systemPolicy: string }): Promise<WorkerHandle> {
@@ -97,7 +110,7 @@ class TestAdapter implements AgentAdapter {
     // own -- every criterion passes -- and the tests keep asserting what they
     // always did (the dependency/artefact/envelope behaviour), one step later.
     const criteria = this.verifierHandles.get(handle.id);
-    if (criteria) {
+    if (criteria && this.autoVerify) {
       setImmediate(() =>
         onEvent({
           type: 'result_raw',
@@ -2069,7 +2082,7 @@ test('deps.liveRuns is untouched (no observeLive call at all) when the caller su
   }
 });
 
-test('a live tool-use signal populates deps.liveRuns with {tool, detail, since, lastProgressAt}, keyed by run id', async () => {
+test('a live tool-use signal populates deps.liveRuns with {tool, detail, since, lastProgressAt, startedAt}, keyed by run id', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
@@ -2087,13 +2100,16 @@ test('a live tool-use signal populates deps.liveRuns with {tool, detail, since, 
     assert.equal(info!.tool, 'Bash');
     assert.equal(info!.detail, 'cat secret.txt');
     assert.equal(typeof info!.since, 'string');
-    assert.equal(info!.since, info!.lastProgressAt, 'no progress event yet: lastProgressAt falls back to since');
+    // Ruling 40 section 6: a tool use is not a progress event, and nothing
+    // stands in for one -- neither `since` nor the run's start.
+    assert.equal(info!.lastProgressAt, null, 'no progress event yet: lastProgressAt must be null, never a stand-in');
+    assert.equal(info!.startedAt, getRun(db, s.runId)!.startedAt, "startedAt is the run row's own start");
   } finally {
     await adapter.stop(s.handle);
   }
 });
 
-test('a plain progress event never creates a liveRuns entry on its own, but DOES update lastProgressAt on an existing one, leaving tool/detail/since untouched', async () => {
+test('the first progress event creates a liveRuns entry with tool/detail/since null (ruling 40 section 6), and a later one advances lastProgressAt leaving tool/detail/since untouched', async () => {
   const db = openDb(':memory:');
   const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
   const adapter = new TestAdapter();
@@ -2104,10 +2120,18 @@ test('a plain progress event never creates a liveRuns entry on its own, but DOES
   const s = started[0]!;
   try {
     adapter.emit(s.handle.id, { type: 'progress', message: 'tool result received' });
-    assert.equal(liveRuns.has(s.runId), false, 'a progress event alone never creates an entry');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const before = liveRuns.get(s.runId);
+    assert.ok(before, 'the first progress event must create the entry, so the silence is measured from it');
+    assert.equal(before!.tool, null);
+    assert.equal(before!.detail, null);
+    assert.equal(before!.since, null);
+    assert.equal(typeof before!.lastProgressAt, 'string');
+    assert.equal(before!.startedAt, getRun(db, s.runId)!.startedAt);
 
     adapter.emitLive(s.handle.id, { tool: 'Bash', detail: 'sleep 1' });
     const first = liveRuns.get(s.runId)!;
+    assert.equal(first.lastProgressAt, before!.lastProgressAt, 'a tool use keeps the last real progress time');
 
     await new Promise((resolve) => setTimeout(resolve, 15));
     adapter.emit(s.handle.id, { type: 'progress', message: 'tool result received' });
@@ -2203,6 +2227,116 @@ test('deps.liveRuns is cleared for the run id when cancelRun stops it directly (
   assert.equal(liveRuns.has(s.runId), false);
 });
 
+// Ruling 40 section 6: creating the entry on PROGRESS is a second way into
+// the map, so it must obey the same rule the live channel does -- nothing for
+// a run that has settled. applyWorkerEvent's guard 1 is what turns a late
+// progress event away (with no await between it and the write).
+test('a progress event arriving AFTER the worker run settled does not create a liveRuns entry (ruling 40 section 6)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 1, workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  adapter.emit(s.handle.id, { type: 'failure', message: 'boom', retryable: false });
+  await s.done;
+  assert.equal(getRun(db, s.runId)!.status, 'failed', 'sanity: the run has settled');
+
+  adapter.emit(s.handle.id, { type: 'progress', message: 'buffered output drained after the end' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(liveRuns.has(s.runId), false, 'a late progress event re-created the entry for a settled run');
+});
+
+test("a verifier run's progress creates and advances its own liveRuns entry, and a progress event after its verdict does not re-create it (ruling 40 section 6)", async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter(false);
+  const ticket = createTicket(db, { projectId: project.id, title: 'verifier reports progress', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
+  });
+  // Not `await s.done` here: it resolves only once the verification it
+  // started has settled too, and this verifier is held open on purpose.
+
+  const deadline = Date.now() + 2000;
+  while (adapter.verifierHandleIds().length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  const verifyHandle = adapter.verifierHandleIds()[0];
+  assert.ok(verifyHandle, 'expected a verifier run to start once the worker finished');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(liveRuns.size, 0, 'sanity: the verifier has reported nothing yet');
+
+  adapter.emit(verifyHandle!, { type: 'progress', message: 'running the suite' });
+  const [verifyRunId, info] = [...liveRuns.entries()][0] ?? [];
+  assert.ok(verifyRunId, "a verifier's progress must create its live entry");
+  assert.notEqual(verifyRunId, s.runId, 'the entry belongs to the VERIFY run, not the settled worker run');
+  assert.equal(info!.tool, null);
+  assert.equal(typeof info!.lastProgressAt, 'string');
+  assert.equal(info!.startedAt, getRun(db, verifyRunId!)!.startedAt);
+
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  adapter.emit(verifyHandle!, { type: 'progress', message: 'still running the suite' });
+  assert.notEqual(liveRuns.get(verifyRunId!)!.lastProgressAt, info!.lastProgressAt, 'a later progress event must advance lastProgressAt');
+
+  const criteria = createdCriteria(db, ticket.id);
+  adapter.emit(verifyHandle!, {
+    type: 'result_raw',
+    raw: { verdict: 'pass', criteria: criteria.map((criterion) => ({ criterion, verdict: 'pass', evidence: 'test verifier' })) },
+  });
+  const settledBy = Date.now() + 2000;
+  while (getRun(db, verifyRunId!)!.status === 'running' && Date.now() < settledBy) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.notEqual(getRun(db, verifyRunId!)!.status, 'running', 'sanity: the verifier run has settled');
+  assert.equal(liveRuns.has(verifyRunId!), false, "settle clears the verifier's entry");
+
+  adapter.emit(verifyHandle!, { type: 'progress', message: 'buffered output drained after the verdict' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(liveRuns.has(verifyRunId!), false, 'a late verifier progress event re-created the entry for a settled run');
+  await s.done;
+});
+
+// The window the verifier's guard exists for that its own verdict path does
+// not reach: the run ROW settled by something other than the verifier's own
+// settle (here written directly, as a cancel or shutdown path would), while
+// the verifier's observer is still subscribed. A guard keyed on the
+// verifier's private `settled` flag alone would let this progress event
+// create an entry nothing would ever clear.
+test('a verifier progress event after its run row was settled from OUTSIDE the verifier does not create a liveRuns entry (ruling 40 section 6)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter(false);
+  const ticket = createTicket(db, { projectId: project.id, title: 'verifier settled from outside', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
+  });
+  const deadline = Date.now() + 2000;
+  while (adapter.verifierHandleIds().length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  const verifyHandle = adapter.verifierHandleIds()[0]!;
+  const verifyRunId = listRunsForTicket(db, ticket.id).find((r) => r.kind === 'verify' && r.status === 'running')!.id;
+  assert.equal(getRun(db, verifyRunId)!.status, 'running', 'sanity: the verifier run is live');
+
+  finishRun(db, verifyRunId, { status: 'cancelled', failureClass: 'user_cancelled' });
+  adapter.emit(verifyHandle, { type: 'progress', message: 'output after the run was cancelled' });
+  assert.equal(liveRuns.has(verifyRunId), false, 'a progress event re-created the entry for a verifier run settled from outside');
+
+  adapter.emit(verifyHandle, { type: 'failure', message: 'stopped', retryable: true });
+  await s.done;
+});
+
+function createdCriteria(db: ReturnType<typeof openDb>, ticketId: string): string[] {
+  return getTicket(db, ticketId)!.acceptanceCriteria;
+}
+
 // Batch 19 mini-phase 4 fix round (reviewer High, scheduler.ts:1422): the
 // reviewer's exact repro -- a real FakeAdapter, a live tool-use signal
 // scripted to arrive AFTER the run has already succeeded. Before the fix,
@@ -2269,6 +2403,10 @@ test('a verifier run registers its own live tool use in deps.liveRuns, keyed by 
   const info = liveRuns.get(verifyRunId!)!;
   assert.equal(info.tool, 'Bash');
   assert.equal(info.detail, 'pnpm test');
+  // Ruling 40 section 6: this verifier used a tool and reported no progress,
+  // so it has no progress time -- the tool use does not stand in for one.
+  assert.equal(info.lastProgressAt, null);
+  assert.equal(info.startedAt, getRun(db, verifyRunId!)!.startedAt);
 
   await s.done;
   assert.equal(liveRuns.size, 0, 'both the worker and verifier entries must be cleared once everything settles');

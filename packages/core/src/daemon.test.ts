@@ -744,7 +744,10 @@ test('DaemonLoop.liveRuns is populated by a real scripted live tool use while th
   assert.equal(info.tool, 'Bash');
   assert.equal(info.detail, 'echo drill-down-secret');
   assert.equal(typeof info.since, 'string');
-  assert.equal(typeof info.lastProgressAt, 'string');
+  // Ruling 40 section 6: this run reports a tool use and no progress event,
+  // so there is no progress time to give -- and nothing stands in for one.
+  assert.equal(info.lastProgressAt, null);
+  assert.equal(typeof info.startedAt, 'string');
 
   const deadline2 = Date.now() + 2000;
   while (getTicket(db, ticket.id)!.status !== 'REVIEW' && getTicket(db, ticket.id)!.status !== 'DONE' && Date.now() < deadline2) {

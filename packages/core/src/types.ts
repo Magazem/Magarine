@@ -366,11 +366,20 @@ export interface LiveToolUse {
 // just a tool-use one) -- "is it stuck" is this minus `since`/now, a
 // measurement, never a verdict this daemon computes and states (ruling 40
 // section 2).
+//
+// Ruling 40 section 6 (amended 2026-09-23): the entry is created by the
+// FIRST progress event as well as by a tool use, so `tool`, `detail` and
+// `since` are null until a tool is actually used. `lastProgressAt` is null
+// until a real progress event arrives -- the run's start is NEVER substituted
+// for it, because that overstated the silence of a worker that had reported
+// progress but not yet used a tool. `startedAt` is `Run.startedAt`, always
+// present, so a reader can say "no progress yet, running for X" truthfully.
 export interface LiveRunInfo {
-  tool: string;
-  detail: string;
-  since: string;
-  lastProgressAt: string;
+  tool: string | null;
+  detail: string | null;
+  since: string | null;
+  lastProgressAt: string | null;
+  startedAt: string;
 }
 
 // Reproduced exactly from technical-architecture-weekend-mvp.md ("Agent

@@ -1607,7 +1607,7 @@ test('GET /runs/{id}/live: 404 for an unknown run id', async () => {
 // one measurement (`lastProgressAt`) the owner needs exactly when a worker
 // looks stuck this early. 404 is reserved for an unknown run id and one that
 // has already settled.
-test('GET /runs/{id}/live: 200 with tool null and lastProgressAt for a RUNNING run that has not reported a tool use yet', async () => {
+test('GET /runs/{id}/live: 200 with tool null, lastProgressAt null and startedAt for a RUNNING run that has reported nothing yet', async () => {
   const server = await startLiveTestServer();
   try {
     const ticket = createTicket(server.db, { projectId: server.project.id, title: 'hangs before its first tool call', workspaceType: 'NONE' });
@@ -1625,11 +1625,43 @@ test('GET /runs/{id}/live: 200 with tool null and lastProgressAt for a RUNNING r
     res = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
 
     assert.equal(res.status, 200, 'a RUNNING run with no tool use yet must be 200, never 404');
-    const body = res.json as { tool: string | null; detail: string | null; since: string | null; lastProgressAt: string };
+    const body = res.json as { tool: string | null; detail: string | null; since: string | null; lastProgressAt: string | null; startedAt: string };
     assert.equal(body.tool, null);
     assert.equal(body.detail, null);
     assert.equal(body.since, null);
-    assert.equal(typeof body.lastProgressAt, 'string');
+    // Ruling 40 section 6: no progress is null, never the start standing in.
+    assert.equal(body.lastProgressAt, null, 'the start time was substituted for a progress time');
+    assert.equal(body.startedAt, getRun(server.db, runId)!.startedAt);
+  } finally {
+    await server.close();
+  }
+});
+
+// Ruling 40 section 6, the case the amendment exists for: a worker that HAS
+// reported progress but has not used a tool yet. Before it, the route
+// answered lastProgressAt with the run's start, overstating the silence of a
+// healthy worker. Driven by the fake adapter's real progress script, which
+// never ends the run.
+test('GET /runs/{id}/live: a RUNNING run that reported progress but no tool use answers its real lastProgressAt, not its start', async () => {
+  const server = await startLiveTestServer();
+  try {
+    const ticket = createTicket(server.db, { projectId: server.project.id, title: 'talks before its first tool call', workspaceType: 'NONE' });
+    server.adapter.setScript(ticket.id, { kind: 'progress', message: 'thinking', delayMs: 120 });
+
+    const tickRes = await api(server.port, LIVE_TEST_TOKEN, 'POST', '/tick', { project: server.project.id });
+    const runId = (tickRes.json as { started: Array<{ runId: string }> }).started[0]!.runId;
+
+    const deadline = Date.now() + 3000;
+    let body = (await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`)).json as { tool: string | null; lastProgressAt: string | null; startedAt: string };
+    while (body.lastProgressAt === null && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      body = (await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`)).json as typeof body;
+    }
+    assert.equal(body.tool, null, 'sanity: no tool has been used');
+    assert.equal(typeof body.lastProgressAt, 'string', 'the progress event never reached lastProgressAt');
+    assert.equal(body.startedAt, getRun(server.db, runId)!.startedAt);
+    assert.ok(Date.parse(body.lastProgressAt!) >= Date.parse(body.startedAt) + 100,
+      `lastProgressAt ${body.lastProgressAt} is the start ${body.startedAt}, not the progress event 120ms later`);
   } finally {
     await server.close();
   }
@@ -1649,17 +1681,20 @@ test('GET /runs/{id}/live returns {tool, detail, since, lastProgressAt} while th
     // Poll until the live signal has actually landed -- the FakeAdapter's
     // own timer, however short, is still asynchronous.
     const deadline1 = Date.now() + 2000;
+    // A running run answers 200 from its first moment (tool null), so this
+    // waits for the tool use itself rather than for a 200.
     let liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
-    while (liveRes.status !== 200 && Date.now() < deadline1) {
+    while ((liveRes.status !== 200 || (liveRes.json as { tool: string | null }).tool === null) && Date.now() < deadline1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
       liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
     }
     assert.equal(liveRes.status, 200);
-    const info = liveRes.json as { tool: string; detail: string; since: string; lastProgressAt: string };
+    const info = liveRes.json as { tool: string; detail: string; since: string; lastProgressAt: string | null; startedAt: string };
     assert.equal(info.tool, 'Bash');
     assert.equal(info.detail, 'echo live-drilldown-ok');
     assert.equal(typeof info.since, 'string');
-    assert.equal(typeof info.lastProgressAt, 'string');
+    assert.equal(info.lastProgressAt, null, 'a tool use with no progress event has no progress time');
+    assert.equal(typeof info.startedAt, 'string');
 
     // Wait for the scripted 'succeed' (delayMs: 300) to settle the run.
     const deadline2 = Date.now() + 3000;
@@ -1705,13 +1740,15 @@ test('acceptance 3: a Bash command with a recognisable secret is shown live, but
     // never leaks anywhere else -- otherwise a broken live channel would
     // make this test pass for the wrong reason (nothing to leak).
     const deadline1 = Date.now() + 2000;
+    // Waits for the tool use itself: a running run answers 200 with a null
+    // detail from its first moment.
     let liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
-    while (liveRes.status !== 200 && Date.now() < deadline1) {
+    while ((liveRes.status !== 200 || (liveRes.json as { detail: string | null }).detail === null) && Date.now() < deadline1) {
       await new Promise((resolve) => setTimeout(resolve, 20));
       liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
     }
     assert.equal(liveRes.status, 200);
-    assert.ok((liveRes.json as { detail: string }).detail.includes(SECRET), 'sanity: the live route must show the secret');
+    assert.ok(String((liveRes.json as { detail: string | null }).detail).includes(SECRET), 'sanity: the live route must show the secret');
 
     // Now wait for the ticket to actually settle -- DONE, through the worker
     // 'succeed' script and the fake verifier's default pass.

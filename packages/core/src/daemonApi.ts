@@ -616,7 +616,9 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     if (info) return { status: 200, body: info };
     const run = getRun(deps.db, runId);
     if (!run || run.status !== 'running') throw new ApiError(404, `no live drill-down for run: ${runId}`);
-    return { status: 200, body: { tool: null, detail: null, since: null, lastProgressAt: run.startedAt } };
+    // Ruling 40 section 6: no progress yet is lastProgressAt null, with the
+    // start beside it -- never the start standing in for a progress time.
+    return { status: 200, body: { tool: null, detail: null, since: null, lastProgressAt: null, startedAt: run.startedAt } };
   }
 
   // Batch 11 item 3 (the page): the project selector needs a way to

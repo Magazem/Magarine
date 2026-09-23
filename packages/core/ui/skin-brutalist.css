@@ -490,6 +490,49 @@
   }
   /* The daemon's own sentence, whole, line breaks kept. */
   .roster-error { font-size: var(--t-xs); color: var(--st-failed); overflow-wrap: anywhere; white-space: pre-wrap; }
+
+  /* ======================================================= drill-down ==== */
+  /* RULING 40: what a running ticket is running. The control sits on the
+     roster row and the board card; the panel sits over the page rather than
+     in the grid, so it takes no area and moves no region. Non-modal: the
+     rest of the page stays usable, and the owner's typing elsewhere is never
+     touched by its reads. */
+  .drill-at { margin-top: var(--s1); }
+  .ticket .drill-open { margin-top: var(--s2); }
+  .drill {
+    position: fixed; right: var(--s4); bottom: var(--s4); z-index: 10;
+    width: min(36rem, calc(100vw - 2 * var(--s4)));
+    max-height: calc(100vh - 2 * var(--s4)); overflow-y: auto;
+    background: var(--surface); color: var(--fg);
+    border: var(--rule-2) solid var(--fg); border-radius: var(--r);
+    padding: var(--s3) var(--s4) var(--s4);
+  }
+  .drill-head {
+    display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+    padding-bottom: var(--s2); border-bottom: var(--rule) solid var(--line);
+  }
+  .drill-head h2 {
+    margin: 0; font-family: var(--font-mono);
+    font-size: var(--t-2xs); font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--fg-2);
+  }
+  .drill-title { flex: 1 1 auto; min-width: 0; font-size: var(--t-sm); overflow-wrap: anywhere; }
+  .drill-copy { margin: var(--s2) 0 var(--s3); font-size: var(--t-xs); color: var(--fg-2); }
+  .drill-live { margin: 0; display: flex; flex-direction: column; gap: var(--s2); }
+  .drill-row { display: flex; flex-direction: column; gap: 2px; }
+  .drill-row dt {
+    font-family: var(--font-mono); font-size: var(--t-2xs); font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-3);
+  }
+  .drill-row dd { margin: 0; color: var(--fg); }
+  /* The command whole, as the worker gave it: line breaks kept, long tokens
+     wrapped, never clipped or ellipsised. */
+  .drill-command {
+    white-space: pre-wrap; background: var(--surface-2);
+    border: var(--rule) solid var(--line); padding: var(--s2);
+    max-height: 16rem; overflow-y: auto;
+  }
+  .drill-ended { margin: 0; font-size: var(--t-xs); color: var(--fg); }
   .roster-add {
     display: flex; flex-direction: column; gap: var(--s2);
     margin-top: var(--s4); padding-top: var(--s3);

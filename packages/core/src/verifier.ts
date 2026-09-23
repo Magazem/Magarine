@@ -379,6 +379,20 @@ export async function startVerification(deps: VerifierDeps, ticketId: string, ru
   }
 
   void adapter.observe(handle, (event) => {
+    // Ruling 40 section 6: a verifier's progress is the owner's silence
+    // measurement too, recorded exactly as a worker's is (scheduler.ts's
+    // 'progress' case). Only while the run ROW still says running -- the same
+    // guard as the live callback below -- so a late event cannot re-create an
+    // entry for a run that has settled, whether by this function's own
+    // `settle` (which finishes the row synchronously) or by any path outside
+    // it, which the `settled` flag here would not see.
+    if (event.type === 'progress' && deps.liveRuns && getRun(db, run.id)?.status === 'running') {
+      const existing = deps.liveRuns.get(run.id);
+      const now = new Date().toISOString();
+      deps.liveRuns.set(run.id, existing
+        ? { ...existing, lastProgressAt: now }
+        : { tool: null, detail: null, since: null, lastProgressAt: now, startedAt: run.startedAt });
+    }
     if (event.type === 'progress' || event.type === 'question') return;
     void settle(() => {
       if (getRun(db, run.id)?.status !== 'running') return; // already settled some other way
@@ -404,7 +418,7 @@ export async function startVerification(deps: VerifierDeps, ticketId: string, ru
       if (!currentRun || currentRun.status !== 'running') return;
       const now = new Date().toISOString();
       const existing = liveRuns.get(run.id);
-      liveRuns.set(run.id, { tool: info.tool, detail: info.detail, since: now, lastProgressAt: existing?.lastProgressAt ?? now });
+      liveRuns.set(run.id, { tool: info.tool, detail: info.detail, since: now, lastProgressAt: existing?.lastProgressAt ?? null, startedAt: run.startedAt });
     });
     void unsubscribePromise.then((unsubscribe) => {
       if (liveChannelSettled) unsubscribe();

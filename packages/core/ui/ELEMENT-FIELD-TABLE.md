@@ -51,6 +51,8 @@ Routes used, and the page requests nothing else:
 | `GET /settings`, `PATCH /settings` | `src/daemonApi.ts` → every stored machine-wide setting, key → value; a key never set is absent. PATCH takes `{ key: value \| null }`, validates every key before writing any, and answers with the settings as stored. Batch 19, ruling 39 |
 | `PATCH /projects/{id}` | `src/daemonApi.ts` → the `Project` as stored; `maxParallel`, `managerModel`, `verifierModel` accept null (use the machine default), `defaultModel` does not. Batch 19, ruling 39 |
 | `PUT /projects/{id}/scope` | `src/daemonApi.ts` → `{ scopeText, status }` as written; refused when the project has no scope path. Batch 19, ruling 39 |
+| `GET /tickets/{id}/progress` | `src/commands/activity.ts` → `RunProgress[]`: one entry per run the ticket has ever had, oldest first. The drill-down reads only `runId` and `runStatus`, to find the ticket's one `running` run — the board carries no run id. Batch 19, ruling 40 |
+| `GET /runs/{id}/live` | `src/daemonApi.ts` → `LiveRunInfo` `{ tool, detail, since, lastProgressAt, startedAt }` from the scheduler's in-memory map; `tool`, `detail` and `since` null for a running run with no tool use yet, `lastProgressAt` null until it has reported progress (ruling 40 section 6: the start is never substituted); **404** for an unknown or settled run. Read only while the drill-down is open. Batch 19, ruling 40 |
 | `GET /ui/<name>` | the static assets: this page and its five files |
 
 ---
@@ -120,6 +122,36 @@ There is **no percentage and no completion bar**: nothing measures completion.
 | error line | field | the daemon's own `error` sentence from the 400, verbatim — never reworded |
 | after success | — | the inputs clear and the roster re-reads `GET /profiles`; the new row is the daemon's, not an optimistic one |
 
+### What is it running — the live drill-down (ruling 40, batch 19)
+
+`docs/strategy/batch-19-item-4-drill-down.md`. The command a worker is running
+is the likeliest place in this system for a secret to appear, so the daemon
+never writes it down: it lives in the daemon's memory while the run runs and is
+gone when it settles. **The page keeps it no longer than the daemon does:** it
+is held in one in-memory variable and the drill-down's text nodes while the
+drill-down is open, and in nothing else — no `localStorage`, no
+`sessionStorage`, no URL, no attribute. Closing, a 404, the token gate and a
+project switch all wipe it. **The page states no verdict.** It shows the
+measured time and nothing else: no "stuck", no "hung", no "idle".
+
+| element | kind | source |
+|---|---|---|
+| "What is it running?" control | copy | on a roster row and a board card whose ticket's `BoardTicket.status` is `IN_PROGRESS` or `REVIEW` (REVIEW is a verifier run, which registers the live channel too). Carries `data-drill-for` = `BoardTicket.id`, the ticket and never the command, so focus can return to it on close. Absent on a profile row whose ticket is not on this project's board: the page cannot read its status |
+| which run is shown | field | the newest entry of `GET /tickets/{id}/progress` whose `runStatus` is `running`, its `runId`. None running → the ended sentence, below |
+| heading "Running now" | copy | — |
+| ticket name in the heading | field | `BoardTicket.title` of the drilled ticket, then its short id; the title is re-read from each board pass |
+| "The command is shown live and never stored. …" | copy | ONCE, in `index.html`: the whole design, and the reason the feature is allowed to exist (ruling 40 section 2). Not softened, not repeated |
+| Tool | field | `LiveRunInfo.tool` |
+| Tool, before the first tool use | copy | "no tool used yet", when `tool` is null |
+| Command | field | `LiveRunInfo.detail`, verbatim and whole, as text. Hidden when `tool` is null |
+| "Current tool use started" | derived | `LiveRunInfo.since` as `HH:MM:SS UTC`, then now − `since`. Hidden when `since` is null |
+| "Since the last progress" | derived | now − `LiveRunInfo.lastProgressAt`, as `Ns`, `Nm SSs` or `Nh MMm`, when `lastProgressAt` is not null. **A measurement, never a verdict** |
+| "No progress yet — running for" | derived + copy | when `LiveRunInfo.lastProgressAt` is null: the run has reported no progress at all. The value is now − `LiveRunInfo.startedAt`. Never the start dressed as a progress time (ruling 40 section 6) |
+| re-read | — | `GET /runs/{id}/live` on the page's four-second poll while open, one read in flight at most. Text nodes are written only when their text changed, so a selection in the command survives a pass; nothing outside the drill-down is re-rendered by it |
+| ended: "This run has ended, so there is nothing live to show. The command it showed is gone." | copy | on a **404** from `GET /runs/{id}/live`, or no `running` run found. Every live field is emptied and polling stops; only this line and Close remain |
+| drill-down read failure | field | the daemon's own `error` sentence, verbatim; the live fields are emptied rather than left stale, and the next pass reads again |
+| "Close" | copy | also Escape. Wipes every live field and the in-memory copy, and returns focus to the control that opened it |
+
 ## 3. Board
 
 Six lanes over eight statuses. **Nothing is hidden:** `CANCELLED` shares the
@@ -136,6 +168,7 @@ terminal lane with `DONE`, struck through, rather than being dropped.
 | card organism | derived | as section 2. A ticket with a profile is seeded `mg.v1:<BoardTicket.profile.id>` with that profile's `model` from `GET /profiles`; a retired profile is not in that list, so its tickets' organisms fall back to tier "unknown" rather than a guessed model |
 | card profile name | field | `BoardTicket.profile.name`, beside the organism; absent when `profile` is null. A retired profile's name still shows (the board looks it up fresh) |
 | card "Why this profile: …" | field | `BoardTicket.profileReason`, verbatim; absent when null |
+| card "What is it running?" | copy | the drill-down control, on a card whose `BoardTicket.status` is `IN_PROGRESS` or `REVIEW`. See the drill-down section above |
 | card cost | field | `BoardTicket.costUsd` |
 | "at least … live estimate" | field | `BoardTicket.costIsEstimate` |
 | card activity line | field | `BoardTicket.latestActivity` — replaces the cost line while running |

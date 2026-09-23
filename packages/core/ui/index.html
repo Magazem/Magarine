@@ -330,6 +330,31 @@
   <div class="feed" id="feed"></div>
 </section>
 
+<!-- RULING 40 (batch 19): WHAT IS IT RUNNING. Not a region: a panel over the
+     page, opened from a running ticket's card or roster row, closed by the
+     owner, by Escape, or by the run ending. The command a worker is running is
+     the likeliest place for a secret to appear, so the daemon keeps it in
+     memory only and this page keeps it no longer: it is written into these
+     elements while the panel is open and wiped from them when it closes. It is
+     never in storage, the address or an attribute. No verdict is ever printed
+     here: the page shows the measured time and the owner decides. -->
+<aside id="drill" class="drill" role="dialog" aria-modal="false" aria-labelledby="drillHead" hidden>
+  <div class="drill-head">
+    <h2 id="drillHead">Running now</h2>
+    <span class="drill-title" id="drillTitle"></span>
+    <button class="btn" type="button" id="drillClose">Close</button>
+  </div>
+  <p class="drill-copy" id="drillCopy">The command is shown live and never stored: it is read from the running worker while this panel is open, and it is gone when the run ends.</p>
+  <dl class="drill-live" id="drillLive" hidden>
+    <div class="drill-row"><dt>Tool</dt><dd class="mono" id="drillTool"></dd></div>
+    <div class="drill-row" id="drillCommandRow"><dt>Command</dt><dd class="mono drill-command" id="drillCommand" tabindex="0"></dd></div>
+    <div class="drill-row" id="drillSinceRow"><dt>Current tool use started</dt><dd class="mono" id="drillSince"></dd></div>
+    <div class="drill-row"><dt id="drillQuietLabel">Since the last progress</dt><dd class="mono" id="drillQuiet"></dd></div>
+  </dl>
+  <p class="drill-ended" id="drillEnded" role="status" hidden></p>
+  <p class="roster-error" id="drillError" role="alert" hidden></p>
+</aside>
+
 <!-- THE GENERATOR, ONE FILE (ruling 11). The daemon serves this route from
      packages/core/ui/organism.js byte-identical, docs/design/pass3/check-organism.js
      reads that same file, and the tier is derived exactly once inside it. -->

@@ -724,9 +724,20 @@ async function applyWorkerEventInner(
       // budget-stop/200-cap branches below so it fires from every progress
       // event this run ever reports, not just the ones that go on to become
       // a persisted worker_progress row.
+      //
+      // Ruling 40 section 6 amends "only updates an EXISTING entry": the
+      // FIRST progress event creates one too, with tool/detail/since null,
+      // so lastProgressAt is the real last progress from then on rather than
+      // the run's start standing in for it. Still reached only for a RUNNING
+      // run -- applyWorkerEvent's guard 1 turns a late event away before this
+      // switch, with no await in between -- so it cannot re-create an entry
+      // for a run that has settled.
       if (ctx.liveRuns) {
         const existing = ctx.liveRuns.get(run.id);
-        if (existing) ctx.liveRuns.set(run.id, { ...existing, lastProgressAt: new Date().toISOString() });
+        const now = new Date().toISOString();
+        ctx.liveRuns.set(run.id, existing
+          ? { ...existing, lastProgressAt: now }
+          : { tool: null, detail: null, since: null, lastProgressAt: now, startedAt: run.startedAt });
       }
 
       // Batch 6 item 3: pricing.ts prices an unrecognized model at the
@@ -1459,7 +1470,10 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         if (!currentRun || currentRun.status !== 'running') return;
         const now = new Date().toISOString();
         const existing = liveRuns.get(run.id);
-        liveRuns.set(run.id, { tool: info.tool, detail: info.detail, since: now, lastProgressAt: existing?.lastProgressAt ?? now });
+        // A tool use is not a progress event: lastProgressAt stays whatever
+        // the progress path last recorded, null if none yet (ruling 40
+        // section 6 -- never a stand-in).
+        liveRuns.set(run.id, { tool: info.tool, detail: info.detail, since: now, lastProgressAt: existing?.lastProgressAt ?? null, startedAt: run.startedAt });
       });
       void unsubscribePromise.then((unsubscribe) => {
         if (liveChannelSettled) unsubscribe();

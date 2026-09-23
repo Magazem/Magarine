@@ -296,6 +296,9 @@
     retireError: null,
     // GET /settings as last read, for the cap line only (ruling 39, amended).
     machineSettings: null,
+    // Ruling 40. The open drill-down, or null. Held in memory only, and only
+    // while it is open: see the drill-down section for why that is the design.
+    drill: null,
     // Ruling 39. The daemon's refusal of an answer, per ticket, drawn under
     // that ticket's fields until the next answer is sent.
     answerErrors: {},
@@ -711,6 +714,11 @@
       if (!doing) line.setAttribute('data-idle', '1');
       who.appendChild(line);
     }
+    if (working && drillable(t)) {
+      var at = el('span', 'drill-at');
+      at.appendChild(drillControl(t, p.name));
+      who.appendChild(at);
+    }
     r.appendChild(who);
     r.appendChild(retireControl(p));
     return r;
@@ -779,6 +787,11 @@
     var line = el('span', 'doing', said ? (doing ? said + ' \u2014 ' + doing : said) : (doing || 'no progress event recorded yet'));
     if (!doing && !said) line.setAttribute('data-idle', '1');
     who.appendChild(line);
+    if (drillable(t)) {
+      var at = el('span', 'drill-at');
+      at.appendChild(drillControl(t, t.title));
+      who.appendChild(at);
+    }
     r.appendChild(who);
     return r;
   }
@@ -830,6 +843,168 @@
     }, function (err) {
       if (err && err.message === 'unauthorized') return;
       setProfileError(daemonSentence(err));
+    });
+  }
+
+  // ------------------------------------------------------- drill-down ----
+  // RULING 40 (batch 19): "one worker is running PowerShell, what exactly, is
+  // it stuck". The command a worker runs is the likeliest place in this system
+  // for a secret to appear, so the daemon never writes it down: it serves it
+  // from memory while the run runs (GET /runs/{id}/live) and forgets it when
+  // the run settles. THIS PAGE KEEPS IT NO LONGER THAN THE DAEMON DOES. It
+  // lives in state.drill and in the drill-down's own text nodes while the
+  // panel is open, and nowhere else: no storage, no address, no attribute.
+  // Every way the panel closes wipes both.
+  //
+  // AND IT STATES NO VERDICT. The panel shows the measured time since the last
+  // progress and stops there; whether that is too long is the owner's call.
+  //
+  // `drillGen` is what makes a close final: a read already in flight when the
+  // panel closes or moves to another ticket answers a generation that is gone,
+  // and is dropped instead of drawing a command into a closed panel.
+  var drillGen = 0;
+  var DRILL_ENDED = 'This run has ended, so there is nothing live to show. The command it showed is gone.';
+
+  // A running ticket: a worker run in IN_PROGRESS, a verifier run in REVIEW.
+  function drillable(t) { return !!t && (t.status === 'IN_PROGRESS' || t.status === 'REVIEW'); }
+
+  // The control. It carries the TICKET id, never anything the run reported,
+  // so the page can hand focus back to it when the panel closes.
+  function drillControl(t, name) {
+    var b = el('button', 'btn drill-open', 'What is it running?');
+    b.type = 'button';
+    b.setAttribute('data-drill-for', t.id);
+    b.setAttribute('aria-label', 'What is ' + name + ' running?');
+    b.addEventListener('click', function () { openDrill(t.id); });
+    return b;
+  }
+
+  function drillSelector(ticketId) {
+    return '[data-drill-for="' + String(ticketId).replace(/["\\]/g, '\\$&') + '"]';
+  }
+
+  function drillIs(gen) { return !!state.drill && state.drill.gen === gen; }
+
+  // Elapsed time as a plain measurement: 42s, 3m 05s, 1h 02m.
+  function elapsed(iso) {
+    var then = Date.parse(iso);
+    if (!then) return '';
+    var s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s / 60) + 'm ' + pad(s % 60) + 's';
+    return Math.floor(s / 3600) + 'h ' + pad(Math.floor(s / 60) % 60) + 'm';
+  }
+
+  // Written only when it changed, so a selection in the command -- the owner
+  // copying it -- survives a pass.
+  function setText(id, text) {
+    var n = $(id);
+    if (n.textContent !== text) n.textContent = text;
+  }
+
+  function drillTitle() {
+    var t = state.drill ? ticketById(state.drill.ticketId) : null;
+    setText('drillTitle', state.drill ? (t ? t.title + ' \u00B7 ' : '') + shortId(state.drill.ticketId) : '');
+  }
+
+  // Every element that ever held something the run reported, emptied.
+  function wipeDrill() {
+    ['drillTool', 'drillCommand', 'drillSince', 'drillQuiet', 'drillTitle'].forEach(function (id) { setText(id, ''); });
+    $('drillLive').hidden = true;
+    setLine('drillError', null);
+  }
+
+  function openDrill(ticketId) {
+    drillGen += 1;
+    wipeDrill();
+    setLine('drillEnded', null);
+    state.drill = { gen: drillGen, ticketId: ticketId, runId: null, info: null, reading: false };
+    drillTitle();
+    $('drill').hidden = false;
+    $('drillClose').focus();
+    pollDrill();
+  }
+
+  // Closed by the owner (Close, Escape), by the token gate or by a project
+  // switch. Nothing the run reported survives it.
+  function closeDrill() {
+    var was = state.drill;
+    drillGen += 1;
+    state.drill = null;
+    wipeDrill();
+    setLine('drillEnded', null);
+    $('drill').hidden = true;
+    checkCoverage();
+    if (!was) return;
+    var back = document.querySelector(drillSelector(was.ticketId));
+    if (back) back.focus();
+  }
+
+  // A 404 is the daemon saying the run has settled. The panel says so and stops
+  // asking; the command is wiped rather than left on screen as if still true.
+  function endDrill() {
+    state.drill = null;
+    drillGen += 1;
+    wipeDrill();
+    setLine('drillEnded', DRILL_ENDED);
+    checkCoverage();
+  }
+
+  function drillFailed(err) {
+    if (err && err.message === 'unauthorized') return;        // the gate has closed it
+    if (/^404 /.test(String((err && err.message) || ''))) { endDrill(); return; }
+    // The daemon's own sentence. What was on screen is no longer known to be
+    // true, so it goes; the next pass asks again.
+    state.drill.info = null;
+    ['drillTool', 'drillCommand', 'drillSince', 'drillQuiet'].forEach(function (id) { setText(id, ''); });
+    $('drillLive').hidden = true;
+    setLine('drillError', daemonSentence(err));
+  }
+
+  function drawDrill(info) {
+    info = info || {};
+    var hasTool = typeof info.tool === 'string';
+    state.drill.info = info;
+    setText('drillTool', hasTool ? info.tool : 'no tool used yet');
+    setText('drillCommand', hasTool && typeof info.detail === 'string' ? info.detail : '');
+    $('drillCommandRow').hidden = !hasTool;
+    setText('drillSince', info.since ? hhmmss(info.since) + ' UTC \u00B7 ' + elapsed(info.since) + ' ago' : '');
+    $('drillSinceRow').hidden = !info.since;
+    // Ruling 40 section 6: lastProgressAt is null until the run has reported
+    // progress, and then the page says exactly that and how long the run has
+    // been going, from startedAt. One source per sentence; no stand-in.
+    var progressed = typeof info.lastProgressAt === 'string';
+    setText('drillQuietLabel', progressed ? 'Since the last progress' : 'No progress yet — running for');
+    setText('drillQuiet', elapsed(progressed ? info.lastProgressAt : info.startedAt));
+    setLine('drillError', null);
+    $('drillLive').hidden = false;
+    checkCoverage();
+  }
+
+  // One read in flight at most. The first finds the ticket's running run; each
+  // later one reads that run's live entry. Driven by the page's own poll, and
+  // it touches nothing outside the panel.
+  function pollDrill() {
+    var d = state.drill;
+    if (!d || d.reading) return Promise.resolve();
+    d.reading = true;
+    var gen = d.gen;
+    var read = d.runId
+      ? api('/runs/' + encodeURIComponent(d.runId) + '/live').then(function (info) {
+        if (drillIs(gen)) drawDrill(info);
+      })
+      : api('/tickets/' + encodeURIComponent(d.ticketId) + '/progress').then(function (runs) {
+        if (!drillIs(gen)) return;
+        var running = (runs || []).filter(function (r) { return r.runStatus === 'running'; });
+        if (!running.length) { endDrill(); return; }
+        d.runId = running[running.length - 1].runId;
+        d.reading = false;
+        return pollDrill();
+      });
+    return read.then(function () { d.reading = false; }, function (err) {
+      d.reading = false;
+      if (drillIs(gen)) drillFailed(err);
     });
   }
 
@@ -904,11 +1079,18 @@
     }
     var arts = artsNode(t.artifacts);
     if (arts) card.appendChild(arts);
+    if (drillable(t)) card.appendChild(drillControl(t, t.title));
     return card;
   }
 
   function renderBoard() {
     var lanes = $('lanes');
+    // Every card is rebuilt on every pass, so a focused drill-down control would
+    // be dropped from under the keyboard every four seconds. Its ticket is
+    // noted first and the new card's control takes the focus back.
+    var had = document.activeElement;
+    var refocus = had && had.getAttribute && had.closest && had.closest('#lanes')
+      ? had.getAttribute('data-drill-for') : null;
     clear(lanes);
     var tickets = (state.board && state.board.tickets) || [];
     var running = tickets.filter(function (t) { return t.status === 'IN_PROGRESS'; }).length;
@@ -936,6 +1118,11 @@
       lane.appendChild(body);
       lanes.appendChild(lane);
     });
+    if (refocus) {
+      var back = lanes.querySelector(drillSelector(refocus));
+      if (back) back.focus();
+    }
+    drillTitle();
 
     renderList(tickets);
   }
@@ -1639,6 +1826,8 @@
     (state.profiles || []).forEach(function (p) { out.push(p.name, p.model, p.purpose, p.ticketId); });
     (state.models || []).forEach(function (m) { out.push(m); });
     out.push(state.scopeText, state.profilesError, state.retireError);
+    // Ruling 40: the drill-down's text, while it is open and only then.
+    if (state.drill && state.drill.info) out.push(state.drill.info.tool, state.drill.info.detail);
     return out.filter(function (s) { return typeof s === 'string' && s.length > 0; });
   }
 
@@ -1954,6 +2143,7 @@
 
   function showGate(why) {
     state.token = null;
+    closeDrill();
     try { window.sessionStorage.removeItem('magarine.token'); } catch (e) { /* private mode */ }
     $('gate').hidden = false;
     setTitle(0);
@@ -2094,6 +2284,8 @@
       // A draft belongs to the project it was opened on; it is not carried
       // into another one's scope file.
       if (state.scopeEditing) closeScopeEditor();
+      // A drill-down belongs to a ticket on the board being left.
+      closeDrill();
       refresh().then(function () { if (!$('settingsBody').hidden) fillProject(currentProject()); });
     });
 
@@ -2134,6 +2326,11 @@
       if (open) openSettings();
     });
     $('saveMachine').addEventListener('click', saveMachine);
+
+    $('drillClose').addEventListener('click', closeDrill);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !$('drill').hidden) closeDrill();
+    });
     $('saveProject').addEventListener('click', saveProject);
 
     $('send').addEventListener('click', function () {
@@ -2170,7 +2367,9 @@
   // events and the board carries state, and a dropped stream must not leave
   // the page frozen on a stale board. Four seconds, the interval the previous
   // page used.
-  window.setInterval(function () { if (state.token) refresh(); }, POLL_MS);
+  // The drill-down rides the same interval, so it is read no more often than
+  // the board and there is no second timer to stop.
+  window.setInterval(function () { if (state.token) { refresh(); pollDrill(); } }, POLL_MS);
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
