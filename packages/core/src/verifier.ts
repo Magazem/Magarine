@@ -16,7 +16,7 @@ import {
   setRunUsage,
   setRunWorkerSessionRef,
 } from './store.ts';
-import type { AgentAdapter, Project, Run, Ticket, TicketEnvelope, TicketEnvelopeArtifact, VerificationSubject, WorkerHandle } from './types.ts';
+import type { AgentAdapter, LiveRunInfo, Project, Run, Ticket, TicketEnvelope, TicketEnvelopeArtifact, VerificationSubject, WorkerHandle } from './types.ts';
 import { prepareWorkspace } from './workspace.ts';
 
 // Batch 18 ruling 31 (docs/strategy/batch-18-replan-owner-walk.md): a work
@@ -229,6 +229,8 @@ export interface VerifierDeps {
   adapter: AgentAdapter;
   runTimeoutMs?: number;
   workspaceBaseDir?: string;
+  /** Batch 19 mini-phase 4 fix round (reviewer Medium, verifier.ts:357): forwarded verbatim from SchedulerDeps.liveRuns (scheduler.ts's verifyReviewTicket) -- a verifier run gets the exact same live drill-down a worker run does, since it is the run most likely to look stuck (it runs the owner's own test suite through Bash, per the reviewer's own case). See types.ts's LiveRunInfo. */
+  liveRuns?: Map<string, LiveRunInfo>;
 }
 
 /**
@@ -317,9 +319,31 @@ export async function startVerification(deps: VerifierDeps, ticketId: string, ru
   const done = new Promise<void>((resolve) => (resolveDone = resolve));
   let timer: NodeJS.Timeout | undefined;
   let settled = false;
+
+  // Batch 19 mini-phase 4 fix round (reviewer Medium, verifier.ts:357 /
+  // scheduler.ts:132): the same live-channel unsubscribe-on-settle
+  // scheduler.ts's tick() gives a worker run -- `settle` below is this
+  // function's own single choke point for every settle path (timeout,
+  // failure, malformed result, applied verdict), so unsubscribing there
+  // covers all of them, unlike scheduler.ts's tick() which has to call it
+  // from more than one place.
+  let liveChannelSettled = false;
+  let unsubscribeLive: (() => void) | undefined;
+
   const settle = async (apply: () => void): Promise<void> => {
     if (settled) return;
     settled = true;
+    liveChannelSettled = true;
+    unsubscribeLive?.();
+    // Batch 19 mini-phase 4 fix round: the unsubscribe above only stops
+    // FUTURE live signals -- the map entry a PRIOR one already wrote (this
+    // run's own observeLive callback runs synchronously against the live
+    // map, independent of `settle`) survives until something deletes it.
+    // scheduler.ts's applyWorkerEvent does this for a worker run's terminal
+    // branch; this is verifier.ts's own single choke point for the same
+    // thing, on every settle path (timeout, failure, malformed, applied
+    // verdict).
+    deps.liveRuns?.delete(run.id);
     if (timer) clearTimeout(timer);
     try {
       apply();
@@ -365,6 +389,28 @@ export async function startVerification(deps: VerifierDeps, ticketId: string, ru
       applyVerdict(db, ticketId, run, validated.data);
     });
   });
+
+  // Batch 19 mini-phase 4 fix round (reviewer Medium): a verifier is a run
+  // like any other -- the owner's "is it stuck" question applies to it
+  // exactly as much as to a worker, and a verifier running the test suite
+  // through Bash is, per the reviewer's own case, the run most likely to
+  // look stuck. Same guard as scheduler.ts's tick(): a live signal that
+  // arrives after THIS run has already settled must not re-create an entry
+  // nothing will ever clear again.
+  if (deps.liveRuns) {
+    const liveRuns = deps.liveRuns;
+    const unsubscribePromise = adapter.observeLive(handle, (info) => {
+      const currentRun = getRun(db, run.id);
+      if (!currentRun || currentRun.status !== 'running') return;
+      const now = new Date().toISOString();
+      const existing = liveRuns.get(run.id);
+      liveRuns.set(run.id, { tool: info.tool, detail: info.detail, since: now, lastProgressAt: existing?.lastProgressAt ?? now });
+    });
+    void unsubscribePromise.then((unsubscribe) => {
+      if (liveChannelSettled) unsubscribe();
+      else unsubscribeLive = unsubscribe;
+    });
+  }
 
   return { runId: run.id, handle, done };
 }

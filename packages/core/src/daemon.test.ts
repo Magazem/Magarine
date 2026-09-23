@@ -709,3 +709,148 @@ test('DaemonLoop.stop() with nothing in flight returns an empty list', async () 
   const loop = startDaemonLoop({ db, adapter: new FakeAdapter(), maxParallelWorkers: 1, artifactsDir: join(testRoot.root, 'artifacts-stop-empty'), tickIntervalMs: 20, readiness: 'skip' });
   assert.deepEqual((await loop.stop()).cancelled, []);
 });
+
+// --- Batch 19 mini-phase 4 (ruling 40): DaemonLoop.liveRuns -----------------
+// Driven through the REAL FakeAdapter's own scripted live channel
+// (setLiveToolUse/observeLive), not a hand-inserted map entry -- the same
+// discipline the rest of this file already applies to `loop.live`. Every
+// settle path the ruling names gets its own test: success, failure, cancel,
+// and recovery of an orphan.
+
+test('DaemonLoop.liveRuns is populated by a real scripted live tool use while the run is in flight, and cleared on a successful settle', async (t) => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const ticket = createTicket(db, { projectId: project.id, title: 'runs a command', workspaceType: 'NONE' });
+  const adapter = new FakeAdapter();
+  adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'echo drill-down-secret', delayMs: 0 });
+  adapter.setScript(ticket.id, { kind: 'succeed', delayMs: 200 });
+
+  const loop = startDaemonLoop({
+    readiness: 'skip',
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    artifactsDir: join(testRoot.root, 'artifacts-live-success'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const deadline1 = Date.now() + 2000;
+  while (loop.liveRuns.size === 0 && Date.now() < deadline1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.liveRuns.size, 1);
+  const [runId, info] = [...loop.liveRuns.entries()][0]!;
+  assert.equal(info.tool, 'Bash');
+  assert.equal(info.detail, 'echo drill-down-secret');
+  assert.equal(typeof info.since, 'string');
+  assert.equal(typeof info.lastProgressAt, 'string');
+
+  const deadline2 = Date.now() + 2000;
+  while (getTicket(db, ticket.id)!.status !== 'REVIEW' && getTicket(db, ticket.id)!.status !== 'DONE' && Date.now() < deadline2) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.liveRuns.has(runId), false, 'a settled run must not still be in the live map');
+});
+
+test('DaemonLoop.liveRuns is cleared for a run that settles as a non-retryable failure', async (t) => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const ticket = createTicket(db, { projectId: project.id, title: 'fails', maxAttempts: 1, workspaceType: 'NONE' });
+  const adapter = new FakeAdapter();
+  adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'exit 1', delayMs: 0 });
+  adapter.setScript(ticket.id, { kind: 'final', delayMs: 100 });
+
+  const loop = startDaemonLoop({
+    readiness: 'skip',
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    artifactsDir: join(testRoot.root, 'artifacts-live-failure'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const deadline1 = Date.now() + 2000;
+  while (loop.liveRuns.size === 0 && Date.now() < deadline1) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.liveRuns.size, 1);
+
+  const deadline2 = Date.now() + 2000;
+  while (getTicket(db, ticket.id)!.status !== 'FAILED' && Date.now() < deadline2) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(getTicket(db, ticket.id)!.status, 'FAILED');
+  assert.equal(loop.liveRuns.size, 0);
+});
+
+test('DaemonLoop.stop() clears liveRuns for every worker it cancels (settle path: daemon shutdown)', async (t) => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const ticket = createTicket(db, { projectId: project.id, title: 'hangs', workspaceType: 'NONE' });
+  const adapter = new FakeAdapter();
+  adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'sleep 100', delayMs: 0 });
+  adapter.setScript(ticket.id, { kind: 'hang' });
+
+  const loop = startDaemonLoop({
+    readiness: 'skip',
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    artifactsDir: join(testRoot.root, 'artifacts-live-shutdown'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const deadline = Date.now() + 2000;
+  while (loop.liveRuns.size === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.liveRuns.size, 1);
+
+  await loop.stop();
+  assert.equal(loop.liveRuns.size, 0, 'daemon shutdown must clear the live map for every worker it cancelled');
+});
+
+test('DaemonLoop.cancelTicket clears liveRuns for the cancelled run (settle path: a person\'s cancel)', async (t) => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const ticket = createTicket(db, { projectId: project.id, title: 'hangs', workspaceType: 'NONE' });
+  const adapter = new FakeAdapter();
+  adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'sleep 100', delayMs: 0 });
+  adapter.setScript(ticket.id, { kind: 'hang' });
+
+  const loop = startDaemonLoop({
+    readiness: 'skip',
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    artifactsDir: join(testRoot.root, 'artifacts-live-cancel'),
+    tickIntervalMs: 20,
+  });
+  t.after(() => loop.stop());
+
+  const deadline = Date.now() + 2000;
+  while (loop.liveRuns.size === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(loop.liveRuns.size, 1);
+
+  await loop.cancelTicket(ticket.id);
+  assert.equal(loop.liveRuns.size, 0, "a person's cancel must clear the live map for the cancelled run");
+});
+
+// Batch 19 mini-phase 4 fix round (reviewer Low, daemon.test.ts:851): a test
+// used to sit here asserting `loop.liveRuns.has(run.id) === false` right
+// after `startDaemonLoop` recovered an orphaned run. Dropped, per the
+// reviewer's own two options, rather than kept as decoration: recovery.ts's
+// recoverOrphanedRuns has NO liveRuns code path at all (confirmed by
+// reading it -- it settles run/ticket rows and reclaims a NONE workspace,
+// nothing else), and `loop.liveRuns` is a brand-new, empty Map at the exact
+// point recovery runs (before startDaemonLoop's first tick, in the very
+// same process). The assertion could not fail for any change to
+// recovery.ts -- a fresh Map has no entries by construction, independent of
+// what recovery does or does not do. If recovery ever gains a reason to
+// touch `liveRuns` (it has none today), a real test belongs here then, not
+// before.

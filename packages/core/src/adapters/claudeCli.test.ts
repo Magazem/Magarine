@@ -428,6 +428,162 @@ test('describeProgress: a Bash command carrying a secret is never echoed into th
   }
 });
 
+// Batch 19 mini-phase 4 (ruling 40): the SAME shape of secret-carrying Bash
+// command as the test above, run through the real pipeline once more, this
+// time proving the OPPOSITE property on the OTHER channel -- observeLive
+// must carry the real command (the drill-down's whole point), while
+// observe()'s own progress/result_raw events must still never carry it. Both
+// checked against one real run so the two properties cannot silently drift
+// apart from each other.
+test('observeLive delivers the Bash command that describeProgress/observe must never carry', async () => {
+  const synthDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-live-'));
+  const stdoutFile = join(synthDir, 'stdout.txt');
+  const lines = [
+    { type: 'system', subtype: 'init' },
+    {
+      type: 'assistant',
+      message: {
+        id: 'msg_live_1',
+        model: 'claude-sonnet-5',
+        content: [{ type: 'tool_use', id: 'toolu_live_1', name: 'Bash', input: { command: 'echo LIVE_SECRET_42' } }],
+      },
+    },
+    { type: 'result', total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+  writeFileSync(stdoutFile, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-claudecli-live-ws-'));
+  try {
+    const adapter = new ClaudeCliAdapter({
+      claudeExe: process.execPath,
+      argsPrefix: [fakeExePath],
+      maxBudgetUsd: 2,
+      workspaceType: 'DIRECTORY',
+      workspaceRoot,
+      env: {
+        MAGARINE_FAKE_SPEC: JSON.stringify({
+          stdoutFile,
+          exitCode: 0,
+          createFiles: {
+            '.orchestrator/result.json': JSON.stringify({
+              status: 'ready_for_review',
+              summary: 'ok',
+              artifacts: [],
+              checks: [],
+              blockers: [],
+              questions: [],
+            }),
+          },
+        }),
+      },
+    });
+
+    const ticket = envelope();
+    const handle = await adapter.startWorker({ ticket, systemPolicy: 'default' });
+
+    const liveInfos: Array<{ tool: string; detail: string }> = [];
+    const events: WorkerEvent[] = [];
+    await new Promise<void>((resolve) => {
+      void adapter.observeLive(handle, (info) => liveInfos.push(info));
+      void adapter.observe(handle, (event) => {
+        events.push(event);
+        if (event.type === 'result_raw' || event.type === 'failure') resolve();
+      });
+    });
+
+    assert.ok(
+      liveInfos.some((i) => i.tool === 'Bash' && i.detail === 'echo LIVE_SECRET_42'),
+      'expected the live channel to carry the real command'
+    );
+    for (const event of events) {
+      assert.equal(
+        JSON.stringify(event).includes('LIVE_SECRET_42'),
+        false,
+        `a persisted WorkerEvent leaked the live command: ${JSON.stringify(event)}`
+      );
+    }
+  } finally {
+    await rmSyncResilient(workspaceRoot);
+    rmSync(synthDir, { recursive: true, force: true });
+  }
+});
+
+// Batch 19 mini-phase 4 fix round (reviewer Low, claudeCli.ts:475): the
+// review worried that extractLiveToolUse inspects only the first content
+// block, so a line batching [text, tool_use] would return null instead of
+// finding the Bash call -- checked directly against the real pipeline
+// here. Read literally: extractLiveToolUse's `for` loop does not return on
+// a non-matching block, it continues to the next one, so this was already
+// correct; kept as a permanent regression guard for exactly the shape the
+// review named, since no fixture in this repo exercises multi-block content
+// today (the review's own "moot today" note).
+test('extractLiveToolUse finds a Bash tool_use block that is NOT the first block in the content array', async () => {
+  const synthDir = mkdtempSync(join(tmpdir(), 'magarine-claudecli-live-multiblock-'));
+  const stdoutFile = join(synthDir, 'stdout.txt');
+  const lines = [
+    { type: 'system', subtype: 'init' },
+    {
+      type: 'assistant',
+      message: {
+        id: 'msg_live_2',
+        model: 'claude-sonnet-5',
+        content: [
+          { type: 'text', text: "I'll check that now." },
+          { type: 'tool_use', id: 'toolu_live_2', name: 'Bash', input: { command: 'echo MULTIBLOCK_SECRET_9' } },
+        ],
+      },
+    },
+    { type: 'result', total_cost_usd: 0.01, usage: { input_tokens: 1, output_tokens: 1 } },
+  ];
+  writeFileSync(stdoutFile, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'magarine-claudecli-live-multiblock-ws-'));
+  try {
+    const adapter = new ClaudeCliAdapter({
+      claudeExe: process.execPath,
+      argsPrefix: [fakeExePath],
+      maxBudgetUsd: 2,
+      workspaceType: 'DIRECTORY',
+      workspaceRoot,
+      env: {
+        MAGARINE_FAKE_SPEC: JSON.stringify({
+          stdoutFile,
+          exitCode: 0,
+          createFiles: {
+            '.orchestrator/result.json': JSON.stringify({
+              status: 'ready_for_review',
+              summary: 'ok',
+              artifacts: [],
+              checks: [],
+              blockers: [],
+              questions: [],
+            }),
+          },
+        }),
+      },
+    });
+
+    const ticket = envelope();
+    const handle = await adapter.startWorker({ ticket, systemPolicy: 'default' });
+
+    const liveInfos: Array<{ tool: string; detail: string }> = [];
+    await new Promise<void>((resolve) => {
+      void adapter.observeLive(handle, (info) => liveInfos.push(info));
+      void adapter.observe(handle, (event) => {
+        if (event.type === 'result_raw' || event.type === 'failure') resolve();
+      });
+    });
+
+    assert.ok(
+      liveInfos.some((i) => i.tool === 'Bash' && i.detail === 'echo MULTIBLOCK_SECRET_9'),
+      'expected the tool_use block to be found even though a text block came before it in the same line'
+    );
+  } finally {
+    await rmSyncResilient(workspaceRoot);
+    rmSync(synthDir, { recursive: true, force: true });
+  }
+});
+
 // Ruling 14 item 4: a REAL recorded stream-json line drives describeProgress
 // and classifyProgressMessage (activity.ts) end to end. Two runs against the
 // SAME real assistant/Bash line: unmodified (its own real command is not a

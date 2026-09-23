@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { Db } from './db/index.ts';
 import { assertReadinessMode, type ReadinessMode } from './readiness.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
-import { cancelRun, tick, type StartedRun } from './scheduler.ts';
+import { cancelRun, tick, type LiveRunInfo, type StartedRun } from './scheduler.ts';
 import { countWorkTicketsInProgress, getProject, listProjects, resolveMachineCap } from './store.ts';
 import type { AgentAdapter } from './types.ts';
 
@@ -214,6 +214,8 @@ function computeProjectCap(db: Db, projectId: string, machineCap: number): numbe
 export interface DaemonLoop {
   /** Every run the daemon currently believes is in flight, keyed by run id. Exposed so a cancel handler (the API's cancelTicket, below) can look up a ticket's live run without a second bookkeeping structure -- iterate values() and match on ticketId. */
   live: Map<string, StartedRun>;
+  /** Batch 19 mini-phase 4 (ruling 40): the live drill-down map, keyed by run id -- the SAME instance passed into every tick() call (see scheduler.ts's SchedulerDeps.liveRuns), so it survives across ticks for the life of a run and is cleared on every settle path. `GET /runs/{id}/live` (daemonApi.ts) reads this directly; nothing here is ever written to the database, an event, or a file. */
+  liveRuns: Map<string, LiveRunInfo>;
   /** Stops the tick interval, then cancels every live run: adapter.stop() plus forcing the run/ticket back to a settled DB state (run_cancelled, no attempt consumed) -- never waits on a hung run's own `done` promise, which may never resolve on its own. Returns the ticket ids of the runs it cancelled (empty for a repeated call): they are back to READY with no attempt consumed, so the next `serve` restarts them from scratch and the spend so far is paid again -- `serve` says so (batch 17). Safe to call more than once. */
   stop(): Promise<{ cancelled: string[] }>;
   /** The API's `POST /tick`: forces one scheduling pass for a single project, right now, outside the regular interval. Registers any newly-started runs into the same `live` map the periodic loop uses, so a run started this way is cancellable and gets swept up on shutdown exactly like any other. */
@@ -235,6 +237,12 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
   recoverOrphanedRuns(deps.db);
 
   const live = new Map<string, StartedRun>();
+  // Batch 19 mini-phase 4 (ruling 40): one instance for the life of this
+  // loop, passed into every tick() call below -- see scheduler.ts's
+  // SchedulerDeps.liveRuns for why it must be the SAME map across ticks
+  // (a run's own observeLive subscription, registered once at run-start,
+  // keeps writing into it independent of the periodic tick timer).
+  const liveRuns = new Map<string, LiveRunInfo>();
   let stopped = false;
   let ticking = false;
 
@@ -256,6 +264,7 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
       runTimeoutMs: deps.runTimeoutMs,
       artifactsDir: deps.artifactsDir,
       readiness: deps.readiness,
+      liveRuns,
     });
     for (const s of started) {
       live.set(s.runId, s);
@@ -294,6 +303,7 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
 
   return {
     live,
+    liveRuns,
     async stop() {
       if (stopped) return { cancelled: [] };
       stopped = true;
@@ -304,10 +314,18 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
         // and not a person cancelling it -- run_cancelled, back to READY,
         // per the Strategist's batch 8 ruling (see scheduler.ts's
         // cancelTicketRun doc comment for the full distinction).
-        await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'daemon_shutdown', 'run_cancelled');
+        await cancelRun({ db: deps.db, adapter: deps.adapter, liveRuns }, sr, 'daemon_shutdown', 'run_cancelled');
         cancelled.push(sr.ticketId);
       }
       live.clear();
+      // Batch 19 mini-phase 4 fix round (reviewer High): swept unconditionally,
+      // the same way `live` is above -- each cancelRun call already deletes
+      // its own run's entry, but a hard clear here is the daemon's own final
+      // guarantee that nothing named `tool`/`detail` survives a shutdown,
+      // independent of whether every run this loop ever started was tracked
+      // in `live` (a verifier run, batch 19 mini-phase 4 fix round item 2,
+      // is one example of a run this loop's own `live` map never held).
+      liveRuns.clear();
       return { cancelled };
     },
     async forceTick(projectId) {
@@ -327,7 +345,7 @@ export function startDaemonLoop(deps: DaemonLoopDeps): DaemonLoop {
       // the Strategist's ruling is explicit that landing back in READY would
       // let the daemon's own next tick silently restart it. See
       // scheduler.ts's cancelTicketRun doc comment for the full reasoning.
-      await cancelRun({ db: deps.db, adapter: deps.adapter }, sr, 'user_cancelled', 'cancel');
+      await cancelRun({ db: deps.db, adapter: deps.adapter, liveRuns }, sr, 'user_cancelled', 'cancel');
       live.delete(sr.runId);
       return 'cancelled';
     },

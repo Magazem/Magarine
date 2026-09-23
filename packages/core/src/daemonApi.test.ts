@@ -1,16 +1,16 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnManaged, type ManagedProcess } from './process.ts';
-import { daemonFilePath, type DaemonFileInfo, type DaemonLoop } from './daemon.ts';
+import { daemonFilePath, startDaemonLoop, type DaemonFileInfo, type DaemonLoop } from './daemon.ts';
 import { consumeEventStream } from './daemonClient.ts';
 import { createRequestHandler, isSafeAssetName } from './daemonApi.ts';
 import { openDb, type Db } from './db/index.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
-import { createProject, getSetting, listEventsForProject, setProjectScopePath, setSetting } from './store.ts';
+import { createProject, createTicket, getRun, getSetting, getTicket, listEventsForProject, setProjectScopePath, setSetting } from './store.ts';
 import { deriveTestCliCwd, testTempRoot } from './testSupport.ts';
 import { knownModelIds } from './pricing.ts';
 
@@ -121,6 +121,7 @@ const TEST_TOKEN = 'settings-test-token';
 async function startTestServer(db: Db): Promise<{ port: number; close: () => Promise<void> }> {
   const stubLoop: DaemonLoop = {
     live: new Map(),
+    liveRuns: new Map(),
     stop: async () => ({ cancelled: [] }),
     forceTick: async () => ({ started: [] }),
     cancelTicket: async () => 'not_running',
@@ -1098,6 +1099,7 @@ test('createRequestHandler().closeAllStreams() ends every open /events response 
   const db = openDb(':memory:');
   const stubLoop: DaemonLoop = {
     live: new Map(),
+    liveRuns: new Map(),
     stop: async () => ({ cancelled: [] }),
     forceTick: async () => ({ started: [] }),
     cancelTicket: async () => 'not_running',
@@ -1496,5 +1498,298 @@ test('POST /tickets with profile is mutually exclusive with model, and GET /boar
     }
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+// --- Batch 19 mini-phase 4 (ruling 40): GET /runs/{id}/live ----------------
+// In-process (createRequestHandler + a real http.Server), like the settings
+// routes above -- but with a REAL startDaemonLoop, a REAL FakeAdapter, and a
+// REAL sqlite FILE (never `:memory:`), not the stubLoop those tests use. The
+// live map is scheduler-owned state that only a real scheduling pass ever
+// writes, and acceptance line 3 requires reading the database FILE itself
+// off disk, which `:memory:` has none of.
+const LIVE_TEST_TOKEN = 'live-drilldown-test-token';
+const liveTestRoot = testTempRoot('live-drilldown');
+after(liveTestRoot.cleanup);
+
+interface LiveTestServer {
+  port: number;
+  db: Db;
+  dbPath: string;
+  stateDir: string;
+  project: { id: string };
+  adapter: FakeAdapter;
+  loop: DaemonLoop;
+  close: () => Promise<void>;
+}
+
+async function startLiveTestServer(): Promise<LiveTestServer> {
+  const stateDir = mkdtempSync(join(liveTestRoot.root, 'run-'));
+  const dbDir = join(stateDir, 'db');
+  mkdirSync(dbDir, { recursive: true });
+  const dbPath = join(dbDir, 'magarine.db');
+  const db = openDb(dbPath);
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new FakeAdapter();
+
+  const loop = startDaemonLoop({
+    readiness: 'skip',
+    db,
+    adapter,
+    maxParallelWorkers: 1,
+    artifactsDir: join(stateDir, 'artifacts'),
+    tickIntervalMs: 20,
+  });
+
+  const requestHandler = createRequestHandler({
+    db,
+    adapter,
+    loop,
+    token: LIVE_TEST_TOKEN,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    stateDir,
+  });
+  const server = createServer(requestHandler.handle);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+
+  return {
+    port,
+    db,
+    dbPath,
+    stateDir,
+    project,
+    adapter,
+    loop,
+    async close() {
+      requestHandler.closeAllStreams();
+      await loop.stop();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      db.close();
+      rmSync(stateDir, { recursive: true, force: true });
+    },
+  };
+}
+
+test('GET /runs/{id}/live: 401 with a wrong token, and 401 with no Authorization header at all', async () => {
+  const server = await startLiveTestServer();
+  try {
+    const wrongRes = await api(server.port, 'wrong-token', 'GET', '/runs/whatever/live');
+    assert.equal(wrongRes.status, 401);
+
+    // Batch 19 mini-phase 4 fix round (reviewer Low, daemonApi.test.ts:1575):
+    // a wrong token exercises isAuthorized's mismatch branch, not its
+    // missing-header branch (`typeof header !== 'string'`) -- api('', ...)
+    // sends no Authorization header at all (see api()'s own `token ? {...}
+    // : {}`), which this route had never actually been tested against.
+    const noHeaderRes = await api(server.port, '', 'GET', '/runs/whatever/live');
+    assert.equal(noHeaderRes.status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
+test('GET /runs/{id}/live: 404 for an unknown run id', async () => {
+  const server = await startLiveTestServer();
+  try {
+    const res = await api(server.port, LIVE_TEST_TOKEN, 'GET', '/runs/does-not-exist/live');
+    assert.equal(res.status, 404);
+  } finally {
+    await server.close();
+  }
+});
+
+// Batch 19 mini-phase 4 fix round (reviewer Medium, daemonApi.ts:605,
+// amending ruling 40): a RUNNING run that has not yet reported any tool use
+// (a hung worker before its first tool call -- a stuck auth prompt, a CLI
+// that never starts) must be 200 with `tool: null`, not 404 -- 404 hides the
+// one measurement (`lastProgressAt`) the owner needs exactly when a worker
+// looks stuck this early. 404 is reserved for an unknown run id and one that
+// has already settled.
+test('GET /runs/{id}/live: 200 with tool null and lastProgressAt for a RUNNING run that has not reported a tool use yet', async () => {
+  const server = await startLiveTestServer();
+  try {
+    const ticket = createTicket(server.db, { projectId: server.project.id, title: 'hangs before its first tool call', workspaceType: 'NONE' });
+    server.adapter.setScript(ticket.id, { kind: 'hang' });
+    // Deliberately no setLiveToolUse call: this run must never emit a live signal.
+
+    const tickRes = await api(server.port, LIVE_TEST_TOKEN, 'POST', '/tick', { project: server.project.id });
+    const runId = (tickRes.json as { started: Array<{ runId: string }> }).started[0]!.runId;
+
+    const deadline = Date.now() + 2000;
+    let res = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+    while (getTicket(server.db, ticket.id)!.status !== 'IN_PROGRESS' && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    res = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+
+    assert.equal(res.status, 200, 'a RUNNING run with no tool use yet must be 200, never 404');
+    const body = res.json as { tool: string | null; detail: string | null; since: string | null; lastProgressAt: string };
+    assert.equal(body.tool, null);
+    assert.equal(body.detail, null);
+    assert.equal(body.since, null);
+    assert.equal(typeof body.lastProgressAt, 'string');
+  } finally {
+    await server.close();
+  }
+});
+
+test('GET /runs/{id}/live returns {tool, detail, since, lastProgressAt} while the run is live, and 404 once it settles', async () => {
+  const server = await startLiveTestServer();
+  try {
+    const ticket = createTicket(server.db, { projectId: server.project.id, title: 'runs a command', workspaceType: 'NONE' });
+    server.adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'echo live-drilldown-ok', delayMs: 0 });
+    server.adapter.setScript(ticket.id, { kind: 'succeed', delayMs: 300 });
+
+    const tickRes = await api(server.port, LIVE_TEST_TOKEN, 'POST', '/tick', { project: server.project.id });
+    assert.equal(tickRes.status, 200);
+    const runId = (tickRes.json as { started: Array<{ ticketId: string; runId: string }> }).started[0]!.runId;
+
+    // Poll until the live signal has actually landed -- the FakeAdapter's
+    // own timer, however short, is still asynchronous.
+    const deadline1 = Date.now() + 2000;
+    let liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+    while (liveRes.status !== 200 && Date.now() < deadline1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+    }
+    assert.equal(liveRes.status, 200);
+    const info = liveRes.json as { tool: string; detail: string; since: string; lastProgressAt: string };
+    assert.equal(info.tool, 'Bash');
+    assert.equal(info.detail, 'echo live-drilldown-ok');
+    assert.equal(typeof info.since, 'string');
+    assert.equal(typeof info.lastProgressAt, 'string');
+
+    // Wait for the scripted 'succeed' (delayMs: 300) to settle the run.
+    const deadline2 = Date.now() + 3000;
+    while (getTicket(server.db, ticket.id)!.status === 'IN_PROGRESS' && Date.now() < deadline2) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.notEqual(getTicket(server.db, ticket.id)!.status, 'IN_PROGRESS', 'sanity: the run must have settled');
+
+    const afterRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+    assert.equal(afterRes.status, 404, 'a settled run must 404, per acceptance line 2');
+  } finally {
+    await server.close();
+  }
+});
+
+// Acceptance line 3, verbatim: after a run whose worker used Bash with a
+// recognisable string, that string must appear in NO event payload, NO
+// activity row, NO stream frame and no file the daemon wrote -- checked
+// against the real, on-disk sqlite FILE (not the API), the real HTTP
+// /activity route, and a real SSE /events connection, all against the SAME
+// run this test also proves the live route DOES show the secret on, so a
+// future change that accidentally routes `detail` into the persisted path is
+// caught here, not just inferred from the live route working.
+test('acceptance 3: a Bash command with a recognisable secret is shown live, but never appears in the events table (including the terminal event), the run row, the activity feed, the stream, or any file on disk -- checked AFTER the run settles', async () => {
+  const server = await startLiveTestServer();
+  try {
+    const SECRET = 'MAGARINE_DRILLDOWN_SECRET_6f19a2';
+    const ticket = createTicket(server.db, { projectId: server.project.id, title: 'runs a secret command', workspaceType: 'NONE' });
+    server.adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: `export TOKEN=${SECRET} && curl https://example.invalid`, delayMs: 0 });
+    // Batch 19 mini-phase 4 fix round (reviewer Medium, daemonApi.test.ts:1649):
+    // a 'progress' script never terminates, so the run's own terminal event
+    // (worker_done_for_verification -> DONE via the auto-passing verifier)
+    // and its run row never existed for a mutation to leak `detail` into --
+    // this test could not have caught that class of bug. 'succeed' actually
+    // settles the ticket (worker done -> REVIEW -> the fake verifier's own
+    // default verify_pass -> DONE), so both are real and get scanned below.
+    server.adapter.setScript(ticket.id, { kind: 'succeed', delayMs: 150 });
+
+    const tickRes = await api(server.port, LIVE_TEST_TOKEN, 'POST', '/tick', { project: server.project.id });
+    const runId = (tickRes.json as { started: Array<{ runId: string }> }).started[0]!.runId;
+
+    // Confirm the live route really does carry the secret before proving it
+    // never leaks anywhere else -- otherwise a broken live channel would
+    // make this test pass for the wrong reason (nothing to leak).
+    const deadline1 = Date.now() + 2000;
+    let liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+    while (liveRes.status !== 200 && Date.now() < deadline1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      liveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+    }
+    assert.equal(liveRes.status, 200);
+    assert.ok((liveRes.json as { detail: string }).detail.includes(SECRET), 'sanity: the live route must show the secret');
+
+    // Now wait for the ticket to actually settle -- DONE, through the worker
+    // 'succeed' script and the fake verifier's default pass.
+    const deadline2 = Date.now() + 3000;
+    while (getTicket(server.db, ticket.id)!.status !== 'DONE' && Date.now() < deadline2) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(getTicket(server.db, ticket.id)!.status, 'DONE', 'sanity: the run must have actually settled');
+
+    // The live route must 404 now (acceptance 2), which also proves nothing
+    // is still holding the command in memory to leak from.
+    const afterLiveRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/runs/${runId}/live`);
+    assert.equal(afterLiveRes.status, 404);
+
+    // Force the WAL to flush into the main db file -- WAL mode (db/index.ts)
+    // defers writes into a sidecar `-wal` file, so a plain read of the .db
+    // file alone could miss a write that landed only in the WAL and still
+    // call this test a false pass.
+    server.db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+
+    // 1) The events table, read straight from the store, not the API --
+    // INCLUDING the terminal event (worker_done_for_verification and
+    // whatever the verifier's own pass records), which only exists now that
+    // the run actually settled.
+    const events = listEventsForProject(server.db, server.project.id);
+    assert.ok(events.length > 0, 'sanity: some events must have been recorded');
+    assert.ok(
+      events.some((e) => e.eventType === 'worker_done_for_verification'),
+      'sanity: the terminal worker event must actually exist for this test to be checking anything'
+    );
+    for (const event of events) {
+      const serialized = JSON.stringify(event);
+      assert.equal(serialized.includes(SECRET), false, `event row leaked the secret: ${serialized}`);
+    }
+
+    // 2) The run row itself, read straight from the store -- usage_json and
+    // every other column, not just the events that reference it.
+    const runRow = getRun(server.db, runId)!;
+    assert.equal(JSON.stringify(runRow).includes(SECRET), false, `the run row leaked the secret: ${JSON.stringify(runRow)}`);
+
+    // 3) The raw database FILE on disk, byte for byte -- not the API, not
+    // the store layer, the file itself.
+    const dbBytes = readFileSync(server.dbPath, 'latin1');
+    assert.equal(dbBytes.includes(SECRET), false, 'the sqlite database file itself must not contain the secret');
+
+    // 4) The activity feed, over the real HTTP route.
+    const activityRes = await api(server.port, LIVE_TEST_TOKEN, 'GET', `/activity?project=${server.project.id}&all=true`);
+    assert.equal(activityRes.status, 200);
+    assert.equal(activityRes.text.includes(SECRET), false, 'the activity feed must not contain the secret');
+
+    // 5) The SSE stream.
+    const controller = new AbortController();
+    const streamFrames: string[] = [];
+    const consumed = (async () => {
+      for await (const event of consumeEventStream({ port: server.port, token: LIVE_TEST_TOKEN }, { since: 0, signal: controller.signal })) {
+        streamFrames.push(JSON.stringify(event));
+        if (streamFrames.length >= events.length) break;
+      }
+    })();
+    await Promise.race([consumed, new Promise((resolve) => setTimeout(resolve, 1000))]);
+    controller.abort();
+    for (const frame of streamFrames) {
+      assert.equal(frame.includes(SECRET), false, `an SSE stream frame leaked the secret: ${frame}`);
+    }
+
+    // 6) Every file the daemon wrote under its own state directory
+    // (database file + WAL/SHM sidecars, artifacts directory, workspace
+    // temp files) -- a blanket sweep, not just the specific files named
+    // above, so a future write site this test's author did not anticipate
+    // is still caught.
+    const allEntries = readdirSync(server.stateDir, { recursive: true }) as string[];
+    for (const rel of allEntries) {
+      const full = join(server.stateDir, rel);
+      if (!statSync(full).isFile()) continue;
+      const bytes = readFileSync(full, 'latin1');
+      assert.equal(bytes.includes(SECRET), false, `file ${full} leaked the secret`);
+    }
+  } finally {
+    await server.close();
   }
 });

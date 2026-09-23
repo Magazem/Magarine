@@ -337,6 +337,42 @@ export interface AgentAdapterCapabilities {
   supportsResume: boolean;
 }
 
+// Batch 19 mini-phase 4 (ruling 40): the adapter's current tool use -- `tool`
+// is the tool's own name, `detail` its raw input (the command text for
+// Bash). Delivered on `AgentAdapter.observeLive`, a channel the scheduler
+// NEVER inserts an event for -- it only updates an in-memory live map, keyed
+// by run id, that dies with the run (scheduler.ts's own doc comment on that
+// map has the full reasoning). This is the same ruling claudeCli.ts's
+// `describeProgress` already states for `WorkerEvent`'s `progress.message`
+// (never the command itself, batch 15 addendum 3 / ruling 14) extended to a
+// second, still-never-persisted surface for the drill-down the owner asked
+// for -- ruling 14's predicate-only `message` field is untouched by this.
+export interface LiveToolUse {
+  tool: string;
+  detail: string;
+}
+
+// Batch 19 mini-phase 4 (ruling 40): what the scheduler's live map
+// (SchedulerDeps.liveRuns, scheduler.ts) and the verifier's own live
+// registration (VerifierDeps.liveRuns, verifier.ts) both store per running
+// run id, and what `GET /runs/{id}/live` (daemonApi.ts) returns verbatim.
+// Lives in types.ts, not scheduler.ts, so verifier.ts can use the same shape
+// without importing from scheduler.ts (which already imports FROM
+// verifier.ts -- a cycle). `since` is reset to the moment THIS tool/detail
+// pair was reported -- i.e. when the CURRENT tool use began, not when the
+// run itself started (that is `Run.startedAt`, already available
+// elsewhere). `lastProgressAt` is the daemon's own already-timestamped
+// record of the last progress WorkerEvent of ANY kind for this run (not
+// just a tool-use one) -- "is it stuck" is this minus `since`/now, a
+// measurement, never a verdict this daemon computes and states (ruling 40
+// section 2).
+export interface LiveRunInfo {
+  tool: string;
+  detail: string;
+  since: string;
+  lastProgressAt: string;
+}
+
 // Reproduced exactly from technical-architecture-weekend-mvp.md ("Agent
 // adapter abstraction"), with the supporting types above filled in.
 export interface AgentAdapter {
@@ -353,6 +389,15 @@ export interface AgentAdapter {
   send(handle: WorkerHandle, message: string): Promise<void>;
 
   observe(handle: WorkerHandle, onEvent: (event: WorkerEvent) => void): Promise<() => void>;
+
+  // Batch 19 mini-phase 4 (ruling 40): a second, NON-persisted channel,
+  // delivered the same way `observe` delivers progress -- but nothing an
+  // adapter reports through this ever reaches an event, the database, or a
+  // file (see LiveToolUse's own doc comment). Every implementation must
+  // provide this (ClaudeCliAdapter reads it off the same tool_use block
+  // describeProgress already parses; FakeAdapter's is scripted via
+  // `setLiveToolUse`).
+  observeLive(handle: WorkerHandle, onLive: (info: LiveToolUse) => void): Promise<() => void>;
 
   stop(handle: WorkerHandle): Promise<void>;
 

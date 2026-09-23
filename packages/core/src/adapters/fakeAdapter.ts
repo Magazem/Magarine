@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type {
   AgentAdapter,
   AgentAdapterCapabilities,
+  LiveToolUse,
   TicketEnvelope,
   Workspace,
   WorkerEvent,
@@ -108,6 +109,8 @@ interface HandleState {
   timers: NodeJS.Timeout[];
   stopped: boolean;
   listeners: Array<(event: WorkerEvent) => void>;
+  /** Batch 19 mini-phase 4 (ruling 40): the live-tool-use channel's own listeners -- see claudeCli.ts's HandleState.liveListeners for why this is a separate array from `listeners` above, never replayed. */
+  liveListeners: Array<(info: LiveToolUse) => void>;
   /** The deferred post-stop terminal event scheduled by stop() (see its comment). Tracked separately from `timers` -- which stop() itself clears -- so destroy() can cancel it even on a handle that was already stopped once. */
   postStopTimer?: NodeJS.Timeout;
   /** Batch 9: the real workspace path this handle's ticket was given, captured from startWorker's `input.workspace` -- needed so a `manager_proposal` script can write a real proposal.json into it. Undefined if no workspace was given (never true in production; only a hand-written test calling startWorker without one could hit this). */
@@ -141,6 +144,8 @@ export class FakeAdapter implements AgentAdapter {
   private defaultScript: FakeScript | undefined;
   private readonly verifyRunsStarted = new Map<string, number>();
   private readonly handles = new Map<string, HandleState>();
+  /** Batch 19 mini-phase 4 (ruling 40): scripted live-tool-use, played back by `observeLive` the same way a 'progress' FakeScript is played back by `observe` -- see `setLiveToolUse`. */
+  private readonly liveScripts = new Map<string, { tool: string; detail: string; delayMs?: number }>();
 
   /** Batch 18 ruling 34: the script for any worker run whose ticket has none of its own -- what a test needs for an AUTOMATIC manager ticket, whose id does not exist until the scheduler creates it. */
   setDefaultScript(script: FakeScript | undefined): void {
@@ -150,6 +155,15 @@ export class FakeAdapter implements AgentAdapter {
   setScript(ticketId: string, script: FakeScript): void {
     if (script.kind.startsWith('verify_')) this.verifyScripts.set(ticketId, script);
     else this.scripts.set(ticketId, script);
+  }
+
+  // Batch 19 mini-phase 4 (ruling 40): drives the scheduler's live map
+  // through the REAL observeLive path (not a hand-inserted map entry) --
+  // combine with `setScript` for the ticket's terminal outcome, e.g. a
+  // 'succeed' script that also reports a Bash command mid-run, the same
+  // shape a real worker's stream produces (one tool_use, then a result).
+  setLiveToolUse(ticketId: string, toolUse: { tool: string; detail: string; delayMs?: number }): void {
+    this.liveScripts.set(ticketId, toolUse);
   }
 
   async capabilities(): Promise<AgentAdapterCapabilities> {
@@ -166,7 +180,7 @@ export class FakeAdapter implements AgentAdapter {
       input.ticket.runKind === 'verify'
         ? { criteria: input.ticket.verification?.acceptanceCriteria ?? input.ticket.acceptanceCriteria }
         : undefined;
-    this.handles.set(handle.id, { timers: [], stopped: false, listeners: [], workspacePath: input.workspace?.path, verify });
+    this.handles.set(handle.id, { timers: [], stopped: false, listeners: [], liveListeners: [], workspacePath: input.workspace?.path, verify });
     return handle;
   }
 
@@ -385,6 +399,30 @@ export class FakeAdapter implements AgentAdapter {
       state.listeners = state.listeners.filter((l) => l !== onEvent);
       for (const timer of state.timers) clearTimeout(timer);
       state.timers = [];
+    };
+  }
+
+  // Batch 19 mini-phase 4 (ruling 40): plays back `setLiveToolUse`'s
+  // scripted live signal (if any) for this ticket, the same trigger point
+  // `observe` above uses for the 'progress' FakeScript kind -- registered by
+  // the scheduler right alongside `observe`, so a script fired here lands on
+  // the same handle's `state.timers` and is cancelled by `stop()` exactly
+  // like every other scheduled event.
+  async observeLive(handle: WorkerHandle, onLive: (info: LiveToolUse) => void): Promise<() => void> {
+    const state = this.handles.get(handle.id);
+    if (!state) throw new Error(`unknown handle: ${handle.id}`);
+    state.liveListeners.push(onLive);
+
+    const script = this.liveScripts.get(handle.ticketId);
+    if (script) {
+      const timer = setTimeout(() => {
+        if (!state.stopped) for (const listener of state.liveListeners) listener({ tool: script.tool, detail: script.detail });
+      }, script.delayMs ?? 0);
+      state.timers.push(timer);
+    }
+
+    return () => {
+      state.liveListeners = state.liveListeners.filter((l) => l !== onLive);
     };
   }
 

@@ -10,6 +10,7 @@ import { isKnownModel, priceUsage, type Usage } from '../pricing.ts';
 import type {
   AgentAdapter,
   AgentAdapterCapabilities,
+  LiveToolUse,
   TicketEnvelope,
   Workspace,
   WorkspaceType,
@@ -456,6 +457,35 @@ function describeProgress(line: Record<string, unknown>): string | null {
   return null;
 }
 
+// Batch 19 mini-phase 4 (ruling 40): the SAME tool_use block describeProgress
+// above reads, but returning the raw input instead of a predicate's answer --
+// this is what makes the two functions different in kind, not just in
+// output. `describeProgress`'s message is a persisted WorkerEvent, so it may
+// never carry the command; this is the live-only channel (LiveToolUse,
+// types.ts), delivered through observeLive, which the scheduler is
+// structurally forbidden from turning into an event (scheduler.ts's live map
+// never reaches insertEvent). `detail` is the command text for Bash (the
+// tool this ruling exists for); every other tool has no analogous "command"
+// field to extract, so `detail` is empty for it rather than inventing a
+// stand-in representation this batch was not asked for.
+function extractLiveToolUse(line: Record<string, unknown>): LiveToolUse | null {
+  if (line.type !== 'assistant') return null;
+  const content = (line.message as Record<string, unknown> | undefined)?.content;
+  if (!Array.isArray(content)) return null;
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (block?.type === 'tool_use') {
+      const name = String(block.name);
+      if (name === 'Bash') {
+        const input = block.input as Record<string, unknown> | undefined;
+        const command = typeof input?.command === 'string' ? input.command : '';
+        return { tool: name, detail: command };
+      }
+      return { tool: name, detail: '' };
+    }
+  }
+  return null;
+}
+
 // Batch 4 item 3: the daemon needs its own running cost estimate, not just
 // the tool's terminal `total_cost_usd` (which only arrives once, at the very
 // end -- too late for the scheduler to stop an overspending run mid-flight).
@@ -518,6 +548,8 @@ interface HandleState {
   workspaceType: WorkspaceType;
   eventLog: WorkerEvent[];
   listeners: Array<(event: WorkerEvent) => void>;
+  /** Batch 19 mini-phase 4 (ruling 40): the live-tool-use channel's own listeners, deliberately NOT eventLog-backed -- unlike `listeners` above, there is nothing to replay a late subscriber (nothing here is ever stored, per the ruling), and the scheduler subscribes right alongside `observe` at run-start, so the race window is the same one `observe`'s own eventLog replay exists to close for the persisted channel, not a new one. */
+  liveListeners: Array<(info: LiveToolUse) => void>;
   /** Assistant message ids already tallied, so a repeated stream emission of the same turn (observed in real fixtures) is not double-counted. */
   talliedMessageIds: Set<string>;
   costTallyUsd: number;
@@ -622,6 +654,7 @@ export class ClaudeCliAdapter implements AgentAdapter {
       workspaceType,
       eventLog: [],
       listeners: [],
+      liveListeners: [],
       talliedMessageIds: new Set(),
       costTallyUsd: 0,
     };
@@ -667,6 +700,14 @@ export class ClaudeCliAdapter implements AgentAdapter {
           }
           const message = describeProgress(obj);
           if (message) this.publish(state, { type: 'progress', message, costUsd: state.costTallyUsd, unknownModel });
+
+          // Batch 19 mini-phase 4 (ruling 40): fired independently of the
+          // progress publish above -- this is the live-only channel, never
+          // appended to `state.eventLog`, so nothing here can ever be
+          // replayed into the persisted path a late `observe()` subscriber
+          // reads from.
+          const live = extractLiveToolUse(obj);
+          if (live) this.publishLive(state, live);
         }
       }
     });
@@ -787,6 +828,20 @@ export class ClaudeCliAdapter implements AgentAdapter {
     };
   }
 
+  // Batch 19 mini-phase 4 (ruling 40): no replay (see HandleState's own
+  // comment on `liveListeners`) -- the scheduler subscribes right after
+  // startWorker, the same ordering `observe` above relies on for its own
+  // eventLog replay to matter only for the tiny startup race, not steady
+  // state.
+  async observeLive(handle: WorkerHandle, onLive: (info: LiveToolUse) => void): Promise<() => void> {
+    const state = this.handles.get(handle.id);
+    if (!state) throw new Error(`unknown handle: ${handle.id}`);
+    state.liveListeners.push(onLive);
+    return () => {
+      state.liveListeners = state.liveListeners.filter((l) => l !== onLive);
+    };
+  }
+
   async stop(handle: WorkerHandle): Promise<void> {
     const state = this.handles.get(handle.id);
     if (!state) return;
@@ -801,5 +856,13 @@ export class ClaudeCliAdapter implements AgentAdapter {
   private publish(state: HandleState, event: WorkerEvent): void {
     state.eventLog.push(event);
     for (const listener of state.listeners) listener(event);
+  }
+
+  // Batch 19 mini-phase 4 (ruling 40): deliberately NOT `eventLog.push` --
+  // see HandleState's own comment on `liveListeners` for why this channel
+  // keeps no history at all, not even in this process's own memory beyond
+  // "right now".
+  private publishLive(state: HandleState, info: LiveToolUse): void {
+    for (const listener of state.liveListeners) listener(info);
   }
 }

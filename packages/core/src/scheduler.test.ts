@@ -27,12 +27,12 @@ import {
   workerProfileStatus,
 } from './store.ts';
 import { FakeAdapter } from './adapters/fakeAdapter.ts';
-import { tick, runUntilIdle } from './scheduler.ts';
+import { cancelRun, tick, runUntilIdle, type LiveRunInfo } from './scheduler.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import { buildInbox } from './commands/inbox.ts';
 import { spawnManaged } from './process.ts';
 import { testTempRoot } from './testSupport.ts';
-import type { AgentAdapter, AgentAdapterCapabilities, TicketEnvelope, WorkerEvent, WorkerHandle, Workspace } from './types.ts';
+import type { AgentAdapter, AgentAdapterCapabilities, LiveToolUse, TicketEnvelope, WorkerEvent, WorkerHandle, Workspace } from './types.ts';
 
 // Batch 5 item 3: this file's own private root for every NONE-mode
 // workspace `tick()`/`runUntilIdle()` create below, instead of sharing the
@@ -60,6 +60,10 @@ function setupProject(maxParallelWorkers = 2) {
 class TestAdapter implements AgentAdapter {
   readonly id = 'test-adapter';
   private readonly listeners = new Map<string, Array<(event: WorkerEvent) => void>>();
+  // Batch 19 mini-phase 4 (ruling 40): same shape as `listeners` above, for
+  // the live-tool-use channel -- driven by `emitLive`, the live-channel
+  // sibling of this class's own `emit`.
+  private readonly liveListeners = new Map<string, Array<(info: LiveToolUse) => void>>();
   private readonly stopped = new Set<string>();
   private readonly postStopTimers = new Map<string, NodeJS.Timeout>();
   readonly startedWith = new Map<string, { ticket: TicketEnvelope; workspace?: Workspace }>();
@@ -76,6 +80,7 @@ class TestAdapter implements AgentAdapter {
       runId: `testrun_${randomUUID()}`,
     };
     this.listeners.set(handle.id, []);
+    this.liveListeners.set(handle.id, []);
     this.startedWith.set(handle.id, { ticket: input.ticket, workspace: input.workspace });
     if (input.ticket.runKind === 'verify') this.verifierHandles.set(handle.id, input.ticket.verification?.acceptanceCriteria ?? []);
     return handle;
@@ -106,6 +111,19 @@ class TestAdapter implements AgentAdapter {
     };
   }
 
+  // Batch 19 mini-phase 4 (ruling 40): the live-channel sibling of `observe`
+  // above -- driven by `emitLive`, same as every other test-controlled event
+  // this double produces.
+  async observeLive(handle: WorkerHandle, onLive: (info: LiveToolUse) => void): Promise<() => void> {
+    const list = this.liveListeners.get(handle.id);
+    if (!list) throw new Error(`unknown handle: ${handle.id}`);
+    list.push(onLive);
+    return () => {
+      const idx = list.indexOf(onLive);
+      if (idx >= 0) list.splice(idx, 1);
+    };
+  }
+
   async stop(handle: WorkerHandle): Promise<void> {
     if (this.stopped.has(handle.id)) return;
     this.stopped.add(handle.id);
@@ -132,11 +150,18 @@ class TestAdapter implements AgentAdapter {
     }
     await this.stop(handle);
     this.listeners.delete(handle.id);
+    this.liveListeners.delete(handle.id);
   }
 
   emit(handleId: string, event: WorkerEvent): void {
     if (this.stopped.has(handleId)) return;
     for (const listener of this.listeners.get(handleId) ?? []) listener(event);
+  }
+
+  // Batch 19 mini-phase 4 (ruling 40): the live-channel sibling of `emit`.
+  emitLive(handleId: string, info: LiveToolUse): void {
+    if (this.stopped.has(handleId)) return;
+    for (const listener of this.liveListeners.get(handleId) ?? []) listener(info);
   }
 
   isStopped(handleId: string): boolean {
@@ -2003,5 +2028,388 @@ test('a manager ticket cannot be given a profile at all: createTicket refuses it
 
   assert.equal(started.length, 1);
   assert.equal(adapter.startedWith.get(started[0]!.handle.id)!.ticket.profile, undefined);
+});
+
+// --- Batch 19 mini-phase 4 (ruling 40): the scheduler's live drill-down map
+// -----------------------------------------------------------------------
+// `deps.liveRuns`, when supplied, is written by `observeLive` (never by
+// `observe`) and cleared on every settle path. Nothing here asserts against
+// the database's event payloads directly -- that is claudeCli.test.ts's and
+// fakeAdapter.test.ts's job at the adapter layer, and daemonApi.test.ts's job
+// end to end -- these tests are about the MAP itself: who writes it, who
+// reads it, and who clears it.
+
+test('deps.liveRuns is untouched (no observeLive call at all) when the caller supplies none -- the CLI tick/run --until-idle path', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
+  adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'echo hi', delayMs: 0 });
+  adapter.setScript(ticket.id, { kind: 'hang' });
+
+  // Batch 19 mini-phase 4 fix round (reviewer Low, scheduler.test.ts:2042):
+  // the original assertion (`started.length === 1`) passes whether or not
+  // scheduler.ts actually calls observeLive -- it cannot fail for a
+  // regression that drops the `if (deps.liveRuns)` guard. A real spy on the
+  // adapter's own method makes the claim in this test's name checkable.
+  let observeLiveCalls = 0;
+  const originalObserveLive = adapter.observeLive.bind(adapter);
+  adapter.observeLive = (handle, onLive) => {
+    observeLiveCalls += 1;
+    return originalObserveLive(handle, onLive);
+  };
+
+  // No `liveRuns` field at all -- scheduler.ts's own `if (deps.liveRuns)`
+  // guard must skip calling observeLive entirely, not just skip writing.
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  try {
+    assert.equal(started.length, 1);
+    assert.equal(observeLiveCalls, 0, 'observeLive must never be called when no liveRuns map was supplied');
+  } finally {
+    await adapter.stop(started[0]!.handle);
+  }
+});
+
+test('a live tool-use signal populates deps.liveRuns with {tool, detail, since, lastProgressAt}, keyed by run id', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  try {
+    assert.equal(liveRuns.has(s.runId), false, 'no entry until the adapter reports a live tool use');
+
+    adapter.emitLive(s.handle.id, { tool: 'Bash', detail: 'cat secret.txt' });
+    const info = liveRuns.get(s.runId);
+    assert.ok(info, 'expected an entry for this run id');
+    assert.equal(info!.tool, 'Bash');
+    assert.equal(info!.detail, 'cat secret.txt');
+    assert.equal(typeof info!.since, 'string');
+    assert.equal(info!.since, info!.lastProgressAt, 'no progress event yet: lastProgressAt falls back to since');
+  } finally {
+    await adapter.stop(s.handle);
+  }
+});
+
+test('a plain progress event never creates a liveRuns entry on its own, but DOES update lastProgressAt on an existing one, leaving tool/detail/since untouched', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  try {
+    adapter.emit(s.handle.id, { type: 'progress', message: 'tool result received' });
+    assert.equal(liveRuns.has(s.runId), false, 'a progress event alone never creates an entry');
+
+    adapter.emitLive(s.handle.id, { tool: 'Bash', detail: 'sleep 1' });
+    const first = liveRuns.get(s.runId)!;
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    adapter.emit(s.handle.id, { type: 'progress', message: 'tool result received' });
+    const second = liveRuns.get(s.runId)!;
+
+    assert.equal(second.tool, first.tool);
+    assert.equal(second.detail, first.detail);
+    assert.equal(second.since, first.since, 'a plain progress event must not reset since');
+    assert.notEqual(second.lastProgressAt, first.lastProgressAt, 'lastProgressAt must advance');
+  } finally {
+    await adapter.stop(s.handle);
+  }
+});
+
+test('a second live tool-use signal overwrites tool/detail and resets since, for the same run', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  try {
+    adapter.emitLive(s.handle.id, { tool: 'Bash', detail: 'cat one.txt' });
+    const first = liveRuns.get(s.runId)!;
+
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    adapter.emitLive(s.handle.id, { tool: 'Write', detail: '' });
+    const second = liveRuns.get(s.runId)!;
+
+    assert.equal(second.tool, 'Write');
+    assert.equal(second.detail, '');
+    assert.notEqual(second.since, first.since, 'a new tool use resets since');
+  } finally {
+    await adapter.stop(s.handle);
+  }
+});
+
+test('deps.liveRuns is cleared for the run id on a successful terminal result (settle path: success)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  adapter.emitLive(s.handle.id, { tool: 'Bash', detail: 'cat one.txt' });
+  assert.ok(liveRuns.has(s.runId));
+
+  adapter.emit(s.handle.id, {
+    type: 'result_raw',
+    raw: { status: 'done', summary: 'ok', artifacts: [{ kind: 'text', text: 'ok' }], checks: [], blockers: [], questions: [] },
+  });
+  await s.done;
+
+  assert.equal(liveRuns.has(s.runId), false, 'the map must not still name a run that has settled');
+});
+
+test('deps.liveRuns is cleared for the run id on a non-retryable failure (settle path: failure)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 't', maxAttempts: 1, workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  adapter.emitLive(s.handle.id, { tool: 'Bash', detail: 'cat one.txt' });
+  assert.ok(liveRuns.has(s.runId));
+
+  adapter.emit(s.handle.id, { type: 'failure', message: 'boom', retryable: false });
+  await s.done;
+
+  assert.equal(liveRuns.has(s.runId), false);
+});
+
+test('deps.liveRuns is cleared for the run id when cancelRun stops it directly (settle path: cancel/timeout/shutdown, which never route through a terminal WorkerEvent)', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new TestAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 't', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  adapter.emitLive(s.handle.id, { tool: 'Bash', detail: 'sleep 100' });
+  assert.ok(liveRuns.has(s.runId));
+
+  await cancelRun({ db, adapter, liveRuns }, { ticketId: ticket.id, runId: s.runId, handle: s.handle }, 'user_cancelled', 'cancel');
+
+  assert.equal(liveRuns.has(s.runId), false);
+});
+
+// Batch 19 mini-phase 4 fix round (reviewer High, scheduler.ts:1422): the
+// reviewer's exact repro -- a real FakeAdapter, a live tool-use signal
+// scripted to arrive AFTER the run has already succeeded. Before the fix,
+// the observeLive callback had no late-event guard (unlike applyWorkerEvent,
+// which reads the run's live status before writing anything), so this late
+// signal re-created a liveRuns entry for a run that had already settled and
+// nothing was ever going to clear it again -- GET /runs/{id}/live would
+// answer 200 for a settled run (breaking acceptance 2) and the command would
+// live in memory for the rest of the daemon's process lifetime.
+test("a live tool-use signal that arrives AFTER the run has already settled (reviewer's repro) does not re-create the liveRuns entry, and stays cleared", async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'settles before its live signal arrives', workspaceType: 'NONE' });
+  adapter.setScript(ticket.id, { kind: 'succeed', delayMs: 0 });
+  adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'echo late-arriving-command', delayMs: 300 });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+  await s.done;
+
+  assert.equal(getTicket(db, ticket.id)!.status, 'DONE', 'sanity: the worker run settled (done -> REVIEW -> the fake verifier auto-passes -> DONE)');
+  assert.equal(liveRuns.has(s.runId), false, 'sanity: no live signal has fired yet -- nothing to have created an entry');
+
+  // Wait past the scripted live signal's 300ms delay -- this is the late
+  // event the reviewer's repro is about.
+  await new Promise((resolve) => setTimeout(resolve, 450));
+
+  assert.equal(liveRuns.has(s.runId), false, 'a live signal arriving after settle must not re-create the entry');
+});
+
+// Batch 19 mini-phase 4 fix round (reviewer Medium, verifier.ts:357 /
+// scheduler.ts:132): a verifier run is the run most likely to look stuck
+// (it runs the owner's own test suite through Bash) and, before this fix,
+// never registered observeLive at all -- GET /runs/{id}/live 404'd for it
+// unconditionally. Proven here at the run-id level: the entry that appears
+// in liveRuns belongs to the VERIFY run, not the worker run that already
+// settled into REVIEW.
+test('a verifier run registers its own live tool use in deps.liveRuns, keyed by the VERIFY run id, not the worker run id', async () => {
+  const { db, project, adapter } = setupProject(1);
+  const ticket = createTicket(db, { projectId: project.id, title: 'verifier runs the suite', workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+  // The worker lands REVIEW almost instantly; the SAME scripted live signal
+  // (FakeAdapter's setLiveToolUse is keyed by ticket id, not by work/verify)
+  // is what the verifier's own observeLive call replays once it starts.
+  adapter.setScript(ticket.id, { kind: 'review', delayMs: 0 });
+  adapter.setLiveToolUse(ticket.id, { tool: 'Bash', detail: 'pnpm test', delayMs: 0 });
+  adapter.setScript(ticket.id, { kind: 'verify_pass', delayMs: 300 });
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+
+  // Poll for an entry whose run id is NOT the worker's own -- that can only
+  // be the verifier's, since a work ticket's run and its verifier run are
+  // always two distinct run rows (verifier.ts's beginVerifyRun).
+  const deadline = Date.now() + 2000;
+  let verifyRunId: string | undefined;
+  while (!verifyRunId && Date.now() < deadline) {
+    for (const id of liveRuns.keys()) {
+      if (id !== s.runId) verifyRunId = id;
+    }
+    if (!verifyRunId) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(verifyRunId, 'expected the verifier run to register its own live tool use');
+  const info = liveRuns.get(verifyRunId!)!;
+  assert.equal(info.tool, 'Bash');
+  assert.equal(info.detail, 'pnpm test');
+
+  await s.done;
+  assert.equal(liveRuns.size, 0, 'both the worker and verifier entries must be cleared once everything settles');
+});
+
+// --- Lead verification round: the High fix was real but unproven ----------
+// The lead's three mutations against the existing suite all survived:
+// (a) weakening the guard from `!currentRun || status !== 'running'` to just
+// `!currentRun`, (b) dropping the "already settled -> unsubscribe
+// immediately" branch, (c) both together. Root cause: FakeAdapter's own
+// observeLive() resolves its unsubscribe promise essentially synchronously
+// (no real I/O in its body), so by the time any scripted live signal's
+// setTimeout fires, `unsubscribeLive` is already populated and
+// settleLiveChannel() has already removed the listener from FakeAdapter's
+// own internal array -- the callback this file's tests exercise is the
+// ALREADY-UNSUBSCRIBED path, never the "still subscribed, run already
+// settled" window the guard exists for. That window is exactly the real
+// adapter's post-stop/post-kill stdout drain (README's "a worker that keeps
+// talking after being stopped"), where MORE tool_use blocks can be parsed
+// from buffered output after the process is dead and the run has already
+// settled -- LateUnsubscribeAdapter below holds observeLive's own promise
+// open under the TEST's control, so a live signal can be fired inside that
+// exact window on purpose, which no FakeAdapter-based test can do.
+class LateUnsubscribeAdapter implements AgentAdapter {
+  readonly id = 'late-unsubscribe-test-adapter';
+  private liveListener: ((info: LiveToolUse) => void) | undefined;
+  private eventListener: ((event: WorkerEvent) => void) | undefined;
+  private resolveObserveLivePromise: (() => void) | undefined;
+  /** How many times the real unsubscribe closure this adapter hands back was actually INVOKED -- not just computed/stored. Mutation (b) computes it but never calls it once a run has already settled by the time observeLive's promise resolves. */
+  unsubscribeCallCount = 0;
+
+  async capabilities(): Promise<AgentAdapterCapabilities> {
+    return { supportsFiles: false, supportsShell: false, supportsStreaming: true, supportsResume: false };
+  }
+
+  async startWorker(input: { ticket: TicketEnvelope }): Promise<WorkerHandle> {
+    return { id: `lateunsub_${randomUUID()}`, ticketId: input.ticket.ticketId, runId: `lateunsubrun_${randomUUID()}` };
+  }
+
+  async send(): Promise<void> {}
+
+  async observe(_handle: WorkerHandle, onEvent: (event: WorkerEvent) => void): Promise<() => void> {
+    this.eventListener = onEvent;
+    return () => {
+      this.eventListener = undefined;
+    };
+  }
+
+  // The listener is registered SYNCHRONOUSLY here, exactly like FakeAdapter's
+  // and ClaudeCliAdapter's own observeLive -- so it CAN be invoked
+  // immediately, before this method's own returned promise ever resolves.
+  // Only the promise (the unsubscribe closure the caller eventually gets)
+  // is held open, under this test double's explicit control via
+  // resolveObserveLive() below -- this is the one thing FakeAdapter cannot
+  // do, since its own observeLive resolves with no real delay at all.
+  async observeLive(_handle: WorkerHandle, onLive: (info: LiveToolUse) => void): Promise<() => void> {
+    this.liveListener = onLive;
+    return new Promise((resolve) => {
+      this.resolveObserveLivePromise = () => {
+        resolve(() => {
+          this.unsubscribeCallCount += 1;
+          this.liveListener = undefined;
+        });
+      };
+    });
+  }
+
+  async stop(): Promise<void> {}
+  async destroy(): Promise<void> {}
+
+  emitTerminal(event: WorkerEvent): void {
+    this.eventListener?.(event);
+  }
+
+  emitLive(info: LiveToolUse): void {
+    this.liveListener?.(info);
+  }
+
+  /** Resolves observeLive's own promise, whenever the test decides -- standing in for however late a real implementation actually hands back its unsubscribe closure. */
+  resolveObserveLive(): void {
+    this.resolveObserveLivePromise?.();
+  }
+}
+
+test('a live signal that arrives after settle, while observeLive\'s own promise has not resolved yet (the real adapter\'s post-kill drain window), is still dropped by the late-event guard -- proven independent of unsubscribe timing', async () => {
+  const db = openDb(':memory:');
+  const project = createProject(db, { name: 'p', maxParallelWorkers: 1 });
+  const adapter = new LateUnsubscribeAdapter();
+  const ticket = createTicket(db, { projectId: project.id, title: 'late unsubscribe race', maxAttempts: 1, workspaceType: 'NONE' });
+  const liveRuns = new Map<string, LiveRunInfo>();
+
+  const { started } = await tick({ readiness: 'skip', db, adapter, maxParallelWorkers: 1, projectId: project.id, workspaceBaseDir, liveRuns });
+  const s = started[0]!;
+
+  // 1) An ordinary live signal while running -- proves the channel works at
+  // all, so a later "still empty" assertion means something.
+  adapter.emitLive({ tool: 'Bash', detail: 'first command' });
+  assert.ok(liveRuns.has(s.runId), 'sanity: the live channel works before settle');
+
+  // 2) Settle the run -- a non-retryable failure, so no verifier spawns and
+  // `s.done` resolves cleanly once this settles, without a second handle
+  // this single-listener test double would have to juggle. Deliberately
+  // WITHOUT ever calling resolveObserveLive(): settleLiveChannel() fires
+  // inside scheduler.ts here, but `unsubscribeLive` is still undefined (the
+  // promise has not resolved), so it is a no-op -- exactly the real
+  // adapter's post-kill window, held open on purpose.
+  adapter.emitTerminal({ type: 'failure', message: 'boom', retryable: false });
+  await s.done;
+  assert.equal(getRun(db, s.runId)!.status, 'failed', 'sanity: the run has settled');
+  assert.equal(liveRuns.has(s.runId), false, 'the settle path itself (applyWorkerEvent) already clears the entry');
+
+  // 3) THE race: a live signal fires while the listener is STILL registered
+  // in the adapter (observeLive's promise never resolved, so nothing has
+  // unsubscribed it yet) but the run is already settled. With the real
+  // guard (`!currentRun || status !== 'running'`) this must be dropped --
+  // this is exactly what the lead's weakened guard (mutation a, `if
+  // (!currentRun) return;`) fails to do, since the run ROW still exists,
+  // just with a non-'running' status.
+  adapter.emitLive({ tool: 'Bash', detail: 'late command after settle' });
+  assert.equal(
+    liveRuns.has(s.runId),
+    false,
+    'a live signal in the post-settle, pre-unsubscribe window must still be dropped by the guard'
+  );
+
+  // 4) NOW resolve observeLive's promise -- standing in for the real
+  // adapter's async setup finally completing, well after settle.
+  // settleLiveChannel() already ran (step 2) and recorded liveChannelSettled
+  // = true; the ORIGINAL code's `if (liveChannelSettled) unsubscribe(); else
+  // ...` branch must fire the real unsubscribe immediately once the promise
+  // resolves. Mutation (b) drops exactly this branch -- the unsubscribe
+  // closure is computed and stored in `unsubscribeLive`, but nothing ever
+  // reads that variable again (settleLiveChannel only runs once, per run),
+  // so it is never actually CALLED: a real listener leak for the rest of
+  // the process's life.
+  adapter.resolveObserveLive();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    adapter.unsubscribeCallCount,
+    1,
+    "the real unsubscribe function must actually be invoked once observeLive resolves for a run that already settled -- mutation (b)'s regression"
+  );
 });
 

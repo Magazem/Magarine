@@ -38,6 +38,7 @@ async function rig(): Promise<Rig> {
   let clock = 1_000_000;
   const stubLoop: DaemonLoop = {
     live: new Map(),
+    liveRuns: new Map(),
     stop: async () => ({ cancelled: [] }),
     forceTick: async () => ({ started: [] }),
     cancelTicket: async () => 'not_running',

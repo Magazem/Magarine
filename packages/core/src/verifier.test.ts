@@ -1,11 +1,12 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb } from './db/index.ts';
 import { FakeAdapter, type FakeScript } from './adapters/fakeAdapter.ts';
 import { recoverOrphanedRuns } from './recovery.ts';
-import { runUntilIdle, tick } from './scheduler.ts';
+import { runUntilIdle, tick, type LiveRunInfo } from './scheduler.ts';
 import { recordTicketTransition } from './stateMachine.ts';
 import {
   createProject,
@@ -20,7 +21,7 @@ import {
 import { buildManagerBriefing } from './managerEnvelope.ts';
 import { buildWorkerPrompt } from './envelope.ts';
 import { testTempRoot } from './testSupport.ts';
-import type { TicketEnvelope } from './types.ts';
+import type { AgentAdapter, AgentAdapterCapabilities, LiveToolUse, TicketEnvelope, WorkerEvent, WorkerHandle } from './types.ts';
 import {
   beginVerifyRun,
   buildVerifierEnvelope,
@@ -28,6 +29,7 @@ import {
   criteriaFor,
   IMPLICIT_CRITERION,
   PLACEHOLDER_CRITERION,
+  startVerification,
   validateVerifierResult,
 } from './verifier.ts';
 
@@ -380,4 +382,116 @@ test('RULING 32: the previous attempt a retry is told about is the MOST RECENT o
   assert.match(envs[1]!.previousAttempt!.reason, /verdict-two/);
   assert.match(envs[2]!.previousAttempt!.reason, /verdict-two/);
   assert.equal(getTicket(db, ticket.id)!.status, 'DONE');
+});
+
+// --- Lead verification round: the same "unproven" standard applied to the
+// verifier's own live-channel registration (mini-phase 4 fix round item 2).
+// -----------------------------------------------------------------------
+// verifier.ts's own observeLive callback carries the identical late-event
+// guard scheduler.ts's tick() does (`!currentRun || status !== 'running'`),
+// and the existing "a verifier run registers its own live tool use" test
+// (scheduler.test.ts) drives it through FakeAdapter -- whose observeLive
+// resolves its unsubscribe promise essentially synchronously, so that test
+// cannot put a live signal inside the real race window (observeLive's
+// promise still unresolved when the verifier run settles) any more than the
+// worker-side test could before this round. Confirmed by hand: weakening
+// verifier.ts's own guard to `if (!currentRun) return;` left the existing
+// suite fully green. This test calls `startVerification` directly (not
+// through tick()'s full worker -> REVIEW -> auto-verify chain) with the same
+// hand-controlled adapter double scheduler.test.ts's own new test uses, so
+// it can hold the verify run's observeLive promise open on purpose.
+class LateUnsubscribeVerifierAdapter implements AgentAdapter {
+  readonly id = 'late-unsubscribe-verifier-test-adapter';
+  private liveListener: ((info: LiveToolUse) => void) | undefined;
+  private eventListener: ((event: WorkerEvent) => void) | undefined;
+  private resolveObserveLivePromise: (() => void) | undefined;
+  unsubscribeCallCount = 0;
+
+  async capabilities(): Promise<AgentAdapterCapabilities> {
+    return { supportsFiles: false, supportsShell: false, supportsStreaming: true, supportsResume: false };
+  }
+
+  async startWorker(input: { ticket: TicketEnvelope }): Promise<WorkerHandle> {
+    return { id: `lateunsubverify_${randomUUID()}`, ticketId: input.ticket.ticketId, runId: `lateunsubverifyrun_${randomUUID()}` };
+  }
+
+  async send(): Promise<void> {}
+
+  async observe(_handle: WorkerHandle, onEvent: (event: WorkerEvent) => void): Promise<() => void> {
+    this.eventListener = onEvent;
+    return () => {
+      this.eventListener = undefined;
+    };
+  }
+
+  async observeLive(_handle: WorkerHandle, onLive: (info: LiveToolUse) => void): Promise<() => void> {
+    this.liveListener = onLive;
+    return new Promise((resolve) => {
+      this.resolveObserveLivePromise = () => {
+        resolve(() => {
+          this.unsubscribeCallCount += 1;
+          this.liveListener = undefined;
+        });
+      };
+    });
+  }
+
+  async stop(): Promise<void> {}
+  async destroy(): Promise<void> {}
+
+  emitTerminal(event: WorkerEvent): void {
+    this.eventListener?.(event);
+  }
+
+  emitLive(info: LiveToolUse): void {
+    this.liveListener?.(info);
+  }
+
+  resolveObserveLive(): void {
+    this.resolveObserveLivePromise?.();
+  }
+}
+
+test("a live signal that arrives after a VERIFIER run settles, while observeLive's own promise has not resolved yet, is dropped by verifier.ts's own late-event guard -- independent of unsubscribe timing", async () => {
+  const { db, ticket } = setUp();
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'dependencies_resolved', idempotencyKey: 'a' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'run_started', idempotencyKey: 'b' });
+  recordTicketTransition(db, { ticketId: ticket.id, event: 'worker_done_for_verification', idempotencyKey: 'c', payload: { summary: 's' } });
+  const run = beginVerifyRun(db, 'late-unsubscribe-verifier-test-adapter', ticket.id)!;
+  assert.ok(run);
+
+  const adapter = new LateUnsubscribeVerifierAdapter();
+  const liveRuns = new Map<string, LiveRunInfo>();
+  const started = await startVerification({ db, adapter, liveRuns }, ticket.id, run);
+  assert.ok(started);
+
+  // 1) An ordinary live signal while the verifier is running.
+  adapter.emitLive({ tool: 'Bash', detail: 'pnpm test' });
+  assert.ok(liveRuns.has(run.id), 'sanity: the live channel works before settle');
+
+  // 2) Settle the verifier run -- a plain failure event, so `settle()`
+  // (verifier.ts) runs its own liveRuns.delete AND (per this fix round)
+  // unsubscribes, but observeLive's own promise is deliberately never
+  // resolved yet -- exactly the real adapter's post-kill drain window.
+  adapter.emitTerminal({ type: 'failure', message: 'boom', retryable: true });
+  await started!.done;
+  assert.equal(liveRuns.has(run.id), false, "settle() itself already clears this run's entry");
+
+  // 3) THE race: a live signal fires while the listener is still registered
+  // (observeLive's promise never resolved) but the verify run has already
+  // settled. With the real guard this must be dropped -- this is exactly
+  // what weakening verifier.ts's own guard to `if (!currentRun) return;`
+  // fails to do, since the run row still exists with a non-'running' status.
+  adapter.emitLive({ tool: 'Bash', detail: 'late command after verifier settle' });
+  assert.equal(
+    liveRuns.has(run.id),
+    false,
+    "a live signal in the post-settle, pre-unsubscribe window must still be dropped by the verifier's own guard"
+  );
+
+  // 4) Resolve observeLive's promise late -- the real unsubscribe must still
+  // be invoked once it finally arrives.
+  adapter.resolveObserveLive();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(adapter.unsubscribeCallCount, 1, 'the real unsubscribe function must actually be invoked once observeLive resolves after the verifier has settled');
 });

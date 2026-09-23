@@ -46,6 +46,7 @@ import {
 import { assertReadinessMode, projectReadiness, type ReadinessMode } from './readiness.ts';
 import type {
   AgentAdapter,
+  LiveRunInfo,
   Project,
   Run,
   Ticket,
@@ -83,6 +84,18 @@ export interface SchedulerDeps {
    * stuck IN_PROGRESS; see applyManagerTicketDone's own try/catch).
    */
   applyManagerProposalTestHooks?: ApplyManagerProposalTestHooks;
+  /**
+   * Batch 19 mini-phase 4 (ruling 40): the live drill-down map, keyed by run
+   * id -- shared, mutable, supplied by the caller (daemon.ts's
+   * startDaemonLoop creates one and passes the SAME instance into every
+   * tick() call, so it persists across ticks for the life of a run, not just
+   * for one tick()). Undefined (the CLI's own tick/run --until-idle, and any
+   * test that does not pass one) simply means nothing subscribes to the live
+   * channel -- observeLive is never even called, per this file's own
+   * `if (deps.liveRuns)` guard, since a map nobody reads is not worth the
+   * adapter call.
+   */
+  liveRuns?: Map<string, LiveRunInfo>;
 }
 
 export interface StartedRun {
@@ -91,6 +104,13 @@ export interface StartedRun {
   handle: WorkerHandle;
   done: Promise<void>;
 }
+
+// Batch 19 mini-phase 4 fix round: LiveRunInfo now lives in types.ts (see
+// its own doc comment there) so verifier.ts can use the same shape without
+// importing from this file -- re-exported here so every existing consumer
+// of `import { ..., type LiveRunInfo } from './scheduler.ts'` (daemon.ts,
+// scheduler.test.ts) keeps working unchanged.
+export type { LiveRunInfo };
 
 /**
  * Batch 18 ruling 31: starts the verifier for a REVIEW work ticket, unless one
@@ -102,7 +122,10 @@ async function verifyReviewTicket(deps: SchedulerDeps, ticketId: string): Promis
   const run = beginVerifyRun(deps.db, deps.adapter.id, ticketId);
   if (!run) return undefined;
   const started = await startVerification(
-    { db: deps.db, adapter: deps.adapter, runTimeoutMs: deps.runTimeoutMs, workspaceBaseDir: deps.workspaceBaseDir },
+    // Batch 19 mini-phase 4 fix round (reviewer Medium): forwarded so a
+    // verifier run gets the same live drill-down a worker run does -- see
+    // verifier.ts's VerifierDeps.liveRuns doc comment.
+    { db: deps.db, adapter: deps.adapter, runTimeoutMs: deps.runTimeoutMs, workspaceBaseDir: deps.workspaceBaseDir, liveRuns: deps.liveRuns },
     ticketId,
     run
   );
@@ -404,8 +427,15 @@ function cancelTicketRun(
   ticketId: string,
   runId: string,
   failureClass: string,
-  transitionEvent: 'run_cancelled' | 'cancel'
+  transitionEvent: 'run_cancelled' | 'cancel',
+  // Batch 19 mini-phase 4 (ruling 40): cleared here, not just in
+  // applyWorkerEvent's own terminal branch -- this function is EVERY
+  // cancel-shaped settle path (daemon shutdown, a per-run timeout, a
+  // person's cancel, adapter_unavailable), none of which route through
+  // applyWorkerEvent's own `if (terminal) ctx.liveRuns?.delete(...)`.
+  liveRuns?: Map<string, LiveRunInfo>
 ): void {
+  liveRuns?.delete(runId);
   const run = getRun(db, runId);
   if (run && run.status === 'running') {
     finishRun(db, runId, { status: 'cancelled', failureClass });
@@ -428,22 +458,25 @@ function cancelTicketRun(
 // a ticket on a person's explicit request, both need to do exactly this --
 // stop the adapter's live handle and force the run/ticket back to a settled
 // DB state -- for the one worker each of those situations targets. Typed on
-// the two fields it actually reads rather than the full SchedulerDeps, so a
+// the fields it actually reads rather than the full SchedulerDeps, so a
 // caller with no projectId/maxParallelWorkers of its own (the daemon ticks
 // many projects, not one) doesn't have to fabricate placeholder values to
 // call it. `transitionEvent` has no default: every call site must say
 // explicitly which of the two intents above it means, the same way
 // `requireRetryableFlag` (stateMachine.ts) refuses to default a
 // retryable/non-retryable choice that would otherwise be easy to get wrong
-// silently.
+// silently. `liveRuns` (batch 19 mini-phase 4, ruling 40) is optional the
+// same way SchedulerDeps.liveRuns is: daemon.ts's real callers always pass
+// its own instance; a caller that never populated a live map has nothing to
+// clear.
 export async function cancelRun(
-  deps: Pick<SchedulerDeps, 'db' | 'adapter'>,
+  deps: Pick<SchedulerDeps, 'db' | 'adapter' | 'liveRuns'>,
   sr: { ticketId: string; runId: string; handle: WorkerHandle },
   failureClass: string,
   transitionEvent: 'run_cancelled' | 'cancel'
 ): Promise<void> {
   await deps.adapter.stop(sr.handle);
-  cancelTicketRun(deps.db, sr.ticketId, sr.runId, failureClass, transitionEvent);
+  cancelTicketRun(deps.db, sr.ticketId, sr.runId, failureClass, transitionEvent, deps.liveRuns);
 }
 
 interface ApplyEventContext {
@@ -463,6 +496,8 @@ interface ApplyEventContext {
   model: string;
   /** Asks the adapter to stop the worker. Kept as a closure so this module never needs the adapter/handle types directly. */
   stopWorker: () => Promise<void>;
+  /** Batch 19 mini-phase 4 (ruling 40): forwarded verbatim from SchedulerDeps.liveRuns -- see that field's own doc comment. */
+  liveRuns?: Map<string, LiveRunInfo>;
   /** Test-only, forwarded from SchedulerDeps -- see that field's own doc comment. */
   applyManagerProposalTestHooks?: ApplyManagerProposalTestHooks;
 }
@@ -556,8 +591,17 @@ async function applyWorkerEvent(db: Db, ticket: Ticket, run: Run, event: WorkerE
   }
 
   const terminal = await applyWorkerEventInner(db, ticket, run, event, ctx);
-  if (terminal && ctx.workspaceType === 'NONE') {
-    await ctx.workspaceCleanup();
+  if (terminal) {
+    // Batch 19 mini-phase 4 (ruling 40): the single choke point for every
+    // settle path that goes THROUGH a terminal WorkerEvent (success,
+    // ordinary failure, malformed/missing-artefact result, budget_exceeded,
+    // and the adapter_unavailable branch, which also calls cancelTicketRun
+    // directly -- deleting twice is harmless). The two settle paths that do
+    // NOT go through a terminal WorkerEvent (a person's cancel / the
+    // daemon's own timeout or shutdown) clear it themselves, inside
+    // cancelTicketRun -- see that function's own comment.
+    ctx.liveRuns?.delete(run.id);
+    if (ctx.workspaceType === 'NONE') await ctx.workspaceCleanup();
   }
   return terminal;
 }
@@ -669,6 +713,22 @@ async function applyWorkerEventInner(
 ): Promise<boolean> {
   switch (event.type) {
     case 'progress': {
+      // Batch 19 mini-phase 4 (ruling 40): ANY progress event, not only one
+      // that carries a live tool-use signal -- this is the daemon's own
+      // already-timestamped record of "the worker did something," which is
+      // what a stuck-or-not measurement (never a verdict this daemon states,
+      // per section 2) is computed against. Only updates an EXISTING entry:
+      // no tool/detail has been observed for this run yet means there is
+      // nothing sensible for GET /runs/{id}/live to show regardless, so an
+      // entry is never created from this event alone. Placed ahead of the
+      // budget-stop/200-cap branches below so it fires from every progress
+      // event this run ever reports, not just the ones that go on to become
+      // a persisted worker_progress row.
+      if (ctx.liveRuns) {
+        const existing = ctx.liveRuns.get(run.id);
+        if (existing) ctx.liveRuns.set(run.id, { ...existing, lastProgressAt: new Date().toISOString() });
+      }
+
       // Batch 6 item 3: pricing.ts prices an unrecognized model at the
       // most-expensive-known rate rather than crashing or guessing low
       // (docs/strategy/batch-6-spec.md section 1 ruling 1 -- over-estimating
@@ -758,7 +818,7 @@ async function applyWorkerEventInner(
       if (event.usage !== undefined) setRunUsage(db, run.id, event.usage);
 
       if (event.retryable === false && event.failureClass === 'adapter_unavailable') {
-        cancelTicketRun(db, ticket.id, run.id, 'adapter_unavailable', 'run_cancelled');
+        cancelTicketRun(db, ticket.id, run.id, 'adapter_unavailable', 'run_cancelled', ctx.liveRuns);
         insertEvent(db, {
           projectId: ticket.projectId,
           eventType: 'adapter_unavailable',
@@ -1277,6 +1337,7 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       model: envelope.model,
       stopWorker: () => deps.adapter.stop(handle),
       applyManagerProposalTestHooks: deps.applyManagerProposalTestHooks,
+      liveRuns: deps.liveRuns,
     };
 
     let timeoutTimer: NodeJS.Timeout | undefined;
@@ -1284,8 +1345,26 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       resolveDone();
     };
+
+    // Batch 19 mini-phase 4 fix round (reviewer High, scheduler.ts:1422):
+    // the live channel's own unsubscribe, settled from EITHER direction --
+    // `settleLiveChannel()` (called from the terminal branch below, and from
+    // every other settle path via cancelTicketRun's own liveRuns.delete,
+    // which does not reach this closure) may run before observeLive's own
+    // promise has resolved, since observeLive is registered below and its
+    // subscription only becomes real once its promise settles. Recording
+    // "already settled" here and unsubscribing immediately once the real
+    // unsubscribe function arrives closes that ordering gap either way.
+    let liveChannelSettled = false;
+    let unsubscribeLive: (() => void) | undefined;
+    const settleLiveChannel = (): void => {
+      liveChannelSettled = true;
+      unsubscribeLive?.();
+    };
+
     if (deps.runTimeoutMs !== undefined) {
       timeoutTimer = setTimeout(() => {
+        settleLiveChannel();
         void cancelRun(deps, { ticketId: ticket.id, runId: run.id, handle }, 'run_timeout', 'run_cancelled').then(
           resolveDone
         );
@@ -1314,6 +1393,13 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
             // (its `done` on a work ticket, or its own `review`) is checked
             // by a verifier before this run's `done` settles.
             if (timeoutTimer) clearTimeout(timeoutTimer);
+            // Batch 19 mini-phase 4 fix round (reviewer High): stop
+            // listening on the live channel the moment THIS run settles --
+            // belt-and-suspenders alongside the late-event guard inside the
+            // observeLive callback below, which is what actually protects
+            // the map's correctness against an event already in flight when
+            // this fires.
+            settleLiveChannel();
             try {
               await (await verifyReviewTicket(deps, ticket.id))?.done;
             } finally {
@@ -1342,6 +1428,44 @@ export async function tick(deps: SchedulerDeps): Promise<TickResult> {
         }
       })();
     });
+
+    // Batch 19 mini-phase 4 (ruling 40): registered right alongside
+    // `observe` above, same handle, same run -- only when a caller actually
+    // supplied a live map (daemon.ts's startDaemonLoop always does; the
+    // CLI's own tick/run --until-idle and most tests do not, and skip the
+    // adapter call entirely rather than subscribe a channel nobody reads).
+    // The entry this writes is the ONLY place `tool`/`detail` are held
+    // anywhere in this process -- never appended to `ctx`, never passed to
+    // insertEvent, never logged.
+    //
+    // Batch 19 mini-phase 4 fix round (reviewer High, scheduler.ts:1422):
+    // the late-event guard applyWorkerEvent already gives the persisted
+    // channel (read this run's live status fresh before doing anything) is
+    // reproduced here for the live channel -- without it, a live signal that
+    // arrives after this run has already settled (the real adapter's own
+    // post-stop/post-kill stdout drain, or just a late buffered chunk)
+    // re-creates a map entry that nothing else was ever going to clear
+    // again, since every settle path clears the map exactly ONCE, at the
+    // moment it settles. `settleLiveChannel()` above additionally
+    // unsubscribes once this run's own terminal event lands, so this
+    // callback stops firing at all for that handle going forward -- the
+    // guard is what proves correctness; the unsubscribe is what stops the
+    // adapter from holding the listener (and this closure) open for the
+    // rest of the daemon's life.
+    if (deps.liveRuns) {
+      const liveRuns = deps.liveRuns;
+      const unsubscribePromise = deps.adapter.observeLive(handle, (info) => {
+        const currentRun = getRun(deps.db, run.id);
+        if (!currentRun || currentRun.status !== 'running') return;
+        const now = new Date().toISOString();
+        const existing = liveRuns.get(run.id);
+        liveRuns.set(run.id, { tool: info.tool, detail: info.detail, since: now, lastProgressAt: existing?.lastProgressAt ?? now });
+      });
+      void unsubscribePromise.then((unsubscribe) => {
+        if (liveChannelSettled) unsubscribe();
+        else unsubscribeLive = unsubscribe;
+      });
+    }
 
     started.push({ ticketId: ticket.id, runId: run.id, handle, done });
   }

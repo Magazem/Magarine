@@ -31,6 +31,7 @@ import {
   createTicket,
   createWorkerProfile,
   getProject,
+  getRun,
   getSettings,
   getTicket,
   getWorkerProfile,
@@ -69,7 +70,11 @@ import type { AgentAdapter, DependencyType, EventRow, ExpectedArtifact, Workspac
 // adds `GET`/`PATCH /settings`, `PATCH /projects/{id}` (a stricter sibling
 // of the existing `POST /projects/{id}/set`, see handlePatchProject's own
 // comment) and `PUT /projects/{id}/scope` (the scope editor's write side,
-// alongside the existing `GET`).
+// alongside the existing `GET`). Batch 19 mini-phase 4 (ruling 40) adds `GET
+// /runs/{id}/live` -- the one route in this file with no store.ts/commands
+// call behind it at all: it reads an in-memory map (daemon.ts's
+// DaemonLoop.liveRuns) and nothing else, by design (see that route's own
+// comment).
 //
 // Every mutation here goes through the exact same functions the CLI already
 // calls (store.ts, commands/*.ts, dependencies.ts) -- this file adds no
@@ -584,6 +589,34 @@ async function route(deps: DaemonApiDeps, req: IncomingMessage, url: URL, body: 
     // for why (an exhausted, retried ticket's earlier runs each keep their
     // own history).
     return { status: 200, body: buildTicketProgress(deps.db, ticketId) };
+  }
+
+  // Batch 19 mini-phase 4 (ruling 40, amended by the fix round below): the
+  // live drill-down -- reads deps.loop.liveRuns directly (the SAME in-memory
+  // map scheduler.ts writes and clears; see daemon.ts's DaemonLoop.liveRuns).
+  // Never a 500: the run-row read below (getRun) is the one exception to
+  // "this route's entire body is an in-memory map lookup" -- needed only to
+  // tell a RUNNING run with no tool use yet apart from an unknown or settled
+  // one, never to source `tool`/`detail` (those still come from liveRuns
+  // alone, or are null).
+  //
+  // Batch 19 mini-phase 4 fix round (reviewer Medium, amending ruling 40):
+  // the original version 404'd here for "running but no tool use yet" too,
+  // which hides the one measurement (`lastProgressAt`) the page needs most --
+  // a worker hung before its first tool call (a stuck auth prompt, a CLI
+  // that never starts) looked identical to a settled or unknown run. Ruling
+  // 40 section 2's own words, "for a RUNNING run ... or 404 once the run has
+  // settled," already said this route answers for the whole time a run is
+  // RUNNING; this fixes the route to actually do that. 404 stays for an
+  // unknown run id and for one that has settled -- only those two.
+  const runLiveMatch = /^\/runs\/([^/]+)\/live$/.exec(path);
+  if (method === 'GET' && runLiveMatch) {
+    const [, runId] = runLiveMatch;
+    const info = deps.loop.liveRuns.get(runId);
+    if (info) return { status: 200, body: info };
+    const run = getRun(deps.db, runId);
+    if (!run || run.status !== 'running') throw new ApiError(404, `no live drill-down for run: ${runId}`);
+    return { status: 200, body: { tool: null, detail: null, since: null, lastProgressAt: run.startedAt } };
   }
 
   // Batch 11 item 3 (the page): the project selector needs a way to

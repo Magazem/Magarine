@@ -235,3 +235,61 @@ test('manager_proposal script with extraArtifacts declares them alongside (or in
     rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+// Batch 19 mini-phase 4 (ruling 40): setLiveToolUse/observeLive is the
+// second, NON-persisted channel -- proven here at the adapter level in
+// isolation (never delivered through `observe`, never present on a
+// WorkerEvent), independently of the scheduler-level tests that prove the
+// live map itself never turns this into an event.
+test('setLiveToolUse delivers {tool, detail} through observeLive, never through observe', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'succeed', delayMs: 20 });
+  adapter.setLiveToolUse('t1', { tool: 'Bash', detail: 'echo SECRET_XYZ', delayMs: 0 });
+  const handle = await adapter.startWorker({ ticket: envelope('t1'), systemPolicy: 'p' });
+
+  const liveInfos: Array<{ tool: string; detail: string }> = [];
+  const events: WorkerEvent[] = [];
+  await new Promise<void>((resolve) => {
+    void adapter.observeLive(handle, (info) => liveInfos.push(info));
+    void adapter.observe(handle, (event) => {
+      events.push(event);
+      if (event.type === 'result_raw') resolve();
+    });
+  });
+
+  assert.deepEqual(liveInfos, [{ tool: 'Bash', detail: 'echo SECRET_XYZ' }]);
+  for (const event of events) {
+    assert.equal(JSON.stringify(event).includes('SECRET_XYZ'), false, `WorkerEvent leaked the live detail: ${JSON.stringify(event)}`);
+  }
+});
+
+test('observeLive with no scripted live tool use delivers nothing', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'succeed' });
+  const handle = await adapter.startWorker({ ticket: envelope('t1'), systemPolicy: 'p' });
+
+  const liveInfos: Array<{ tool: string; detail: string }> = [];
+  await adapter.observeLive(handle, (info) => liveInfos.push(info));
+  await new Promise<void>((resolve) => {
+    void adapter.observe(handle, (event) => {
+      if (event.type === 'result_raw') resolve();
+    });
+  });
+
+  assert.deepEqual(liveInfos, []);
+});
+
+test('stop() cancels a pending scripted live tool use the same way it cancels a pending terminal event', async () => {
+  const adapter = new FakeAdapter();
+  adapter.setScript('t1', { kind: 'hang' });
+  adapter.setLiveToolUse('t1', { tool: 'Bash', detail: 'sleep 100', delayMs: 50 });
+  const handle = await adapter.startWorker({ ticket: envelope('t1'), systemPolicy: 'p' });
+
+  const liveInfos: Array<{ tool: string; detail: string }> = [];
+  await adapter.observeLive(handle, (info) => liveInfos.push(info));
+  await adapter.observe(handle, () => {});
+  await adapter.stop(handle);
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(liveInfos, [], 'a stopped worker must not deliver a live signal scheduled before the stop');
+});
