@@ -16,7 +16,15 @@ lead with its own cold suite and its own mutations before merging:
 batch 18. The walk is written for them: `docs/evidence/batch-19/owner-walk.md`. Until they answer,
 batch 19 is BUILT, not CLOSED.
 
-**RULED BUT NOT BUILT: mini-phase 4, the drill-down** — `docs/strategy/batch-19-item-4-drill-down.md`
+**MINI-PHASE 4 IS NOW BUILT TOO** (`e73ce0e` daemon half, `efdc538` page half): `main` = `origin/main`
+= `efdc538`, suite **1094 tests, 1093 pass, 0 fail, 1 skip**. Two things this one taught, both already
+memory rules: the lead mutated BOTH halves of the reviewer's High fix and the suite stayed green, so
+the fix was right and unproven until an adapter double could reach the post-settle window; and the
+page designer caught that `lastProgressAt` fell back to the run's START time before the first tool
+use, which would have reported minutes of silence for a worker that spoke two seconds ago — the one
+number the feature exists to give, wrong in the direction that makes a healthy worker look wedged.
+
+**The original ruling, for context: mini-phase 4, the drill-down** — `docs/strategy/batch-19-item-4-drill-down.md`
 (ruling 40). The command a worker is running is shown LIVE, from memory, and never persisted: not in
 the event log, the stream, the database or any file, because a command line is the likeliest place
 for a secret and this daemon's log is permanent and browser-rendered. `GET /runs/{id}/live` while the
