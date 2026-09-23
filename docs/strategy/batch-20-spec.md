@@ -108,3 +108,19 @@ if its write fails, since the exclusive open proves the file was not the owner's
 Accepted residual risk, stated so nobody rediscovers it as news: a hard kill between linking
 `SCOPE.md` and the commit strands the file with no project row, and a kill before cleanup strands a
 `SCOPE.md.tmp-<pid>-<hex>`. Both are visible, named as Magarine's, and destroy nothing of the owner's.
+
+## 7. Amendment, 2026-09-23, from the 20B review
+
+- **Creating a project must select it through the SAME function the project selector uses.** The
+  first build selected the new project by a second path that did not refill an open Settings panel,
+  so "Save project settings" then wrote the PREVIOUS project's cap and models onto the new one
+  (reviewer probe: cap 2 leaked onto a project created with none). One selection path, so the two
+  cannot drift again.
+- **An unsaved scope draft is never dropped by a create.** If one exists, the project is created but
+  not switched to; the success line says the draft was kept and offers to switch.
+- **The form must not displace the owner's work.** The first build put it in a full-width band that
+  left the board 289px of 838 at 1440x900, and 40px with the models disclosure open, with Needs You
+  at 32px — breaking ruling 15, "Needs you on screen in every view". It is placed over or beside the
+  work, not above it.
+- **The cap is sent as typed**, and the daemon refuses what it cannot parse; the page no longer
+  reinterprets `0x2` as 2.
