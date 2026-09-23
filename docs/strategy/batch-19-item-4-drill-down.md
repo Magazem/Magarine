@@ -89,3 +89,27 @@ redaction before a line of it is written.
 - **Acceptance 3 must scan the TERMINAL payloads too**, not only the progress path: `worker_done`,
   `worker_failure`, the run row and a cancel event. The first version of the test used a run that
   never terminated, so a leak into any of those would have passed.
+
+## 6. Amendment, 2026-09-23: the silence measurement must be the real one
+
+The page designer found, and the lead verified in the code, that `lastProgressAt` was only updated
+when a live entry already existed (`scheduler.ts` 727-729, `if (existing)`), and an entry was only
+created on a tool use. So a worker that had reported progress but not yet used a tool answered with
+`lastProgressAt: run.startedAt` (`daemonApi.ts` 619) — the page would have said "last progress five
+minutes ago" when it was two seconds. **The one number this whole feature exists to provide would
+have been overstated, in the direction that makes a healthy worker look wedged.**
+
+Ruled:
+
+- The live entry is created on the FIRST PROGRESS EVENT as well as on a tool use, with `tool` and
+  `detail` null until a tool is actually used. `lastProgressAt` tracks progress from then on.
+- The body always carries `startedAt`, and `lastProgressAt` is **null** until a real progress event.
+  The start time is never substituted for it.
+- The page says the true thing in each case: with progress, the time since it; without any, that
+  there has been no progress yet and how long the run has been going. Still no verdict, still never
+  the word "stuck".
+- The clear-on-settle behaviour from section 5 is untouched: it is this batch's security fix and it is
+  now properly tested.
+
+The page's own way in is `GET /tickets/{id}/progress` for the run id, since the board carries none;
+it covers verifier runs too, and it gets a row in the element-field table's routes list.
