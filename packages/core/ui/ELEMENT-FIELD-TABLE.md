@@ -53,6 +53,7 @@ Routes used, and the page requests nothing else:
 | `PUT /projects/{id}/scope` | `src/daemonApi.ts` → `{ scopeText, status }` as written; refused when the project has no scope path. Batch 19, ruling 39 |
 | `GET /tickets/{id}/progress` | `src/commands/activity.ts` → `RunProgress[]`: one entry per run the ticket has ever had, oldest first. The drill-down reads only `runId` and `runStatus`, to find the ticket's one `running` run — the board carries no run id. Batch 19, ruling 40 |
 | `GET /runs/{id}/live` | `src/daemonApi.ts` → `LiveRunInfo` `{ tool, detail, since, lastProgressAt, startedAt }` from the scheduler's in-memory map; `tool`, `detail` and `since` null for a running run with no tool use yet, `lastProgressAt` null until it has reported progress (ruling 40 section 6: the start is never substituted); **404** for an unknown or settled run. Read only while the drill-down is open. Batch 19, ruling 40 |
+| `POST /projects` | `src/daemonApi.ts` → 201 with the project row and a `scopeNote`; **400** with `{ error }` for every refusal. Batch 20, ruling 42 |
 | `GET /ui/<name>` | the static assets: this page and its five files |
 
 ---
@@ -275,6 +276,35 @@ progress is never overwritten.
 | "Save project settings" | copy | `PATCH /projects/{id}` with all four fields |
 | saved line: "Saved. Showing what the daemon now reports." | copy | shown after a 200; the fields are refilled from the response body, not from what was typed |
 | settings refusal | field | the daemon's own `error` sentence, verbatim; nothing is refilled or cleared |
+
+## 5c. New project (a panel over the page, under the topbar button)
+
+Batch 20, ruling 42. Opened by the owner with the button beside the project
+selector. The form is static markup that the poll never rebuilds, so **what is
+typed survives every poll**; a refusal clears nothing. Only a 201 empties it.
+The page checks nothing itself: the daemon decides what a valid project is.
+
+**Placement:** the form is a fixed panel anchored under the "New project" button,
+over the page like the drill-down, in no grid area. Opening it moves no region:
+the board and Needs you stay exactly where they were. Cancel, Close and Escape
+close it and return focus to the button.
+
+| element | kind | source |
+|---|---|---|
+| "New project" button | copy | opens and closes the form. Shown once the daemon has accepted the token, hidden at the gate. Present even when there is no project yet |
+| name input | copy | the owner's text, trimmed, sent as `name` |
+| directory input | copy | the owner's text, trimmed, sent as `dir`. A browser cannot open a folder picker onto the daemon's disk, so none is drawn |
+| directory copy: "Type the full path of a folder that already exists on this computer. Magarine will not create it." | copy | fixed text |
+| description input (optional) | copy | sent as `description` only when not empty |
+| starting scope textarea (optional) | copy | sent as `scopeText` only when not blank |
+| starting scope copy: "Written to SCOPE.md in that folder only if the folder has no SCOPE.md. If it already has one, the project is refused and nothing is created." | copy | fixed text |
+| "Models and worker cap" disclosure | copy | opens the four fields below; closed by default |
+| default / Manager / verifier model selects | field | options are `GET /models`; the empty choice is "use the machine default" and sends nothing, so the daemon applies its own |
+| worker cap input | copy | plain decimal digits go as that number (the daemon takes only a JSON number); any other text (`0x2`, `1e1`) goes exactly as typed so the daemon refuses it in its own words; empty sends nothing |
+| "Create project" button | copy | `POST /projects` with the fields above; disabled while the call is in flight |
+| refusal | field | the daemon's own `error` sentence, verbatim, in `role="alert"`; nothing typed is cleared |
+| success line | field | `POST /projects` → `scopeNote` when present, else "Project created.". With an unsaved scope draft open on the previous project, the page stays there, adds "Your unsaved scope draft here was kept." and shows a "Switch to it" button |
+| after a 201 | derived | the fields are emptied, the page selects the returned project row's `id` through the same function as the selector (so an open Settings panel is refilled) and re-reads; not when an unsaved scope draft is open |
 
 ## 6. Conversation
 

@@ -105,6 +105,7 @@
   <label class="sr-only" for="projectSelect">Project</label>
   <select id="projectSelect" class="field"></select>
   <span class="proj"><span class="id mono" id="projectId"></span></span>
+  <button class="btn" type="button" id="newProjectToggle" aria-expanded="false" aria-controls="newProject" hidden>New project</button>
 
   <!-- RULING 15. THREE VIEWS, AND THEY DECIDE WHAT THE CENTRE COLUMN HOLDS —
        nothing more. Fleet, Needs you and Activity are on screen in every one
@@ -159,6 +160,44 @@
     <label class="sr-only" for="token">Daemon token</label>
     <input class="field" id="token" type="password" autocomplete="off" placeholder="daemon token">
     <button class="btn btn-go" type="button" id="saveToken">Connect</button>
+  </div>
+</section>
+
+<!-- RULING 42 (batch 20): start a project from the window. Static markup, never
+     rebuilt by the poll, so what the owner types stays. -->
+<section id="newProject" class="panel" aria-labelledby="newProjectHead" hidden>
+  <div class="panel-head"><h2 id="newProjectHead">New project</h2></div>
+  <div class="new-project" id="npForm">
+    <label class="setting"><span class="k">Name</span>
+      <input class="field" id="npName" type="text" autocomplete="off"></label>
+    <label class="setting"><span class="k">Directory</span>
+      <input class="field" id="npDir" type="text" autocomplete="off" spellcheck="false"></label>
+    <p class="settings-note">Type the full path of a folder that already exists on this computer. Magarine will not create it.</p>
+    <label class="setting"><span class="k">Description (optional)</span>
+      <input class="field" id="npDescription" type="text" autocomplete="off"></label>
+    <label class="setting"><span class="k">Starting scope (optional)</span>
+      <textarea class="field" id="npScope" rows="6"></textarea></label>
+    <p class="settings-note">Written to SCOPE.md in that folder only if the folder has no SCOPE.md. If it already has one, the project is refused and nothing is created.</p>
+    <button class="btn" type="button" id="npModelsToggle" aria-expanded="false" aria-controls="npModels">Models and worker cap</button>
+    <div class="new-project-models" id="npModels" hidden>
+      <label class="setting"><span class="k">Default model</span>
+        <select class="field" id="npDefaultModel"></select></label>
+      <label class="setting"><span class="k">Manager model</span>
+        <select class="field" id="npManagerModel"></select></label>
+      <label class="setting"><span class="k">Verifier model</span>
+        <select class="field" id="npVerifierModel"></select></label>
+      <label class="setting"><span class="k">Worker cap</span>
+        <input class="field" id="npCap" type="text" inputmode="numeric" autocomplete="off" placeholder="use the machine default"></label>
+    </div>
+    <div class="roster-error" id="npError" role="alert" hidden></div>
+    <div class="acts">
+      <button class="btn btn-go" type="button" id="npCreate">Create project</button>
+      <button class="btn" type="button" id="npCancel">Cancel</button>
+    </div>
+  </div>
+  <div class="new-project" id="npDone" hidden>
+    <div class="note" id="npDoneNote"></div>
+    <div class="acts"><button class="btn" type="button" id="npDoneSwitch" hidden>Switch to it</button><button class="btn" type="button" id="npDoneClose">Close</button></div>
   </div>
 </section>
 

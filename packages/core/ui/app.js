@@ -1621,11 +1621,9 @@
     var id = state.projectId;
     if (!id) return;
     var cap = $('projectCap').value.trim();
-    // A number when it reads as one; otherwise the text as typed, so the
-    // daemon refuses it in its own words. Never NaN, which JSON would quietly
-    // turn into null -- "use the machine default" -- and clear the override.
+    // Sent as typed: the daemon decides what a cap is, and says so.
     var capValue = $('projectCapDefault').checked ? null
-      : (cap !== '' && isFinite(Number(cap)) ? Number(cap) : cap);
+      : (cap !== '' ? capValueOf(cap) : cap);
     var body = {
       defaultModel: $('projectDefaultModel').value,
       managerModel: $('projectManagerModel').value || null,
@@ -1641,6 +1639,105 @@
     }, function (err) {
       if (err && err.message === 'unauthorized') return;
       setLine('projectError', daemonSentence(err));
+    });
+  }
+
+  // ------------------------------------------------------ new project ----
+  // RULING 42. The form is static markup: the poll never touches it, so what
+  // the owner types stays. Nothing is checked here -- the daemon decides what
+  // a valid project is and says why in one sentence, shown verbatim. A refusal
+  // clears nothing; only a 201 empties the fields.
+  var NP_FIELDS = ['npName', 'npDir', 'npDescription', 'npScope', 'npCap'];
+  var NP_MODELS = ['npDefaultModel', 'npManagerModel', 'npVerifierModel'];
+  var npBusy = false;
+  var npWasOpen = false;
+  var npCreatedId = null;
+
+  function setNewProjectOpen(open) {
+    $('newProject').hidden = !open;
+    $('newProjectToggle').setAttribute('aria-expanded', String(open));
+    if (!open) {
+      if (npWasOpen) $('newProjectToggle').focus();
+      npWasOpen = false;
+      return;
+    }
+    npWasOpen = true;
+    $('npForm').hidden = false;
+    $('npDone').hidden = true;
+    setLine('npError', null);
+    loadModels().then(function () {
+      NP_MODELS.forEach(function (id) { fillModelSelect($(id), $(id).value, USE_MACHINE); });
+    });
+    $('npName').focus();
+  }
+
+  // The ONE way the page changes project: the selector and a successful create
+  // both come through here, so an open Settings panel is always refilled from
+  // the project now selected and can never save the old one's values onto it.
+  // The daemon takes a JSON number and nothing else, so plain decimal digits go
+  // as that number. Anything else ("0x2", "1e1", " 2.5") goes as the text typed
+  // and the daemon refuses it in its own words -- the page never reads it for
+  // the owner, and never sends NaN (JSON turns that into null, which clears).
+  function capValueOf(text) { return /^[1-9][0-9]*$/.test(text) ? Number(text) : text; }
+
+  function selectProject(id) {
+    state.projectId = id;
+    $('projectId').textContent = state.projectId;
+    // A draft belongs to the project it was opened on; it is not carried
+    // into another one's scope file.
+    if (state.scopeEditing) closeScopeEditor();
+    // A drill-down belongs to a ticket on the board being left.
+    closeDrill();
+    return refresh().then(function () {
+      // A project already in the list needs the selector moved to it; a new
+      // one gets the selection when the list is rebuilt.
+      $('projectSelect').value = state.projectId;
+      if (!$('settingsBody').hidden) fillProject(currentProject());
+    });
+  }
+
+  function createProject() {
+    if (npBusy) return;
+    var body = { name: $('npName').value.trim(), dir: $('npDir').value.trim() };
+    var description = $('npDescription').value.trim();
+    if (description) body.description = description;
+    if ($('npScope').value.trim()) body.scopeText = $('npScope').value;
+    if ($('npDefaultModel').value) body.defaultModel = $('npDefaultModel').value;
+    if ($('npManagerModel').value) body.managerModel = $('npManagerModel').value;
+    if ($('npVerifierModel').value) body.verifierModel = $('npVerifierModel').value;
+    var cap = $('npCap').value.trim();
+    // A number when it reads as one; otherwise the text as typed, so the
+    // daemon refuses it in its own words.
+    if (cap) body.maxParallel = capValueOf(cap);
+
+    npBusy = true;
+    $('npCreate').disabled = true;
+    setLine('npError', null);
+    api('/projects', { method: 'POST', body: body }).then(function (row) {
+      NP_FIELDS.forEach(function (id) { $(id).value = ''; });
+      NP_MODELS.forEach(function (id) { $(id).value = ''; });
+      $('npForm').hidden = true;
+      $('npDone').hidden = false;
+      $('npDoneNote').textContent = (row && row.scopeNote) || 'Project created.';
+      var keep = state.scopeEditing && $('scopeDraft').value !== state.scopeBase;
+      $('npDoneSwitch').hidden = true;
+      if (row && row.id && keep) {
+        // An unsaved scope draft belongs to the project being left: create the
+        // new one, stay here, and offer the switch.
+        npCreatedId = row.id;
+        $('npDoneNote').textContent = ((row && row.scopeNote) || 'Project created.') +
+          ' Your unsaved scope draft here was kept.';
+        $('npDoneSwitch').hidden = false;
+        return refresh();
+      }
+      if (row && row.id) return selectProject(row.id);
+      return refresh();
+    }, function (err) {
+      if (err && err.message === 'unauthorized') return;
+      setLine('npError', daemonSentence(err));
+    }).then(function () {
+      npBusy = false;
+      $('npCreate').disabled = false;
     });
   }
 
@@ -2148,12 +2245,15 @@
     $('gate').hidden = false;
     setTitle(0);
     $('projectSelect').hidden = true;
+    $('newProjectToggle').hidden = true;
+    $('newProject').hidden = true;
     setNotice('notice-auth', why || 'this page needs the daemon token before it can show anything', null);
     REGIONS.forEach(function (id) { $(id).hidden = true; });
   }
 
   function hideGate() {
     $('gate').hidden = true;
+    $('newProjectToggle').hidden = false;
     setNotice('notice-auth', null);
     REGIONS.forEach(function (id) { $(id).hidden = false; });
   }
@@ -2278,16 +2378,7 @@
     });
     $('token').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('saveToken').click(); });
 
-    $('projectSelect').addEventListener('change', function (e) {
-      state.projectId = e.target.value;
-      $('projectId').textContent = state.projectId;
-      // A draft belongs to the project it was opened on; it is not carried
-      // into another one's scope file.
-      if (state.scopeEditing) closeScopeEditor();
-      // A drill-down belongs to a ticket on the board being left.
-      closeDrill();
-      refresh().then(function () { if (!$('settingsBody').hidden) fillProject(currentProject()); });
-    });
+    $('projectSelect').addEventListener('change', function (e) { selectProject(e.target.value); });
 
     $('themeToggle').addEventListener('click', function (e) {
       var t = e.target.closest('[data-theme-set]');
@@ -2314,6 +2405,21 @@
 
     $('addProfile').addEventListener('click', addProfile);
 
+    $('newProjectToggle').addEventListener('click', function () { setNewProjectOpen($('newProject').hidden); });
+    $('npCancel').addEventListener('click', function () { setNewProjectOpen(false); });
+    $('npDoneClose').addEventListener('click', function () { setNewProjectOpen(false); });
+    $('npDoneSwitch').addEventListener('click', function () {
+      var id = npCreatedId;
+      setNewProjectOpen(false);
+      if (id) selectProject(id);
+    });
+    $('npCreate').addEventListener('click', createProject);
+    $('npModelsToggle').addEventListener('click', function () {
+      var open = $('npModels').hidden;
+      $('npModels').hidden = !open;
+      $('npModelsToggle').setAttribute('aria-expanded', String(open));
+    });
+
     $('scopeEdit').addEventListener('click', openScopeEditor);
     $('scopeSave').addEventListener('click', saveScope);
     $('scopeCancel').addEventListener('click', closeScopeEditor);
@@ -2330,6 +2436,7 @@
     $('drillClose').addEventListener('click', closeDrill);
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && !$('drill').hidden) closeDrill();
+      else if (e.key === 'Escape' && !$('newProject').hidden) setNewProjectOpen(false);
     });
     $('saveProject').addEventListener('click', saveProject);
 

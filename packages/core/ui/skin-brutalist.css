@@ -73,6 +73,7 @@
   #topbar       { grid-area: top; }
   #notices      { grid-area: notices; }
   #gate         { grid-area: gate; }
+  #newProject   { grid-area: gate; }
   #fleet        { grid-area: fleet; }
   #board        { grid-area: board; }
   #scope        { grid-area: scope; }
@@ -80,7 +81,7 @@
   #needs-you    { grid-area: needs-you; }
   #activity     { grid-area: activity; }
 
-  #fleet, #board, #scope, #conversation, #needs-you, #activity, #notices, #gate {
+  #fleet, #board, #scope, #conversation, #needs-you, #activity, #notices, #gate, #newProject {
     min-width: 0;
     align-self: start;
   }
@@ -95,7 +96,7 @@
     padding: 0 var(--s4) var(--s5);
   }
   #notices { padding: var(--s3) var(--s4) 0; }
-  #gate    { padding: var(--s3) var(--s4); }
+  #gate, #newProject { padding: var(--s3) var(--s4); }
   #board   { padding-top: var(--s4); }
 
   /* The two side columns keep their full height so their background reaches
@@ -765,6 +766,23 @@
   .setting-check { flex-direction: row; align-items: center; gap: var(--s2); }
   .settings-note { margin: 0; font-size: var(--t-xs); color: var(--fg-2); }
   .settings .btn { align-self: flex-start; }
+
+  /* RULING 42: the New project form, in the gate's grid area. */
+  /* A panel over the page, like the drill-down: fixed, so it takes no grid area
+     and the board and Needs you stay where they were. It hangs under the
+     topbar; the topbar wraps to a second row below 1000px, so it hangs lower. */
+  #newProject {
+    position: fixed; top: 4rem; left: var(--s4); z-index: 10;
+    width: min(36rem, calc(100vw - 2 * var(--s4)));
+    max-height: calc(100vh - 5rem); overflow-y: auto;
+    background: var(--surface); color: var(--fg);
+    border: var(--rule-2) solid var(--fg); border-radius: var(--r);
+  }
+  #newProject[hidden] { display: none; }
+  @media (max-width: 1000px) { #newProject { top: 6rem; max-height: calc(100vh - 7rem); } }
+  .new-project, .new-project-models { display: flex; flex-direction: column; gap: var(--s2); }
+  .new-project .btn { align-self: flex-start; }
+  .new-project .acts { margin-top: 0; }
 
   /* RULING 39: one labelled field per Manager question, in Needs you and in the
      conversation. The question is the daemon's text, whole. */
